@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WhiteOut Paintball — Prototype</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three/build/three.module.js",
+      "three/addons/": "./vendor/three/examples/jsm/",
+      "lil-gui": "./vendor/lil-gui/lil-gui.esm.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- Crosshair -->
+  <div id="crosshair" class="hidden">
+    <span class="ch-line ch-h"></span>
+    <span class="ch-line ch-v"></span>
+    <span class="ch-dot"></span>
+  </div>
+
+  <!-- Paint hit: vignette + drips in the shooter's color -->
+  <div id="paint-hit">
+    <div class="ph-vignette"></div>
+    <div class="ph-drips"></div>
+  </div>
+
+  <!-- Kill confirmation, sits just under the crosshair -->
+  <div id="killfeed" class="hidden"><span class="kf-verb">KILLED</span> <span id="kf-name"></span></div>
+
+  <!-- Respawn countdown -->
+  <div id="respawn" class="hidden">
+    <div class="respawn-label">TAGGED</div>
+    <div class="respawn-count">3</div>
+    <div class="respawn-sub">Respawning</div>
+  </div>
+
+  <!-- Online session HUD (room code + player count) -->
+  <div id="net-hud" class="hidden">
+    <span class="hud-label">ROOM</span> <span id="net-code">—</span>
+    <span id="net-count">1 player</span>
+  </div>
+
+  <!-- 5v5 scoreboard -->
+  <div id="scoreboard" class="hidden">
+    <span class="team team-blue">BLUE <b id="score-blue">0</b></span>
+    <span class="vs">5v5</span>
+    <span class="team team-red"><b id="score-red">0</b> RED</span>
+  </div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div id="color-hud">
+      <span class="hud-label">PAINT</span>
+      <span id="color-swatch"></span>
+      <span id="color-name">RED</span>
+    </div>
+    <div id="splat-count"><span class="hud-label">SPLATS</span> <span id="splat-num">0</span></div>
+  </div>
+
+  <!-- Title / cover screen (first thing shown) -->
+  <div id="title">
+    <div id="title-splat"></div>
+    <div id="title-actions">
+      <button id="start-btn">START</button>
+      <div id="dev-credit">by ceeboozwah</div>
+    </div>
+  </div>
+
+  <!-- Main menu (shown after Start) -->
+  <div id="overlay" class="hidden">
+    <div class="overlay-card">
+      <h1>WhiteOut<span>Paintball</span></h1>
+      <p class="tagline">A blank white world. Painted by combat.</p>
+      <button id="play-btn">Play</button>
+      <div class="menu-col">
+        <button id="open-public-btn" class="secondary-btn wide">Find Public Server</button>
+        <button id="open-private-btn" class="secondary-btn wide">Find Private Server</button>
+      </div>
+      <div class="menu-row">
+        <button id="open-splat-btn" class="secondary-btn">Design Splat</button>
+        <button id="open-settings-btn" class="secondary-btn">Settings</button>
+        <button id="open-howto-btn" class="secondary-btn">How to Play</button>
+      </div>
+      <p class="hint">Press <kbd>`</kbd> in-game for the developer tuning panel.</p>
+    </div>
+  </div>
+
+  <!-- How to Play -->
+  <div id="howto-overlay" class="menu-overlay hidden">
+    <div class="menu-card">
+      <h2>How to Play</h2>
+      <div class="controls">
+        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
+        <div><kbd>Mouse</kbd> Look</div>
+        <div><kbd>Left Click</kbd> Shoot</div>
+        <div><kbd>Right Click</kbd> Aim / zoom</div>
+        <div><kbd>Space</kbd> Jump</div>
+        <div><kbd>Shift</kbd> Sprint</div>
+        <div><kbd>Ctrl</kbd> Crouch</div>
+        <div><kbd>1</kbd>–<kbd>6</kbd> Paint color</div>
+        <div><kbd>Esc</kbd> Release mouse</div>
+        <div>sprint+tap Slide · hold Dive</div>
+      </div>
+      <p class="gamepad-note"><strong>Xbox controller:</strong> Left stick move · Right stick look · <kbd>RT</kbd> shoot · <kbd>LT</kbd> aim · <kbd>A</kbd> jump · <kbd>B</kbd> crouch/slide/dive · <kbd>LB</kbd>/<kbd>RB</kbd> color · <kbd>Start</kbd> to play</p>
+      <div class="menu-actions">
+        <button id="howto-back-btn">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Find Public Server -->
+  <div id="public-overlay" class="menu-overlay hidden">
+    <div class="menu-card mp-card">
+      <h2>Public Servers</h2>
+      <p id="public-note" class="mp-note">Public games anyone can drop into.</p>
+      <div class="server-list">
+        <div class="server-row server-head">
+          <span class="sv-name">Server</span>
+          <span class="sv-players">Players</span>
+          <span class="sv-join"></span>
+        </div>
+        <div id="server-rows"></div>
+        <div id="server-empty" class="server-empty">No public servers online right now.</div>
+      </div>
+      <div id="public-status" class="join-status"></div>
+      <div class="menu-actions">
+        <button id="public-host-btn">Host Public Game</button>
+        <button id="public-enter-btn" class="hidden">Enter Arena</button>
+        <button id="public-refresh-btn" class="secondary-btn">Refresh</button>
+        <button id="public-back-btn" class="secondary-btn">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Find Private Server -->
+  <div id="private-overlay" class="menu-overlay hidden">
+    <div class="menu-card mp-card">
+      <h2>Private Match</h2>
+      <p id="private-note" class="mp-note">Share a room code to play with friends.</p>
+
+      <div class="mp-section">
+        <div class="mp-section-title">Host a private game</div>
+        <button id="private-host-btn" class="secondary-btn wide">Create Room</button>
+        <div id="room-code-box" class="room-code hidden">
+          <span class="room-code-label">ROOM CODE</span>
+          <span id="room-code-value">—</span>
+          <span class="room-code-hint">Share this with your friends</span>
+        </div>
+        <button id="private-enter-btn" class="hidden" style="margin-top:12px; width:100%;">Enter Arena</button>
+      </div>
+
+      <div class="mp-section">
+        <div class="mp-section-title">Join with a code</div>
+        <div class="join-row">
+          <input id="join-code-input" type="text" maxlength="5" placeholder="e.g. P4XK9" autocomplete="off" spellcheck="false" />
+          <button id="private-join-btn">Join</button>
+        </div>
+        <div id="join-status" class="join-status"></div>
+      </div>
+
+      <div class="menu-actions">
+        <button id="private-back-btn" class="secondary-btn">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings menu -->
+  <div id="settings-overlay" class="menu-overlay hidden">
+    <div class="menu-card">
+      <h2>Settings</h2>
+      <div id="settings-body"></div>
+      <div class="menu-actions">
+        <button id="settings-back-btn">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Match over -->
+  <div id="gameover-overlay" class="menu-overlay hidden">
+    <div class="menu-card gameover-card">
+      <h2 id="gameover-result">BLUE WINS</h2>
+      <p id="gameover-score" class="tagline">25 – 18</p>
+      <div id="combat-report">
+        <div class="cr-title">Combat Report</div>
+        <table class="cr-table">
+          <thead>
+            <tr><th>Player</th><th>K</th><th>D</th><th>Shots</th></tr>
+          </thead>
+          <tbody id="cr-body"></tbody>
+        </table>
+      </div>
+      <div class="menu-actions">
+        <button id="play-again-btn">Play Again</button>
+        <button id="gameover-settings-btn" class="secondary-btn">Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

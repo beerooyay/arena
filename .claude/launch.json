@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "whiteout-paintball",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "5178", "--directory", "/Users/bourgeois/WhiteOutPaintball"],
+      "port": 5178
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+node_modules/
+server.log
+*.log
+.DS_Store
+WhiteOutPaintball.zip

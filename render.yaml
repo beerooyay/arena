@@ -1,0 +1,10 @@
+# Render blueprint — deploys the multiplayer signaling server.
+# In the Render dashboard: New + → Blueprint → pick this repo → Apply.
+services:
+  - type: web
+    name: whiteout-signal
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start

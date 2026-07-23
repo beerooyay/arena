@@ -15,7 +15,7 @@
  * `?signal=wss://...` query param overrides everything (handy for testing).
  */
 
-const DEFAULT_SIGNAL_URL = ''; // set to 'wss://your-app.onrender.com' once deployed
+const DEFAULT_SIGNAL_URL = 'wss://whiteout-signal.onrender.com'; // deployed on Render
 
 // TURN relays traffic when a direct P2P connection can't form (strict NATs,
 // some campus/corporate networks). These are the Open Relay Project's free

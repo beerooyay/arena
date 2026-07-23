@@ -118,14 +118,18 @@ projectiles), tags (paint-hit + respawn + shared team score + kill feed). Bots
 sit out during online matches; the skirmish is endless (no match end yet). The
 room code + player count show in a HUD pill top-right.
 
-**To turn online ON for real players:** deploy `server/` (see `server/README.md` —
-free on Render/Fly), set `DEFAULT_SIGNAL_URL` in `src/net.js`, rebuild the zip.
-Until then the pages say online isn't live. **Local testing works out of the box:**
-run `cd server && npm start`, serve the game from localhost, open two windows,
-host in one and join with the code in the other.
+**Online is LIVE:** the signaling server is deployed at
+`wss://whiteout-signal.onrender.com` (Render free tier, via `render.yaml` in this
+repo) and `DEFAULT_SIGNAL_URL` in `src/net.js` points at it. TURN relay is
+configured (Open Relay community servers) for players behind strict NATs — for
+guaranteed relay capacity, swap in free metered.ca credentials in `net.js`.
+For local dev against a local server: `cd server && npm start`, then open the
+game with `?signal=ws://localhost:8765`.
 
-Known v1 limits: no TURN relay (a few strict NATs won't connect), a backgrounded
-host tab throttles updates, and match flow/combat report are single-player only.
+Known v1 limits: Render's free tier sleeps after ~15 min idle (first player to
+open the browser wakes it, ~30–60s), community TURN is best-effort, a
+backgrounded host tab throttles updates, and match flow/combat report are
+single-player only.
 
 ## Design Your Splat
 

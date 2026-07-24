@@ -110,7 +110,14 @@ export class NetPlay {
     this.scores = [0, 0];
     this.me = null;            // {id, name, team}
     this._sendT = 0;
+    this._botT = 0;
     this._nextIdx = 2;         // host is Player 1
+
+    // lobby/match state: rooms open in the lobby; the host starts the match,
+    // optionally backfilling empty slots with host-simulated bots
+    this.started = false;
+    this.botRoster = [];       // [{name, team}] — what the host filled with
+    this.ghostBots = [];       // client-side visuals of the host's bots
 
     net.onPeer = (id) => this._onPeer(id);
     net.onPeerGone = (id) => this._onPeerGone(id);
@@ -119,6 +126,10 @@ export class NetPlay {
   }
 
   get active() { return this.net.active && this.me !== null; }
+  get isHost() { return this.net.role === 'host'; }
+
+  /** My team's spawn point (BLUE side z=26, RED side z=-26). */
+  mySpawnZ() { return this.me && this.me.team === 1 ? -26 : 26; }
 
   beginHost() {
     this.me = { id: 'host', name: 'Player 1', team: 0 };
@@ -146,9 +157,18 @@ export class NetPlay {
       you: p,
       roster: [...this.roster.values()],
       scores: this.scores,
+      started: this.started,
+      bots: this.botRoster,
     });
     this.net.send({ t: 'add', p }, id);
     this.deps.onRosterChange();
+  }
+
+  /** Host: begin the match for everyone, with the bot slots it filled. */
+  hostStart(botRoster) {
+    this.started = true;
+    this.botRoster = botRoster;
+    this.net.send({ t: 'start', bots: botRoster });
   }
 
   _onPeerGone(id) {
@@ -162,7 +182,8 @@ export class NetPlay {
   // ------------------------------------------------------------------- shared
   _onData(fromId, msg) {
     // host relays joiner traffic to everyone else, stamped with the sender
-    if (this.net.role === 'host' && msg.t !== 'welcome') {
+    // ('bothit' is host-directed: the host resolves it and broadcasts 'botdied')
+    if (this.net.role === 'host' && msg.t !== 'welcome' && msg.t !== 'bothit') {
       this.net.send({ ...msg, from: fromId }, fromId);
     }
     const senderId = this.net.role === 'host' ? fromId : (msg.from || 'host');
@@ -176,7 +197,43 @@ export class NetPlay {
           this.roster.set(p.id, p);
           if (p.id !== this.me.id) this._addRemote(p);
         }
+        if (msg.started) { // match already running — drop in
+          this.started = true;
+          this.botRoster = msg.bots || [];
+          this._createGhosts();
+          this.deps.onStart();
+        }
         this.deps.onRosterChange();
+        break;
+      }
+      case 'start': { // host began the match
+        this.started = true;
+        this.botRoster = msg.bots || [];
+        this._createGhosts();
+        this.deps.onStart();
+        break;
+      }
+      case 'bsync': { // host-simulated bot states
+        for (let i = 0; i < msg.b.length && i < this.ghostBots.length; i++) {
+          const [x, z, ry, alive] = msg.b[i];
+          const g = this.ghostBots[i];
+          g.target.x = x; g.target.z = z; g.target.ry = ry;
+          g.alive = !!alive;
+          g.group.visible = g.alive;
+        }
+        break;
+      }
+      case 'bothit': { // (host only) a client's paintball hit one of my bots
+        if (this.isHost) {
+          const shooter = this.roster.get(senderId);
+          this.deps.tagBot(msg.i, shooter ? shooter.team : 0);
+        }
+        break;
+      }
+      case 'botdied': {
+        this.scores[msg.team]++;
+        const g = this.ghostBots[msg.i];
+        if (g) { g.alive = false; g.group.visible = false; }
         break;
       }
       case 'add': {
@@ -201,16 +258,19 @@ export class NetPlay {
       }
       case 'shot': {
         const p = this.roster.get(senderId);
+        const team = msg.team ?? (p ? p.team : 0);
+        // netGhost: visual only — the authoritative shooter already did hits
         this.deps.spawnProjectile(
           new THREE.Vector3(...msg.o), new THREE.Vector3(...msg.d),
-          msg.hex, p ? p.team : 0, 70, false, null);
+          msg.hex, team, 70, false, { netGhost: true });
         break;
       }
       case 'tag': {
         const shooter = this.roster.get(senderId);
-        if (shooter) this.scores[shooter.team]++;
+        const team = msg.team ?? (shooter ? shooter.team : 0);
+        this.scores[team]++;
         if (this.me && msg.victim === this.me.id) {
-          this.deps.onTagged(shooter ? shooter.team : 0, msg.hex);
+          this.deps.onTagged(team, msg.hex);
         }
         break;
       }
@@ -232,12 +292,37 @@ export class NetPlay {
     const r = this.remotes.get(id);
     if (!r) return;
     this.remotes.delete(id);
-    this.deps.scene.remove(r.group);
-    r.group.userData.bodyMat.dispose();
-    r.group.userData.teamMat.dispose();
-    const label = r.group.userData.label;
+    this._disposeAvatar(r.group);
+  }
+
+  _disposeAvatar(group) {
+    this.deps.scene.remove(group);
+    group.userData.bodyMat.dispose();
+    group.userData.teamMat.dispose();
+    const label = group.userData.label;
     label.material.map.dispose(); label.material.dispose();
-    r.group.traverse((o) => o.geometry && o.geometry.dispose());
+    group.traverse((o) => o.geometry && o.geometry.dispose());
+  }
+
+  // Clients render the host's bots as interpolated "ghost" avatars driven by
+  // the host's `bsync` snapshots (the host owns the real AI + hit detection).
+  _createGhosts() {
+    if (this.isHost) return; // host shows its own real bots
+    this._clearGhosts();
+    for (const b of this.botRoster) {
+      const group = makeAvatar(b.name, TEAM_HEX[b.team]);
+      group.position.set(0, 0, b.team === 0 ? 26 : -26);
+      this.deps.scene.add(group);
+      this.ghostBots.push({
+        group, alive: true,
+        target: { x: group.position.x, z: group.position.z, ry: 0 },
+      });
+    }
+  }
+
+  _clearGhosts() {
+    for (const g of this.ghostBots) this._disposeAvatar(g.group);
+    this.ghostBots.length = 0;
   }
 
   /** Called every frame from the main loop. */
@@ -255,6 +340,15 @@ export class NetPlay {
       d = Math.atan2(Math.sin(d), Math.cos(d));
       g.rotation.y += d * k;
     }
+    // smooth the host's bots on clients (ghosts)
+    for (const g of this.ghostBots) {
+      if (!g.alive) continue;
+      g.group.position.x += (g.target.x - g.group.position.x) * k;
+      g.group.position.z += (g.target.z - g.group.position.z) * k;
+      let d = g.target.ry - g.group.rotation.y;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      g.group.rotation.y += d * k;
+    }
 
     // broadcast my own state at SEND_HZ
     this._sendT += dt;
@@ -268,51 +362,129 @@ export class NetPlay {
         ry: +_euler.y.toFixed(3),
       });
     }
+
+    // host streams its bots' positions to everyone
+    if (this.isHost && this.started) {
+      this._botT += dt;
+      if (this._botT >= 1 / SEND_HZ) {
+        this._botT = 0;
+        const snap = this.deps.getBotSnapshot(); // [[x,z,ry,alive], ...]
+        if (snap && snap.length) this.net.send({ t: 'bsync', b: snap });
+      }
+    }
   }
 
-  /** Announce my shot so everyone else sees the paintball. */
-  sendShot(origin, dir, hex) {
+  /** Announce a shot so everyone else sees the paintball (team drives color). */
+  sendShot(origin, dir, hex, team) {
     if (!this.active) return;
     this.net.send({
       t: 'shot',
       o: [+origin.x.toFixed(2), +origin.y.toFixed(2), +origin.z.toFixed(2)],
       d: [+dir.x.toFixed(3), +dir.y.toFixed(3), +dir.z.toFixed(3)],
       hex,
+      team: team ?? (this.me ? this.me.team : 0),
     });
   }
 
   /**
-   * Shooter-side hit test of my projectile segment against remote avatars.
-   * @returns {{id:string, name:string}|null}
+   * Shooter-side hit test of my projectile segment against remote players AND
+   * the host's ghost bots. Returns what was hit (or null).
+   * @returns {{kind:'player',id,name}|{kind:'bot',index}|null}
    */
   testHit(origin, dir, maxDist) {
     if (!this.active) return null;
     let best = null, bestT = maxDist;
     for (const [id, r] of this.remotes) {
+      const p = this.roster.get(id);
+      if (this.me && p && p.team === this.me.team) continue; // no friendly fire
       _center.copy(r.group.position); _center.y += 1.2;
       const t = raySphere(origin, dir, _center, 0.7);
       if (t >= 0 && t < bestT) {
         bestT = t;
-        best = { id, name: (this.roster.get(id) || { name: '?' }).name };
+        best = { kind: 'player', id, name: (p || { name: '?' }).name };
+      }
+    }
+    // only enemy ghost bots are hittable
+    for (let i = 0; i < this.ghostBots.length; i++) {
+      const g = this.ghostBots[i];
+      if (!g.alive) continue;
+      const bteam = this.botRoster[i] ? this.botRoster[i].team : -1;
+      if (this.me && bteam === this.me.team) continue;
+      _center.copy(g.group.position); _center.y += 1.2;
+      const t = raySphere(origin, dir, _center, 0.7);
+      if (t >= 0 && t < bestT) {
+        bestT = t;
+        best = { kind: 'bot', index: i, name: (this.botRoster[i] || { name: 'Bot' }).name };
       }
     }
     return best;
   }
 
-  /** Broadcast a confirmed tag (also applies my own score locally). */
+  /** Broadcast a confirmed tag on a remote player (scores my team). */
   sendTag(victimId, hex) {
     if (!this.active || !this.me) return;
     this.scores[this.me.team]++;
-    this.net.send({ t: 'tag', victim: victimId, hex });
+    this.net.send({ t: 'tag', victim: victimId, hex, team: this.me.team });
+  }
+
+  /** Report hitting one of the host's bots. Host resolves & broadcasts the kill. */
+  sendBotHit(botIndex) {
+    if (!this.active) return;
+    if (this.isHost) {
+      this.deps.tagBot(botIndex, this.me.team); // host resolves locally
+    } else {
+      this.net.send({ t: 'bothit', i: botIndex });
+    }
+  }
+
+  /** Host: a bot died (any cause) — score it and tell everyone. */
+  hostBotDied(botIndex, byTeamId) {
+    if (!this.isHost || !this.active) return;
+    this.scores[byTeamId]++;
+    this.net.send({ t: 'botdied', i: botIndex, team: byTeamId });
+  }
+
+  /** Host: enemy-team remote players the bots should hunt (feet positions). */
+  getBotTargets() {
+    const out = [];
+    for (const [id, r] of this.remotes) {
+      const p = this.roster.get(id);
+      if (p) out.push({ pos: r.group.position, team: p.team, alive: true });
+    }
+    return out;
+  }
+
+  /** Host: does this bot projectile hit a remote human on the other team? */
+  hostTestRemoteHit(origin, dir, maxDist, shooterTeam) {
+    let best = null, bestT = maxDist;
+    for (const [id, r] of this.remotes) {
+      const p = this.roster.get(id);
+      if (!p || p.team === shooterTeam) continue;
+      _center.copy(r.group.position); _center.y += 1.2;
+      const t = raySphere(origin, dir, _center, 0.7);
+      if (t >= 0 && t < bestT) { bestT = t; best = { id }; }
+    }
+    return best;
+  }
+
+  /** Broadcast a tag by a bot on a remote player (scores the bot's team). */
+  broadcastTag(victimId, hex, team) {
+    if (!this.active) return;
+    this.scores[team]++;
+    if (this.me && victimId === this.me.id) this.deps.onTagged(team, hex);
+    this.net.send({ t: 'tag', victim: victimId, hex, team });
   }
 
   leave() { this.net.close(''); }
 
   _teardown(reason) {
     for (const id of [...this.remotes.keys()]) this._removeRemote(id);
+    this._clearGhosts();
     this.roster.clear();
     this.me = null;
     this.scores = [0, 0];
+    this.started = false;
+    this.botRoster = [];
     this.deps.onEnded(reason);
   }
 }

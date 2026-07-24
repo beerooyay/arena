@@ -7,7 +7,7 @@ import { PaintSystem } from './paint.js';
 import { createOutline } from './outline.js';
 import { PlayerController } from './player.js';
 import { InputManager } from './input.js';
-import { BotSystem } from './bots.js';
+import { BotSystem, BLUE_NAMES, RED_NAMES } from './bots.js';
 import { Settings } from './settings.js';
 import { SplatDesigner } from './splatDesigner.js';
 import { Weapon } from './weapon.js';
@@ -203,9 +203,13 @@ function respawnPlayer() {
 const bots = new BotSystem(scene, arena, {
   spawnProjectile,
   onPlayerTagged,
-  onFire: (pos, hex) => audio.playAt('single', pos, {
-    volume: 0.5, rate: 0.9 + Math.random() * 0.14, refDistance: 5, maxDistance: 80,
-  }),
+  onFire: (pos, hex, dir, teamId) => {
+    audio.playAt('single', pos, {
+      volume: 0.5, rate: 0.9 + Math.random() * 0.14, refDistance: 5, maxDistance: 80,
+    });
+    // host: replicate bot shots so clients see the paintballs
+    if (dir && netplay.isHost && netplay.active) netplay.sendShot(pos, dir, hex, teamId);
+  },
   onTag: ({ shooter, victimName, victimIsPlayer, pos }) => {
     // wet splat on a body: full volume when it's us, positional otherwise
     if (victimIsPlayer) {
@@ -235,6 +239,8 @@ player.setWorld(arena.blockers, arena.groundMeshes, arena.ceilings, bots.bots);
 // `active` = game is being played (mouse locked OR gamepad session started)
 let active = false;
 let padSession = false;
+// `sessionLive` = a single-player match is underway (menu = pause, not reset)
+let sessionLive = false;
 
 // ---------------------------------------------------------------------------
 // Screen management: start / settings / game-over overlays + in-game HUD.
@@ -255,6 +261,7 @@ function hideAllMenus() {
   howtoOverlay.classList.add('hidden');
   publicOverlay.classList.add('hidden');
   privateOverlay.classList.add('hidden');
+  document.getElementById('lobby-overlay').classList.add('hidden');
 }
 function showHowTo() {
   hideAllMenus();
@@ -266,15 +273,8 @@ function showPublic() {
 }
 function showPrivate() {
   hideAllMenus();
-  // reset the page each visit (but keep a live room's code on screen)
-  if (net.active && net.role === 'host') {
-    roomCodeValue.textContent = net.code;
-    roomCodeBox.classList.remove('hidden');
-    privateEnterBtn.classList.remove('hidden');
-  } else {
-    roomCodeBox.classList.add('hidden');
-    privateEnterBtn.classList.add('hidden');
-  }
+  roomCodeBox.classList.add('hidden');   // hosting now moves to the lobby screen
+  privateEnterBtn.classList.add('hidden');
   joinInput.value = '';
   joinStatus.textContent = '';
   privateOverlay.classList.remove('hidden');
@@ -288,6 +288,7 @@ function showStart() {
   hud.classList.add('hidden');
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
+  scoreboard.classList.add('hidden'); // re-shown on entering play
 }
 function showSettings(returnTo) {
   settingsReturnScreen = returnTo;
@@ -310,6 +311,7 @@ function enterGame() {
   hideAllMenus();
   crosshair.classList.remove('hidden');
   hud.classList.remove('hidden');
+  scoreboard.classList.toggle('hidden', !(bots.enabled || netplay.active));
 }
 
 /**
@@ -351,6 +353,7 @@ function buildCombatReport() {
 // End the match and surface the result. Frees the cursor so menu buttons work.
 function endMatch(winnerTeamId) {
   match.over = true;
+  sessionLive = false; // next Play starts a fresh match
   match.winner = winnerTeamId;
   gameoverResult.textContent = winnerTeamId === 0 ? 'BLUE WINS' : 'RED WINS';
   gameoverResult.className = winnerTeamId === 0 ? 'win-blue' : 'win-red';
@@ -364,11 +367,12 @@ function endMatch(winnerTeamId) {
 function resetMatch() {
   match.over = false;
   match.winner = -1;
+  sessionLive = true;    // a single-player match is now underway
   playerDead = false;
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
   playerStats.kills = 0; playerStats.deaths = 0; playerStats.shots = 0;
-  bots.respawnAll();     // resets scores + per-bot stats, respawns both teams
+  if (bots.enabled) bots.respawnAll(); // resets scores + stats, respawns teams
   camera.position.copy(PLAYER_SPAWN);
   player.velocityY = 0;
   playerPaintHits = 0;
@@ -417,7 +421,14 @@ function startGame() {
 }
 startBtn.addEventListener('click', startGame);
 
-document.getElementById('play-btn').addEventListener('click', () => controls.lock());
+document.getElementById('play-btn').addEventListener('click', () => {
+  // fresh single-player match on first Play; resume if paused mid-match
+  if (!netplay.active && !sessionLive) {
+    bots.setEnabled(guiState.bots5v5);
+    resetMatch();
+  }
+  controls.lock();
+});
 document.getElementById('open-settings-btn').addEventListener('click', () => showSettings('start'));
 document.getElementById('open-howto-btn').addEventListener('click', () => showHowTo());
 document.getElementById('howto-back-btn').addEventListener('click', () => showStart());
@@ -446,6 +457,14 @@ function updateNetHud() {
   netCountEl.textContent = n === 1 ? 'waiting for players…' : `${n} players`;
 }
 
+// Lobby DOM
+const lobbyOverlay = document.getElementById('lobby-overlay');
+const lobbyCodeValue = document.getElementById('lobby-code-value');
+const lobbyCount = document.getElementById('lobby-count');
+const lobbyRoster = document.getElementById('lobby-roster');
+const lobbyHint = document.getElementById('lobby-hint');
+const lobbyStartBtn = document.getElementById('lobby-start-btn');
+
 const net = new NetClient();
 const netplay = new NetPlay(net, {
   scene,
@@ -453,42 +472,112 @@ const netplay = new NetPlay(net, {
   spawnProjectile,
   onTagged: (shooterTeamId, hex) => onPlayerTagged(shooterTeamId, hex),
   showKill,
-  onRosterChange: () => updateNetHud(),
+  onRosterChange: () => { updateNetHud(); renderLobby(); },
+  onStart: () => enterNetArena(),      // clients: host started the match
+  getBotSnapshot: () => bots.netSnapshot(),
+  tagBot: (idx, team) => bots.tagBotByIndex(idx, team),
   onEnded: (reason) => {
     netHudEl.classList.add('hidden');
-    bots.setEnabled(guiState.bots5v5);
-    scoreboard.classList.toggle('hidden', !guiState.bots5v5);
+    bots.setEnabled(false);   // menus stay frozen; Play starts a fresh match
+    scoreboard.classList.add('hidden');
+    sessionLive = false;
     const note = reason || 'Left the online match.';
     joinStatus.textContent = note;
     publicStatus.textContent = note;
+    if (!lobbyOverlay.classList.contains('hidden')) showStart();
     if (controls.isLocked) controls.unlock(); // unlock handler shows the menu
   },
 });
 
+// host: when a real bot dies, score it for everyone
+bots.onBotDown = (idx, byTeam) => {
+  if (netplay.isHost && netplay.active) netplay.hostBotDied(idx, byTeam);
+};
+
+// ---- Lobby rendering + flow ------------------------------------------------
+const TEAM_DOT = ['#2f7bff', '#ff3b3b'];
+
+function renderLobby() {
+  if (lobbyOverlay.classList.contains('hidden')) return;
+  lobbyCodeValue.textContent = net.code || '—';
+  const players = [...netplay.roster.values()];
+  lobbyCount.textContent = `(${players.length}/10)`;
+  lobbyRoster.innerHTML = '';
+  for (const p of players) {
+    const row = document.createElement('div');
+    row.className = 'lobby-player';
+    const dot = document.createElement('span');
+    dot.className = 'lp-dot';
+    dot.style.background = TEAM_DOT[p.team];
+    const name = document.createElement('span');
+    name.textContent = p.name;
+    row.append(dot, name);
+    if (netplay.me && p.id === netplay.me.id) {
+      const you = document.createElement('span');
+      you.className = 'lp-you'; you.textContent = 'YOU';
+      row.appendChild(you);
+    }
+    lobbyRoster.appendChild(row);
+  }
+  if (netplay.isHost) {
+    lobbyStartBtn.classList.remove('hidden');
+    const fill = 10 - players.length;
+    lobbyHint.textContent = fill > 0
+      ? `Start any time — ${fill} empty slot${fill === 1 ? '' : 's'} will fill with bots.`
+      : 'Teams are full. Start when ready.';
+  } else {
+    lobbyStartBtn.classList.add('hidden');
+    lobbyHint.textContent = 'Waiting for the host to start the match…';
+  }
+}
+
+function showLobby() {
+  hideAllMenus();
+  lobbyOverlay.classList.remove('hidden');
+  renderLobby();
+}
+
+// Host clicks Start: backfill empty slots to 5v5 with bots, then drop in.
+function hostStartMatch() {
+  const players = [...netplay.roster.values()];
+  const blueHumans = players.filter((p) => p.team === 0).length;
+  const redHumans = players.filter((p) => p.team === 1).length;
+  const blueBots = Math.max(0, 5 - blueHumans);
+  const redBots = Math.max(0, 5 - redHumans);
+
+  const botRoster = [];
+  for (let i = 0; i < blueBots; i++) botRoster.push({ name: BLUE_NAMES[i % BLUE_NAMES.length], team: 0 });
+  for (let i = 0; i < redBots; i++) botRoster.push({ name: RED_NAMES[i % RED_NAMES.length], team: 1 });
+
+  bots.setEnabledCounts(blueBots, redBots); // host owns the real bot AI
+  netplay.hostStart(botRoster);             // tells clients to spawn ghosts + drop in
+  enterNetArena();
+}
+
 function enterNetArena() {
-  bots.setEnabled(false);            // PvP only while online
   scoreboard.classList.remove('hidden');
   netHudEl.classList.remove('hidden');
   updateNetHud();
-  camera.position.copy(PLAYER_SPAWN);
+  camera.position.set(0, 1.7, netplay.mySpawnZ());
   player.velocityY = 0;
   controls.lock();                   // click gesture → pointer lock → enterGame
 }
 
 async function hostFlow(isPublic, statusEl) {
-  if (!mpConfigured()) { statusEl.textContent = OFFLINE_MSG; return null; }
-  if (net.active) return net.code;   // already hosting — just show the code
+  if (!mpConfigured()) { statusEl.textContent = OFFLINE_MSG; return false; }
+  if (net.active) { showLobby(); return true; } // already hosting → back to lobby
   try {
     statusEl.textContent = 'Creating room…';
     const code = await net.hostRoom({ isPublic, name: "ceeboozwah's match" });
     netplay.beginHost();
     statusEl.textContent = '';
-    updateNetHud();
-    return code;
+    lobbyCodeValue.textContent = code;
+    showLobby();
+    return true;
   } catch (e) {
     statusEl.textContent = e.message === 'no-signal-url'
       ? OFFLINE_MSG : 'Could not reach the matchmaking server.';
-    return null;
+    return false;
   }
 }
 
@@ -500,7 +589,8 @@ async function joinFlow(code, statusEl) {
     await net.joinRoom(code);
     netplay.beginClient();
     statusEl.textContent = '';
-    enterNetArena();
+    if (netplay.started) enterNetArena(); // match already in progress → drop in
+    else showLobby();                     // otherwise wait in the lobby
   } catch (e) {
     net.close(''); // teardown first — onEnded writes a generic note we overwrite
     statusEl.textContent =
@@ -510,6 +600,12 @@ async function joinFlow(code, statusEl) {
       e.message; // join-fail reasons arrive human-readable ("Room not found.")
   }
 }
+
+lobbyStartBtn.addEventListener('click', () => hostStartMatch());
+document.getElementById('lobby-leave-btn').addEventListener('click', () => {
+  net.close('');
+  showStart();
+});
 
 async function refreshPublicList() {
   const rowsEl = document.getElementById('server-rows');
@@ -559,24 +655,8 @@ document.getElementById('public-back-btn').addEventListener('click', () => showS
 document.getElementById('private-back-btn').addEventListener('click', () => showStart());
 document.getElementById('public-refresh-btn').addEventListener('click', () => refreshPublicList());
 
-document.getElementById('public-host-btn').addEventListener('click', async () => {
-  const code = await hostFlow(true, publicStatus);
-  if (code) {
-    publicStatus.textContent = `Room ${code} is live — enter the arena and others can drop in.`;
-    publicEnterBtn.classList.remove('hidden');
-  }
-});
-publicEnterBtn.addEventListener('click', () => enterNetArena());
-
-document.getElementById('private-host-btn').addEventListener('click', async () => {
-  const code = await hostFlow(false, joinStatus);
-  if (code) {
-    roomCodeValue.textContent = code;
-    roomCodeBox.classList.remove('hidden');
-    privateEnterBtn.classList.remove('hidden');
-  }
-});
-privateEnterBtn.addEventListener('click', () => enterNetArena());
+document.getElementById('public-host-btn').addEventListener('click', () => hostFlow(true, publicStatus));
+document.getElementById('private-host-btn').addEventListener('click', () => hostFlow(false, joinStatus));
 
 joinInput.addEventListener('input', () => {
   joinInput.value = joinInput.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
@@ -749,21 +829,38 @@ function updateProjectiles(dt) {
     if (dist > 1e-5) {
       const dir = seg.clone().normalize();
 
-      // online: my shots test against remote players (shooter-side detection)
+      // Relayed shots from other players are visual only — the authoritative
+      // shooter already resolved their hits. Skip combatant detection; still
+      // let them splat on walls below.
+      const isNetGhost = p.shooter && p.shooter.netGhost;
+
+      // online: MY shots test against remote players + the host's ghost bots
       if (p.isPlayer && netplay.active) {
         const victim = netplay.testHit(p.prev, dir, dist + 0.13);
         if (victim) {
           audio.play('bodyHit', { volume: 0.9, rate: 0.96 + Math.random() * 0.08 });
           showKill(victim.name);
           playerStats.kills++;
-          netplay.sendTag(victim.id, p.hex);
+          if (victim.kind === 'bot') netplay.sendBotHit(victim.index);
+          else netplay.sendTag(victim.id, p.hex);
           removeProjectile(i);
           continue;
         }
       }
 
-      // combatants first: tag an enemy bot / the player if in the path
-      if (guiState.invisibleMode) {
+      // host: my bots' paintballs can tag remote human players
+      if (!isNetGhost && !p.isPlayer && netplay.isHost && netplay.active) {
+        const rv = netplay.hostTestRemoteHit(p.prev, dir, dist + 0.13, p.team);
+        if (rv) {
+          netplay.broadcastTag(rv.id, p.hex, p.team);
+          removeProjectile(i);
+          continue;
+        }
+      }
+
+      if (isNetGhost) {
+        // fall through to wall-splat only
+      } else if (guiState.invisibleMode) {
         // In invisible mode, track paint hits instead of instant kills
         const hitResult = bots.hitscanPaint(p.prev, dir, dist + 0.13, p.team, guiState.paintKillThreshold, p.hex);
         if (hitResult) {
@@ -988,8 +1085,8 @@ fInvisible.open();
 gui.domElement.addEventListener('mousedown', e => e.stopPropagation());
 
 setColor(1); // start on BLUE (the player's team color)
-bots.setEnabled(guiState.bots5v5);
-if (guiState.bots5v5) scoreboard.classList.remove('hidden');
+// bots stay OFF until a match actually starts — no phantom battle raging
+// behind the title screen and menus
 
 // ---------------------------------------------------------------------------
 // Player-facing Settings (persisted) + dev-only panel toggle.
@@ -1036,7 +1133,12 @@ function animate() {
 
   // a gamepad can start a session without pointer lock (also drives Play Again)
   if (!active && input.consumeStart()) {
-    if (match.over) resetMatch();
+    if (!netplay.active && !sessionLive) {
+      bots.setEnabled(guiState.bots5v5);
+      resetMatch();
+    } else if (match.over) {
+      resetMatch();
+    }
     padSession = true;
     enterGame();
   }
@@ -1080,17 +1182,20 @@ function animate() {
 
   netplay.update(dt); // sync remote players (no-op when offline)
 
-  // bots + scoring freeze once the match is decided
-  if (!match.over) {
+  // the world only simulates during play — menus freeze bots and paintballs
+  const simRunning = active || netplay.active;
+  if (!match.over && simRunning) {
+    // host: bots also hunt the remote human players (local player's team below)
+    bots.extraTargets = netplay.isHost ? netplay.getBotTargets() : [];
     bots.update(dt, {
       playerPos: camera.position,
-      playerTeam: PLAYER_TEAM,
+      playerTeam: netplay.active && netplay.me ? netplay.me.team : PLAYER_TEAM,
       playerAlive: active && !playerDead,
       now: performance.now(),
     });
   }
 
-  updateProjectiles(dt);
+  if (simRunning) updateProjectiles(dt);
   paint.update(dt);
   splatNumEl.textContent = paint.count;
 

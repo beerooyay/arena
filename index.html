@@ -171,6 +171,27 @@
     </div>
   </div>
 
+  <!-- Lobby (waiting room before an online match starts) -->
+  <div id="lobby-overlay" class="menu-overlay hidden">
+    <div class="menu-card mp-card">
+      <h2>Lobby</h2>
+      <div id="lobby-code" class="room-code">
+        <span class="room-code-label">ROOM CODE</span>
+        <span id="lobby-code-value">—</span>
+        <span class="room-code-hint">Share this to invite players</span>
+      </div>
+      <div class="mp-section">
+        <div class="mp-section-title">Players <span id="lobby-count"></span></div>
+        <div id="lobby-roster" class="lobby-roster"></div>
+      </div>
+      <p id="lobby-hint" class="mp-note"></p>
+      <div class="menu-actions">
+        <button id="lobby-start-btn" class="hidden">Start Game</button>
+        <button id="lobby-leave-btn" class="secondary-btn">Leave</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Settings menu -->
   <div id="settings-overlay" class="menu-overlay hidden">
     <div class="menu-card">

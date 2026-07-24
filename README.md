@@ -113,10 +113,16 @@ player count, Join), and **Find Private Server** hosts a room with a shareable
 topology: everyone connects to the host, who relays), brokered by the tiny
 signaling server in `server/`.
 
+**Lobby + bot backfill:** hosting opens a **lobby** (room code, roster, player
+count). The host starts the match whenever they want; any empty slots up to 5v5
+**fill with bots** the host simulates and syncs to everyone. Joiners wait in the
+lobby (or drop straight in if the match is already running).
+
 What syncs in v1: player positions/look (12Hz + smoothing), shots (real colored
-projectiles), tags (paint-hit + respawn + shared team score + kill feed). Bots
-sit out during online matches; the skirmish is endless (no match end yet). The
-room code + player count show in a HUD pill top-right.
+projectiles), tags (paint-hit + respawn + shared team score + kill feed), and the
+host's bots (position/state + kills, resolved host-authoritatively). Teams alternate
+as players join; the skirmish is endless (no match end yet). Room code + player
+count show in a HUD pill top-right.
 
 **Online is LIVE:** the signaling server is deployed at
 `wss://whiteout-signal.onrender.com` (Render free tier, via `render.yaml` in this

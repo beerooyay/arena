@@ -14,8 +14,8 @@ import * as THREE from 'three';
  */
 
 // Bot display names, kept per-team so they stay stable across respawns.
-const BLUE_NAMES = ['Frost', 'Cobalt', 'Echo', 'Drift', 'Zephyr', 'Nova'];
-const RED_NAMES  = ['Blaze', 'Crimson', 'Havoc', 'Ember', 'Rogue', 'Viper'];
+export const BLUE_NAMES = ['Frost', 'Cobalt', 'Echo', 'Drift', 'Zephyr', 'Nova'];
+export const RED_NAMES  = ['Blaze', 'Crimson', 'Havoc', 'Ember', 'Rogue', 'Viper'];
 
 function roundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
@@ -107,8 +107,10 @@ export class BotSystem {
     this.arena = arena;
     this.spawnProjectile = opts.spawnProjectile || (() => {});
     this.onPlayerTagged = opts.onPlayerTagged || (() => {});
-    this.onFire = opts.onFire || null; // (muzzlePos, hex) for spatial gun audio
+    this.onFire = opts.onFire || null; // (muzzlePos, hex, dir, teamId) for audio + net replication
     this.onTag = opts.onTag || null;   // fired whenever a combatant is tagged
+    this.onBotDown = null;             // (botIndex, byTeamId) — every bot death, any cause
+    this.extraTargets = [];            // online: remote players the bots should fight
     this.paint = opts.paint || null;
 
     this.perTeam = 5;
@@ -159,11 +161,35 @@ export class BotSystem {
     return false;
   }
 
-  respawnAll() {
+  respawnAll(blueBots = this.perTeam - 1, redBots = this.perTeam) {
     this._despawnAll();
     this.scores = [0, 0];
-    for (let i = 0; i < this.perTeam - 1; i++) this._spawnBot(this.teams[0], i);
-    for (let i = 0; i < this.perTeam; i++) this._spawnBot(this.teams[1], i);
+    this._counts = [blueBots, redBots];
+    for (let i = 0; i < blueBots; i++) this._spawnBot(this.teams[0], i);
+    for (let i = 0; i < redBots; i++) this._spawnBot(this.teams[1], i);
+  }
+
+  /** Enable with explicit per-team bot counts (online lobby backfill). */
+  setEnabledCounts(blueBots, redBots) {
+    this.enabled = blueBots + redBots > 0;
+    this.respawnAll(blueBots, redBots);
+    if (!this.enabled) this._despawnAll();
+  }
+
+  /** Compact per-bot state for network sync: [x, z, yaw, alive]. */
+  netSnapshot() {
+    return this.bots.map((b) => [
+      +b.pos.x.toFixed(1), +b.pos.z.toFixed(1),
+      +b.group.rotation.y.toFixed(2), b.alive ? 1 : 0,
+    ]);
+  }
+
+  /** Host-authoritative kill of a bot by index (client hits arrive as messages). */
+  tagBotByIndex(idx, byTeamId) {
+    const bot = this.bots[idx];
+    if (!bot || !bot.alive) return false;
+    this._tagBot(bot, byTeamId, performance.now(), null);
+    return true;
   }
 
   _despawnAll() {
@@ -255,6 +281,7 @@ export class BotSystem {
     this.scores[byTeamId]++;
     bot.deaths++;
     if (shooter && typeof shooter.kills === 'number') shooter.kills++;
+    if (this.onBotDown) this.onBotDown(this.bots.indexOf(bot), byTeamId);
     bot.group.visible = false;
     // remove paint splatters that hit this bot's body
     if (this.paint) {
@@ -273,6 +300,12 @@ export class BotSystem {
     if (this._player.alive && this._player.team !== bot.team.id) {
       const d = this._player.pos.distanceToSquared(bot.pos);
       if (d < bd) { bd = d; best = { kind: 'player', pos: this._player.pos }; }
+    }
+    // online: remote human players (fed by netplay each frame on the host)
+    for (const t of this.extraTargets) {
+      if (!t.alive || t.team === bot.team.id) continue;
+      const d = t.pos.distanceToSquared(bot.pos);
+      if (d < bd) { bd = d; best = { kind: 'remote', pos: t.pos }; }
     }
     return best;
   }
@@ -368,7 +401,7 @@ export class BotSystem {
         const origin = chest.clone().addScaledVector(aim, 0.6);
         this.spawnProjectile(origin, aim, bot.hex, bot.team.id, 70, false, bot);
         bot.shots++;
-        if (this.onFire) this.onFire(origin, bot.hex); // spatial gun report
+        if (this.onFire) this.onFire(origin, bot.hex, aim, bot.team.id);
         bot.burst++;
         if (bot.burst >= 4 + ((Math.random() * 3) | 0)) {
           bot.burst = 0;

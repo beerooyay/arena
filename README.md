@@ -118,11 +118,16 @@ count). The host starts the match whenever they want; any empty slots up to 5v5
 **fill with bots** the host simulates and syncs to everyone. Joiners wait in the
 lobby (or drop straight in if the match is already running).
 
+**Win condition:** in the lobby the host picks **Score limit** (first team to N
+tags) or **Time limit** (match ends after M minutes); it's synced to everyone and
+shown in the HUD (target, or a live countdown). When it's met the host ends the
+match authoritatively and everyone sees the **combat report** (per-player K/D/shots,
+winner, final score) → Back to Menu.
+
 What syncs in v1: player positions/look (12Hz + smoothing), shots (real colored
 projectiles), tags (paint-hit + respawn + shared team score + kill feed), and the
 host's bots (position/state + kills, resolved host-authoritatively). Teams alternate
-as players join; the skirmish is endless (no match end yet). Room code + player
-count show in a HUD pill top-right.
+as players join. Room code + player count + match status show in a HUD pill top-right.
 
 **Online is LIVE:** the signaling server is deployed at
 `wss://whiteout-signal.onrender.com` (Render free tier, via `render.yaml` in this

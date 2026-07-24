@@ -119,6 +119,13 @@ export class NetPlay {
     this.botRoster = [];       // [{name, team}] — what the host filled with
     this.ghostBots = [];       // client-side visuals of the host's bots
 
+    // win condition (host picks in the lobby, synced to everyone)
+    this.matchConfig = { mode: 'score', value: 25 }; // 'score' tags | 'time' minutes
+    this.matchOver = false;
+    this._matchStartAt = 0;    // host clock origin
+    this._clockT = 0;
+    this._statTally = null;    // host: id -> {name,team,kills,deaths,shots} at end
+
     net.onPeer = (id) => this._onPeer(id);
     net.onPeerGone = (id) => this._onPeerGone(id);
     net.onData = (id, msg) => this._onData(id, msg);
@@ -167,8 +174,10 @@ export class NetPlay {
   /** Host: begin the match for everyone, with the bot slots it filled. */
   hostStart(botRoster) {
     this.started = true;
+    this.matchOver = false;
     this.botRoster = botRoster;
-    this.net.send({ t: 'start', bots: botRoster });
+    this._matchStartAt = performance.now();
+    this.net.send({ t: 'start', bots: botRoster, cfg: this.matchConfig });
   }
 
   _onPeerGone(id) {
@@ -197,8 +206,10 @@ export class NetPlay {
           this.roster.set(p.id, p);
           if (p.id !== this.me.id) this._addRemote(p);
         }
+        if (msg.cfg) this.matchConfig = msg.cfg;
         if (msg.started) { // match already running — drop in
           this.started = true;
+          this.matchOver = false;
           this.botRoster = msg.bots || [];
           this._createGhosts();
           this.deps.onStart();
@@ -208,9 +219,35 @@ export class NetPlay {
       }
       case 'start': { // host began the match
         this.started = true;
+        this.matchOver = false;
         this.botRoster = msg.bots || [];
+        if (msg.cfg) this.matchConfig = msg.cfg;
         this._createGhosts();
         this.deps.onStart();
+        break;
+      }
+      case 'clock': { // host's authoritative countdown (time mode)
+        this.deps.onClock(msg.left);
+        break;
+      }
+      case 'end': { // host called the match — report my stats, then wait
+        this.matchOver = true;
+        this.net.send({ t: 'stats', s: this.deps.getLocalStats() });
+        break;
+      }
+      case 'stats': { // host: collect a player's final numbers
+        if (this._statTally) {
+          const p = this.roster.get(senderId);
+          this._statTally.set(senderId, {
+            name: p ? p.name : '?', team: p ? p.team : 0,
+            kills: msg.s.kills, deaths: msg.s.deaths, shots: msg.s.shots,
+          });
+        }
+        break;
+      }
+      case 'result': { // final report from the host
+        this.matchOver = true;
+        this.deps.onMatchEnd(msg.winner, msg.scores, msg.rows);
         break;
       }
       case 'bsync': { // host-simulated bot states
@@ -224,13 +261,14 @@ export class NetPlay {
         break;
       }
       case 'bothit': { // (host only) a client's paintball hit one of my bots
-        if (this.isHost) {
+        if (this.isHost && !this.matchOver) {
           const shooter = this.roster.get(senderId);
           this.deps.tagBot(msg.i, shooter ? shooter.team : 0);
         }
         break;
       }
       case 'botdied': {
+        if (this.matchOver) break;
         this.scores[msg.team]++;
         const g = this.ghostBots[msg.i];
         if (g) { g.alive = false; g.group.visible = false; }
@@ -266,6 +304,7 @@ export class NetPlay {
         break;
       }
       case 'tag': {
+        if (this.matchOver) break;
         const shooter = this.roster.get(senderId);
         const team = msg.team ?? (shooter ? shooter.team : 0);
         this.scores[team]++;
@@ -372,6 +411,50 @@ export class NetPlay {
         if (snap && snap.length) this.net.send({ t: 'bsync', b: snap });
       }
     }
+
+    // host owns the win condition
+    if (this.isHost && this.started && !this.matchOver) {
+      if (this.matchConfig.mode === 'score') {
+        if (this.scores[0] >= this.matchConfig.value) this._endOnline(0);
+        else if (this.scores[1] >= this.matchConfig.value) this._endOnline(1);
+      } else { // time
+        const left = Math.max(0, this.matchConfig.value * 60 - (performance.now() - this._matchStartAt) / 1000);
+        this._clockT += dt;
+        if (this._clockT >= 1) {
+          this._clockT = 0;
+          this.net.send({ t: 'clock', left: Math.ceil(left) });
+          this.deps.onClock(Math.ceil(left));
+        }
+        if (left <= 0) {
+          const w = this.scores[0] === this.scores[1] ? -1 : (this.scores[0] > this.scores[1] ? 0 : 1);
+          this._endOnline(w);
+        }
+      }
+    }
+  }
+
+  /** Host: freeze the match, gather everyone's stats, then publish the report. */
+  _endOnline(winner) {
+    if (this.matchOver) return;
+    this.matchOver = true;
+    this._statTally = new Map();
+    // seed with my own numbers
+    const meP = this.roster.get(this.me.id);
+    this._statTally.set(this.me.id, {
+      name: meP ? meP.name : 'Player 1', team: meP ? meP.team : 0,
+      ...this.deps.getLocalStats(),
+    });
+    this.net.send({ t: 'end' });               // clients reply with 'stats'
+    setTimeout(() => this._finalizeReport(winner), 900); // wait for replies
+  }
+
+  _finalizeReport(winner) {
+    const rows = [...this._statTally.values()]
+      .sort((a, b) => b.kills - a.kills || a.deaths - b.deaths);
+    const scores = [...this.scores];
+    this.net.send({ t: 'result', winner, scores, rows });
+    this.deps.onMatchEnd(winner, scores, rows);
+    this._statTally = null;
   }
 
   /** Announce a shot so everyone else sees the paintball (team drives color). */
@@ -422,14 +505,14 @@ export class NetPlay {
 
   /** Broadcast a confirmed tag on a remote player (scores my team). */
   sendTag(victimId, hex) {
-    if (!this.active || !this.me) return;
+    if (!this.active || !this.me || this.matchOver) return;
     this.scores[this.me.team]++;
     this.net.send({ t: 'tag', victim: victimId, hex, team: this.me.team });
   }
 
   /** Report hitting one of the host's bots. Host resolves & broadcasts the kill. */
   sendBotHit(botIndex) {
-    if (!this.active) return;
+    if (!this.active || this.matchOver) return;
     if (this.isHost) {
       this.deps.tagBot(botIndex, this.me.team); // host resolves locally
     } else {
@@ -439,7 +522,7 @@ export class NetPlay {
 
   /** Host: a bot died (any cause) — score it and tell everyone. */
   hostBotDied(botIndex, byTeamId) {
-    if (!this.isHost || !this.active) return;
+    if (!this.isHost || !this.active || this.matchOver) return;
     this.scores[byTeamId]++;
     this.net.send({ t: 'botdied', i: botIndex, team: byTeamId });
   }
@@ -469,7 +552,7 @@ export class NetPlay {
 
   /** Broadcast a tag by a bot on a remote player (scores the bot's team). */
   broadcastTag(victimId, hex, team) {
-    if (!this.active) return;
+    if (!this.active || this.matchOver) return;
     this.scores[team]++;
     if (this.me && victimId === this.me.id) this.deps.onTagged(team, hex);
     this.net.send({ t: 'tag', victim: victimId, hex, team });
@@ -484,7 +567,9 @@ export class NetPlay {
     this.me = null;
     this.scores = [0, 0];
     this.started = false;
+    this.matchOver = false;
     this.botRoster = [];
+    this._statTally = null;
     this.deps.onEnded(reason);
   }
 }

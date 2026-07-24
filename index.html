@@ -45,6 +45,7 @@
   <div id="net-hud" class="hidden">
     <span class="hud-label">ROOM</span> <span id="net-code">—</span>
     <span id="net-count">1 player</span>
+    <span id="net-status" class="hidden"></span>
   </div>
 
   <!-- 5v5 scoreboard -->
@@ -183,6 +184,19 @@
       <div class="mp-section">
         <div class="mp-section-title">Players <span id="lobby-count"></span></div>
         <div id="lobby-roster" class="lobby-roster"></div>
+      </div>
+      <div id="lobby-winconfig" class="mp-section hidden">
+        <div class="mp-section-title">Win condition</div>
+        <div class="wc-modes">
+          <button id="wc-score" class="wc-mode active">Score limit</button>
+          <button id="wc-time" class="wc-mode">Time limit</button>
+        </div>
+        <div class="wc-stepper">
+          <button id="wc-minus" class="wc-step">–</button>
+          <span id="wc-value">25</span>
+          <span id="wc-unit">tags to win</span>
+          <button id="wc-plus" class="wc-step">+</button>
+        </div>
       </div>
       <p id="lobby-hint" class="mp-note"></p>
       <div class="menu-actions">

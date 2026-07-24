@@ -219,6 +219,24 @@ canvas { display: block; }
 .lobby-player .lp-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .lobby-player .lp-you { margin-left: auto; font-size: 10px; letter-spacing: .12em; color: #8a9099; }
 
+/* lobby win-condition picker */
+.wc-modes { display: flex; gap: 8px; margin-bottom: 10px; }
+.wc-mode {
+  flex: 1; cursor: pointer; font-family: inherit; font-size: 13px; font-weight: 700;
+  padding: 9px 0; border-radius: 9px; border: 1px solid #cfd3d9;
+  background: #fff; color: #6b7078;
+}
+.wc-mode.active { background: #1c1f24; color: #fff; border-color: #1c1f24; }
+.wc-stepper { display: flex; align-items: center; gap: 12px; }
+.wc-step {
+  width: 34px; height: 34px; flex: none; cursor: pointer; border-radius: 9px;
+  border: 1px solid #cfd3d9; background: #fff; color: #1c1f24;
+  font-size: 20px; font-weight: 800; line-height: 1;
+}
+.wc-step:hover { border-color: #9aa0a8; }
+#wc-value { font-size: 22px; font-weight: 800; color: #1c1f24; min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+#wc-unit { font-size: 13px; font-weight: 700; color: #8a9099; margin-right: auto; }
+
 /* online session HUD */
 #net-hud {
   position: fixed; top: 14px; right: 16px; z-index: 20;
@@ -230,6 +248,10 @@ canvas { display: block; }
 }
 #net-code { letter-spacing: .14em; font-variant-numeric: tabular-nums; }
 #net-count { color: #8a9099; font-size: 11px; }
+#net-status {
+  margin-left: 4px; padding-left: 10px; border-left: 1px solid rgba(0,0,0,.12);
+  font-variant-numeric: tabular-nums; color: #1c1f24;
+}
 
 /* Enter Arena button on the private page (outside .menu-actions) */
 #private-enter-btn {

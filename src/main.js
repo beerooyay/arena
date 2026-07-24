@@ -289,6 +289,8 @@ function showStart() {
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
   scoreboard.classList.add('hidden'); // re-shown on entering play
+  netHudEl.classList.add('hidden');
+  netStatusEl.classList.add('hidden');
 }
 function showSettings(returnTo) {
   settingsReturnScreen = returnTo;
@@ -314,27 +316,17 @@ function enterGame() {
   scoreboard.classList.toggle('hidden', !(bots.enabled || netplay.active));
 }
 
-/**
- * Fill in the after-action report: every combatant with kills, deaths and
- * paintballs fired, best first. The player is folded in alongside the bots.
- */
-function buildCombatReport() {
-  const rows = [
-    { name: playerStats.name, hex: COLORS[1].hex, teamId: PLAYER_TEAM, isPlayer: true,
-      kills: playerStats.kills, deaths: playerStats.deaths, shots: playerStats.shots },
-    ...bots.bots.map(b => ({
-      name: b.name, hex: b.hex, teamId: b.team.id, isPlayer: false,
-      kills: b.kills, deaths: b.deaths, shots: b.shots,
-    })),
-  ];
-  rows.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths || b.shots - a.shots);
+const TEAM_HEX = [0x2f7bff, 0xff3b3b]; // BLUE, RED
 
+// Render report rows [{name, teamId, kills, deaths, shots, you?}] into the table.
+function renderReportRows(rows) {
+  rows.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths || b.shots - a.shots);
   const body = document.getElementById('cr-body');
   body.innerHTML = '';
   for (const r of rows) {
     const tr = document.createElement('tr');
-    if (r.isPlayer) tr.className = 'cr-you';
-    const col = '#' + r.hex.toString(16).padStart(6, '0');
+    if (r.you) tr.className = 'cr-you';
+    const col = '#' + (r.hex ?? TEAM_HEX[r.teamId] ?? 0x888888).toString(16).padStart(6, '0');
     const nameTd = document.createElement('td');
     const dot = document.createElement('span');
     dot.className = 'cr-dot';
@@ -350,6 +342,18 @@ function buildCombatReport() {
   }
 }
 
+/** Single-player after-action report: the player folded in with the bots. */
+function buildCombatReport() {
+  renderReportRows([
+    { name: playerStats.name, teamId: PLAYER_TEAM, you: true,
+      kills: playerStats.kills, deaths: playerStats.deaths, shots: playerStats.shots },
+    ...bots.bots.map(b => ({
+      name: b.name, hex: b.hex, teamId: b.team.id,
+      kills: b.kills, deaths: b.deaths, shots: b.shots,
+    })),
+  ]);
+}
+
 // End the match and surface the result. Frees the cursor so menu buttons work.
 function endMatch(winnerTeamId) {
   match.over = true;
@@ -359,6 +363,22 @@ function endMatch(winnerTeamId) {
   gameoverResult.className = winnerTeamId === 0 ? 'win-blue' : 'win-red';
   gameoverScore.textContent = `${bots.scores[0]} – ${bots.scores[1]}`;
   buildCombatReport();
+  document.getElementById('play-again-btn').textContent = 'Play Again';
+  if (controls.isLocked) controls.unlock();
+  showGameOver();
+}
+
+// Online match ended: show the combat report; leaving returns to the menu.
+let onlineResultShowing = false;
+function showOnlineResult(winner, scores, rows) {
+  onlineResultShowing = true;
+  gameoverResult.textContent = winner === 0 ? 'BLUE WINS' : winner === 1 ? 'RED WINS' : 'DRAW';
+  gameoverResult.className = winner === 0 ? 'win-blue' : winner === 1 ? 'win-red' : '';
+  gameoverScore.textContent = `${scores[0]} – ${scores[1]}`;
+  renderReportRows((rows || []).map((r) => ({
+    ...r, you: netplay.me && r.name === (netplay.roster.get(netplay.me.id) || {}).name,
+  })));
+  document.getElementById('play-again-btn').textContent = 'Back to Menu';
   if (controls.isLocked) controls.unlock();
   showGameOver();
 }
@@ -457,6 +477,51 @@ function updateNetHud() {
   netCountEl.textContent = n === 1 ? 'waiting for players…' : `${n} players`;
 }
 
+const netStatusEl = document.getElementById('net-status');
+function setNetStatusHud() {
+  const cfg = netplay.matchConfig;
+  netStatusEl.classList.remove('hidden');
+  if (cfg.mode === 'score') netStatusEl.textContent = `First to ${cfg.value}`;
+  else setNetClock(cfg.value * 60);
+}
+function setNetClock(secondsLeft) {
+  const m = Math.floor(secondsLeft / 60);
+  const s = Math.max(0, secondsLeft % 60);
+  netStatusEl.classList.remove('hidden');
+  netStatusEl.textContent = `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// Host's win-condition picker (only the host edits it; synced on Start).
+const wcState = { mode: 'score', value: 25 };
+const WC_LIMITS = { score: { min: 5, max: 100, step: 5, unit: 'tags to win' },
+                    time: { min: 1, max: 20, step: 1, unit: 'minute match' } };
+function renderWinConfig() {
+  const lim = WC_LIMITS[wcState.mode];
+  document.getElementById('wc-score').classList.toggle('active', wcState.mode === 'score');
+  document.getElementById('wc-time').classList.toggle('active', wcState.mode === 'time');
+  document.getElementById('wc-value').textContent = wcState.value;
+  document.getElementById('wc-unit').textContent =
+    wcState.mode === 'time' ? `minute${wcState.value === 1 ? '' : 's'}` : 'tags to win';
+  netplay.matchConfig = { mode: wcState.mode, value: wcState.value };
+}
+function setWcMode(mode) {
+  wcState.mode = mode;
+  wcState.value = mode === 'score' ? 25 : 5; // sensible defaults per mode
+  renderWinConfig();
+}
+document.getElementById('wc-score').addEventListener('click', () => setWcMode('score'));
+document.getElementById('wc-time').addEventListener('click', () => setWcMode('time'));
+document.getElementById('wc-minus').addEventListener('click', () => {
+  const lim = WC_LIMITS[wcState.mode];
+  wcState.value = Math.max(lim.min, wcState.value - lim.step);
+  renderWinConfig();
+});
+document.getElementById('wc-plus').addEventListener('click', () => {
+  const lim = WC_LIMITS[wcState.mode];
+  wcState.value = Math.min(lim.max, wcState.value + lim.step);
+  renderWinConfig();
+});
+
 // Lobby DOM
 const lobbyOverlay = document.getElementById('lobby-overlay');
 const lobbyCodeValue = document.getElementById('lobby-code-value');
@@ -473,7 +538,10 @@ const netplay = new NetPlay(net, {
   onTagged: (shooterTeamId, hex) => onPlayerTagged(shooterTeamId, hex),
   showKill,
   onRosterChange: () => { updateNetHud(); renderLobby(); },
-  onStart: () => enterNetArena(),      // clients: host started the match
+  onStart: () => { setNetStatusHud(); enterNetArena(); }, // clients: match started
+  onClock: (secondsLeft) => setNetClock(secondsLeft),
+  onMatchEnd: (winner, scores, rows) => showOnlineResult(winner, scores, rows),
+  getLocalStats: () => ({ kills: playerStats.kills, deaths: playerStats.deaths, shots: playerStats.shots }),
   getBotSnapshot: () => bots.netSnapshot(),
   tagBot: (idx, team) => bots.tagBotByIndex(idx, team),
   onEnded: (reason) => {
@@ -519,14 +587,18 @@ function renderLobby() {
     }
     lobbyRoster.appendChild(row);
   }
+  const winConfig = document.getElementById('lobby-winconfig');
   if (netplay.isHost) {
     lobbyStartBtn.classList.remove('hidden');
+    winConfig.classList.remove('hidden');
+    renderWinConfig();
     const fill = 10 - players.length;
     lobbyHint.textContent = fill > 0
       ? `Start any time — ${fill} empty slot${fill === 1 ? '' : 's'} will fill with bots.`
       : 'Teams are full. Start when ready.';
   } else {
     lobbyStartBtn.classList.add('hidden');
+    winConfig.classList.add('hidden');
     lobbyHint.textContent = 'Waiting for the host to start the match…';
   }
 }
@@ -551,10 +623,14 @@ function hostStartMatch() {
 
   bots.setEnabledCounts(blueBots, redBots); // host owns the real bot AI
   netplay.hostStart(botRoster);             // tells clients to spawn ghosts + drop in
+  setNetStatusHud();
   enterNetArena();
 }
 
 function enterNetArena() {
+  playerStats.kills = 0; playerStats.deaths = 0; playerStats.shots = 0; // fresh scoreline
+  playerDead = false;
+  respawnEl.classList.add('hidden');
   scoreboard.classList.remove('hidden');
   netHudEl.classList.remove('hidden');
   updateNetHud();
@@ -672,6 +748,12 @@ document.getElementById('settings-back-btn').addEventListener('click', () => {
   else showStart();
 });
 document.getElementById('play-again-btn').addEventListener('click', () => {
+  if (onlineResultShowing) {         // online match ended → leave to the menu
+    onlineResultShowing = false;
+    net.close('');                   // onEnded resets bots/scoreboard/session
+    showStart();
+    return;
+  }
   resetMatch();
   controls.lock(); // this click is a user gesture, so pointer lock is allowed
 });
@@ -1182,9 +1264,10 @@ function animate() {
 
   netplay.update(dt); // sync remote players (no-op when offline)
 
-  // the world only simulates during play — menus freeze bots and paintballs
+  // the world only simulates during play — menus and match-end freeze it
+  const frozen = match.over || netplay.matchOver;
   const simRunning = active || netplay.active;
-  if (!match.over && simRunning) {
+  if (!frozen && simRunning) {
     // host: bots also hunt the remote human players (local player's team below)
     bots.extraTargets = netplay.isHost ? netplay.getBotTargets() : [];
     bots.update(dt, {

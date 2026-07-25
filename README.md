@@ -43,7 +43,7 @@ python3 -m http.server 5178
 | B | Stance (tap up / hold down) · sprint + tap = slide · sprint + hold = dive |
 | LT | Aim / zoom |
 | LB / RB | Previous / next paint color |
-| Start / A | Begin session (no pointer lock needed) |
+| Start | Begin session / pause (back to menu) |
 | L3 | Sprint |
 
 ## Match flow

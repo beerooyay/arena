@@ -95,7 +95,8 @@ export class InputManager {
       if (pressed(0)) this._jumpQueued = true;              // A -> jump
       if (pressed(1)) this._crouchQueued = true;            // B -> crouch/slide/dive
       this._padCrouchDown = !!b[1];
-      if (pressed(9) || pressed(0)) this._startQueued = true; // Start / A -> begin
+      // Start (9) OR menu (8) -> begin / pause. NOT A, so jumping never pauses.
+      if (pressed(9) || pressed(8)) this._startQueued = true;
       if (pressed(5)) this._colorDelta += 1;                // RB -> next color
       if (pressed(4)) this._colorDelta -= 1;                // LB -> prev color
 

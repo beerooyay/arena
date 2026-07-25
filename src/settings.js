@@ -25,7 +25,7 @@ const SCHEMA = [
   },
   {
     key: 'padLookSpeed', label: 'Gamepad Look Speed',
-    min: 0.8, max: 6, step: 0.1, default: 1,
+    min: 0.8, max: 6, step: 0.1, default: 2.6,
     apply: (v, t) => { t.player.padLookSpeed = v; },
   },
   {

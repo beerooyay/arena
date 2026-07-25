@@ -34,6 +34,9 @@
   <!-- Kill confirmation, sits just under the crosshair -->
   <div id="killfeed" class="hidden"><span class="kf-verb">KILLED</span> <span id="kf-name"></span></div>
 
+  <!-- Killed-by banner, shown on your death -->
+  <div id="killedby" class="hidden"><span class="kb-verb">KILLED BY</span> <span id="kb-name"></span></div>
+
   <!-- Respawn countdown -->
   <div id="respawn" class="hidden">
     <div class="respawn-label">TAGGED</div>
@@ -79,16 +82,18 @@
     <div class="overlay-card">
       <h1>WhiteOut<span>Paintball</span></h1>
       <p class="tagline">A blank white world. Painted by combat.</p>
-      <button id="play-btn">Play</button>
+      <button id="play-btn">Free Play</button>
+      <div class="menu-label">Multiplayer</div>
       <div class="menu-col">
         <button id="open-public-btn" class="secondary-btn wide">Find Public Server</button>
         <button id="open-private-btn" class="secondary-btn wide">Find Private Server</button>
       </div>
       <div class="menu-row">
-        <button id="open-splat-btn" class="secondary-btn">Design Splat</button>
         <button id="open-settings-btn" class="secondary-btn">Settings</button>
         <button id="open-howto-btn" class="secondary-btn">How to Play</button>
       </div>
+      <!-- Design Splat: hidden for launch, kept for a future update -->
+      <button id="open-splat-btn" class="secondary-btn hidden">Design Splat</button>
       <p class="hint">Press <kbd>`</kbd> in-game for the developer tuning panel.</p>
     </div>
   </div>
@@ -109,7 +114,7 @@
         <div><kbd>Esc</kbd> Release mouse</div>
         <div>sprint+tap Slide · hold Dive</div>
       </div>
-      <p class="gamepad-note"><strong>Xbox controller:</strong> Left stick move · Right stick look · <kbd>RT</kbd> shoot · <kbd>LT</kbd> aim · <kbd>A</kbd> jump · <kbd>B</kbd> crouch/slide/dive · <kbd>LB</kbd>/<kbd>RB</kbd> color · <kbd>Start</kbd> to play</p>
+      <p class="gamepad-note"><strong>Xbox controller:</strong> Left stick move · Right stick look · <kbd>RT</kbd> shoot · <kbd>LT</kbd> aim · <kbd>A</kbd> jump · <kbd>B</kbd> crouch/slide/dive · <kbd>LB</kbd>/<kbd>RB</kbd> color · <kbd>Start</kbd> begin / pause</p>
       <div class="menu-actions">
         <button id="howto-back-btn">Back</button>
       </div>

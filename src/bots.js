@@ -446,7 +446,7 @@ export class BotSystem {
       if (this.onTag) {
         this.onTag({ shooter, victimName: 'YOU', victimIsPlayer: true, pos: this._tmp });
       }
-      this.onPlayerTagged(shooterTeamId, hex, shooter);
+      this.onPlayerTagged(shooterTeamId, hex, shooter ? shooter.name : '');
     }
     return true;
   }
@@ -485,15 +485,14 @@ export class BotSystem {
     }
   }
 
-  /** Place a paint decal on the bot body at the approximate hit point. */
-  _splatBot(bot, origin, dir, t, hex) {
-    if (!this.paint) return;
-    const center = this._tmp.copy(bot.pos); center.y += 1.2;
-    const hit = this._chest.copy(origin).addScaledVector(dir, t);
-    const normal = new THREE.Vector3().subVectors(hit, center).normalize();
-    const decal = this.paint.splat(bot.body, hit, normal, hex, 0.22);
-    if (decal) bot.bodyDecals.push(decal);
-  }
+  /**
+   * Bodies are intentionally NOT painted. A decal projected onto a moving bot
+   * bakes into world space at the hit point, so it floats where the bot *was*
+   * (and its drips linger untracked) — the "leftover paint from dead players"
+   * artifact. Combat feedback comes from the wet-splat sound + kill feed + the
+   * victim's paint-border instead; only the static arena keeps paint.
+   */
+  _splatBot(/* bot, origin, dir, t, hex */) {}
 
   onPlayerPaintHit(threshold) {
     // This will be set by main.js

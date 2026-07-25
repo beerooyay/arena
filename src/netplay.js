@@ -312,7 +312,7 @@ export class NetPlay {
         const team = msg.team ?? (shooter ? shooter.team : 0);
         this.scores[team]++;
         if (this.me && msg.victim === this.me.id) {
-          this.deps.onTagged(team, msg.hex);
+          this.deps.onTagged(team, msg.hex, msg.by || '');
         }
         break;
       }
@@ -506,11 +506,13 @@ export class NetPlay {
     return best;
   }
 
+  _myName() { return (this.roster.get(this.me.id) || {}).name || 'A player'; }
+
   /** Broadcast a confirmed tag on a remote player (scores my team). */
   sendTag(victimId, hex) {
     if (!this.active || !this.me || this.matchOver) return;
     this.scores[this.me.team]++;
-    this.net.send({ t: 'tag', victim: victimId, hex, team: this.me.team });
+    this.net.send({ t: 'tag', victim: victimId, hex, team: this.me.team, by: this._myName() });
   }
 
   /** Report hitting one of the host's bots. Host resolves & broadcasts the kill. */
@@ -554,11 +556,11 @@ export class NetPlay {
   }
 
   /** Broadcast a tag by a bot on a remote player (scores the bot's team). */
-  broadcastTag(victimId, hex, team) {
+  broadcastTag(victimId, hex, team, byName = 'A bot') {
     if (!this.active || this.matchOver) return;
     this.scores[team]++;
-    if (this.me && victimId === this.me.id) this.deps.onTagged(team, hex);
-    this.net.send({ t: 'tag', victim: victimId, hex, team });
+    if (this.me && victimId === this.me.id) this.deps.onTagged(team, hex, byName);
+    this.net.send({ t: 'tag', victim: victimId, hex, team, by: byName });
   }
 
   leave() { this.net.close(''); }

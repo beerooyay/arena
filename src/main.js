@@ -93,6 +93,7 @@ audio.load({
   jump:   './assets/PlayerJumpSound.wav',
   slide:  './assets/PlayerSlideSound.wav',          // seamless loop, any duration
   bodyHit: './assets/WetPaintballSplatHittingPlayer.wav', // wet splat on a player
+  killConfirm: './assets/KillConfirm.wav',          // satisfying chime on your kills
 });
 // tuned defaults: faint gray contour that reads well on pure white
 outline.uniforms.strength.value = 0.75;
@@ -138,8 +139,11 @@ const respawnCountEl = respawnEl.querySelector('.respawn-count');
 const killfeedEl = document.getElementById('killfeed');
 const killfeedNameEl = document.getElementById('kf-name');
 let killfeedTimer = null;
+const killedbyEl = document.getElementById('killedby');
+const killedbyNameEl = document.getElementById('kb-name');
+let killedbyTimer = null;
 
-/** Flash "KILLED <name>" under the crosshair. */
+/** Flash "KILLED <name>" under the crosshair + a satisfying chime. */
 function showKill(name) {
   killfeedNameEl.textContent = name;
   killfeedEl.classList.remove('hidden');
@@ -147,15 +151,28 @@ function showKill(name) {
   killfeedEl.style.animation = 'none';
   void killfeedEl.offsetWidth;
   killfeedEl.style.animation = '';
+  audio.play('killConfirm', { volume: 0.9 });
   clearTimeout(killfeedTimer);
   killfeedTimer = setTimeout(() => killfeedEl.classList.add('hidden'), 1600);
+}
+
+/** Flash "KILLED BY <name>" when you're tagged. */
+function showKilledBy(name) {
+  if (!name) { killedbyEl.classList.add('hidden'); return; }
+  killedbyNameEl.textContent = name;
+  killedbyEl.classList.remove('hidden');
+  killedbyEl.style.animation = 'none';
+  void killedbyEl.offsetWidth;
+  killedbyEl.style.animation = '';
+  clearTimeout(killedbyTimer);
+  killedbyTimer = setTimeout(() => killedbyEl.classList.add('hidden'), 2800);
 }
 
 // Player death/respawn state: tagged players wait out a 3s countdown, then
 // respawn with brief spawn protection (bots already respawn on a 3s timer).
 const RESPAWN_MS = 3000;
 let playerDead = false;
-let playerRespawnAt = 0;
+let playerRespawnMs = 0; // remaining ms, counted down only while in-game
 
 // Flash a colored vignette + a few running drips in the shooter's paint color.
 function paintHit(hex) {
@@ -180,14 +197,15 @@ function paintHit(hex) {
 // ---------------------------------------------------------------------------
 // Bots (5v5). Player fills one BLUE slot; bots use the same fire rate.
 // ---------------------------------------------------------------------------
-function onPlayerTagged(shooterTeamId, hex = 0xff3b3b) {
+function onPlayerTagged(shooterTeamId, hex = 0xff3b3b, shooterName = '') {
   paintHit(hex); // border turns the color that tagged us
   if (playerDead) return; // already down, waiting to respawn
   playerStats.deaths++;
   playerDead = true;
-  playerRespawnAt = performance.now() + RESPAWN_MS;
+  playerRespawnMs = RESPAWN_MS; // counts down only while in-game (never in a menu)
   playerPaintHits = 0;
   stopFiring();
+  showKilledBy(shooterName);
   respawnEl.classList.remove('hidden');
 }
 
@@ -288,6 +306,7 @@ function showStart() {
   hud.classList.add('hidden');
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
+  killedbyEl.classList.add('hidden');
   scoreboard.classList.add('hidden'); // re-shown on entering play
   netHudEl.classList.add('hidden');
   netStatusEl.classList.add('hidden');
@@ -306,6 +325,7 @@ function showGameOver() {
   hud.classList.add('hidden');
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
+  killedbyEl.classList.add('hidden');
 }
 function enterGame() {
   active = true;
@@ -394,6 +414,7 @@ function resetMatch() {
   playerDead = false;
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
+  killedbyEl.classList.add('hidden');
   playerStats.kills = 0; playerStats.deaths = 0; playerStats.shots = 0;
   if (bots.enabled) bots.respawnAll(); // resets scores + stats, respawns teams
   camera.position.copy(PLAYER_SPAWN);
@@ -538,7 +559,7 @@ const netplay = new NetPlay(net, {
   scene,
   camera,
   spawnProjectile,
-  onTagged: (shooterTeamId, hex) => onPlayerTagged(shooterTeamId, hex),
+  onTagged: (shooterTeamId, hex, name) => onPlayerTagged(shooterTeamId, hex, name),
   showKill,
   onRosterChange: () => { updateNetHud(); renderLobby(); },
   onStart: () => startNetMatchLocal(),  // clients: (re)start — fresh scoreline
@@ -627,6 +648,7 @@ function showLobby() {
   netStatusEl.classList.add('hidden');
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
+  killedbyEl.classList.add('hidden');
   onlineResultShowing = false;
   if (controls.isLocked) controls.unlock();
   lobbyOverlay.classList.remove('hidden');
@@ -656,6 +678,7 @@ function startNetMatchLocal() {
   playerDead = false;
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
+  killedbyEl.classList.add('hidden');
   camera.position.set(0, 1.7, netplay.mySpawnZ());
   player.velocityY = 0;
   setNetStatusHud();
@@ -970,7 +993,7 @@ function updateProjectiles(dt) {
       if (!isNetGhost && !p.isPlayer && netplay.isHost && netplay.active) {
         const rv = netplay.hostTestRemoteHit(p.prev, dir, dist + 0.13, p.team);
         if (rv) {
-          netplay.broadcastTag(rv.id, p.hex, p.team);
+          netplay.broadcastTag(rv.id, p.hex, p.team, p.shooter && p.shooter.name);
           removeProjectile(i);
           continue;
         }
@@ -1249,16 +1272,24 @@ function animate() {
 
   input.poll();
 
-  // a gamepad can start a session without pointer lock (also drives Play Again)
-  if (!active && input.consumeStart()) {
-    if (!netplay.active && !sessionLive) {
-      bots.setEnabled(guiState.bots5v5);
-      resetMatch();
-    } else if (match.over) {
-      resetMatch();
+  // Gamepad Start button: begins a session without pointer lock, and pauses
+  // (back to the menu/lobby) when already playing.
+  if (input.consumeStart()) {
+    if (active) {
+      // pause — mirrors what Esc does for mouse+keyboard
+      padSession = false;
+      if (netplay.active) showLobby();
+      else if (!match.over) showStart();
+    } else {
+      if (!netplay.active && !sessionLive) {
+        bots.setEnabled(guiState.bots5v5);
+        resetMatch();
+      } else if (match.over) {
+        resetMatch();
+      }
+      padSession = true;
+      enterGame();
     }
-    padSession = true;
-    enterGame();
   }
 
   if (active && !playerDead) {
@@ -1279,15 +1310,19 @@ function animate() {
     applyAimZoom();
     updateSun();
   } else if (active && playerDead) {
-    // frozen while the respawn timer counts down (mouse look still works)
+    // frozen while the respawn timer counts down (mouse look still works).
+    // The timer advances by dt so it only ticks during actual play — pausing
+    // to a menu preserves it, so you always serve a full countdown.
     input.consumeJump();
     input.consumeCrouch();
     input.consumeColorDelta();
     if (gunLoop || shootWasHeld) stopFiring();
     stopSlideSound();
-    const remain = playerRespawnAt - performance.now();
-    respawnCountEl.textContent = Math.max(1, Math.ceil(remain / 1000));
-    if (remain <= 0) respawnPlayer();
+    weapon.update(dt, false, settings.get('fov')); // ease the marker out of ADS
+    applyAimZoom();                                 // and un-zoom the view
+    playerRespawnMs -= dt * 1000;
+    respawnCountEl.textContent = Math.max(1, Math.ceil(playerRespawnMs / 1000));
+    if (playerRespawnMs <= 0) respawnPlayer();
   } else {
     input.consumeJump();
     input.consumeCrouch();

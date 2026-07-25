@@ -31,7 +31,7 @@ export class PlayerController {
     this.jumpV = 12.5;       // tuned defaults (dev-panel sliders still adjust these live)
     this.baseSpeed = 13;
     this.sprintSpeed = 18;
-    this.padLookSpeed = 1;   // radians/sec at full stick deflection
+    this.padLookSpeed = 2.6; // radians/sec at full stick deflection
 
     this.minPolar = 0;
     this.maxPolar = Math.PI;

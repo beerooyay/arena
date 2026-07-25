@@ -28,6 +28,13 @@ const COLORS = [
 ];
 let colorIndex = 0;
 
+// Dev-only: the lil-gui tuning panel exists only during local development
+// (localhost) or with ?dev in the URL. The itch build is served from itch's
+// domain, so players never get it — but all the panel code below stays intact.
+const DEV = ['localhost', '127.0.0.1'].includes(location.hostname)
+  || new URLSearchParams(location.search).has('dev');
+let colorCtrl = null; // dev-panel color dropdown (null when the panel is off)
+
 // ---------------------------------------------------------------------------
 // Renderer / scene / camera
 // ---------------------------------------------------------------------------
@@ -115,8 +122,16 @@ camera.add(weapon.root);
 const PLAYER_SPAWN = new THREE.Vector3(0, 1.7, 26);
 let playerPaintHits = 0;
 
+// Player name (chosen in the main menu, persisted, used in-game + online).
+const PLAYER_NAME_KEY = 'whiteout.playerName';
+function loadPlayerName() {
+  try { return (localStorage.getItem(PLAYER_NAME_KEY) || '').slice(0, 14); } catch { return ''; }
+}
+let playerName = loadPlayerName();
+function getPlayerName() { return playerName.trim() || 'Recruit'; }
+
 // The human's scoreline, shaped like a bot's so kill crediting is uniform.
-const playerStats = { name: 'YOU', kills: 0, deaths: 0, shots: 0, isPlayer: true };
+const playerStats = { name: getPlayerName(), kills: 0, deaths: 0, shots: 0, isPlayer: true };
 
 // Match state: first team to `target` tags wins. `over` freezes play and shows
 // the game-over screen until Play Again resets it. `target` is driven by the
@@ -310,6 +325,8 @@ function showStart() {
   scoreboard.classList.add('hidden'); // re-shown on entering play
   netHudEl.classList.add('hidden');
   netStatusEl.classList.add('hidden');
+  // name is editable only at a fresh menu — not when pausing mid-match
+  nameInput.disabled = sessionLive;
 }
 function showSettings(returnTo) {
   settingsReturnScreen = returnTo;
@@ -465,6 +482,16 @@ function startGame() {
 }
 startBtn.addEventListener('click', startGame);
 
+// Name field (main menu only). Sanitize, persist, and reflect into stats.
+const nameInput = document.getElementById('player-name');
+nameInput.value = playerName;
+nameInput.addEventListener('input', () => {
+  nameInput.value = nameInput.value.replace(/[^\w .'-]/g, '').slice(0, 14);
+  playerName = nameInput.value;
+  playerStats.name = getPlayerName();
+  try { localStorage.setItem(PLAYER_NAME_KEY, playerName); } catch (_) { /* ignore */ }
+});
+
 document.getElementById('play-btn').addEventListener('click', () => {
   // fresh single-player match on first Play; resume if paused mid-match
   if (!netplay.active && !sessionLive) {
@@ -566,6 +593,7 @@ const netplay = new NetPlay(net, {
   onClock: (secondsLeft) => setNetClock(secondsLeft),
   onMatchEnd: (winner, scores, rows) => showOnlineResult(winner, scores, rows),
   getLocalStats: () => ({ kills: playerStats.kills, deaths: playerStats.deaths, shots: playerStats.shots }),
+  getPlayerName: () => getPlayerName(),
   getBotSnapshot: () => bots.netSnapshot(),
   tagBot: (idx, team) => bots.tagBotByIndex(idx, team),
   onEnded: (reason) => {
@@ -716,7 +744,7 @@ async function joinFlow(code, statusEl) {
   if (net.active) { statusEl.textContent = 'Already in a room.'; return; }
   try {
     statusEl.textContent = `Joining ${code}…`;
-    await net.joinRoom(code);
+    await net.joinRoom(code, getPlayerName());
     netplay.beginClient();
     statusEl.textContent = '';
     // land in the lobby; if a match is already running, the host's `welcome`
@@ -1068,7 +1096,7 @@ function setColor(i) {
   nameEl.textContent = c.name;
   weapon.setPaintColor(c.hex); // hopper balls match the selected paint
   guiState.paintColor = c.name;
-  colorCtrl.updateDisplay();
+  if (colorCtrl) colorCtrl.updateDisplay();
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,8 +1156,9 @@ function applyInvisibleMode() {
 applyEnvironment();
 
 // ---------------------------------------------------------------------------
-// GUI
+// Dev Panel (developer-only; absent from the itch build — see DEV flag)
 // ---------------------------------------------------------------------------
+if (DEV) {
 const gui = new GUI({ title: 'Dev Panel' });
 
 const fOutline = gui.addFolder('Outline / Readability');
@@ -1146,7 +1175,7 @@ fOutline.add(guiState, 'normalEdges', 0, 2, 0.01).name('Normal Edges')
 fOutline.open();
 
 const fPaint = gui.addFolder('Paint');
-const colorCtrl = fPaint.add(guiState, 'paintColor', COLORS.map(c => c.name)).name('Color')
+colorCtrl = fPaint.add(guiState, 'paintColor', COLORS.map(c => c.name)).name('Color')
   .onChange(v => setColor(COLORS.findIndex(c => c.name === v)));
 fPaint.add(guiState, 'splatSize', 0.4, 4, 0.05).name('Splat Size')
   .onChange(v => paint.settings.size = v);
@@ -1225,23 +1254,7 @@ fInvisible.open();
 // keep dev panel from stealing pointer-lock clicks
 gui.domElement.addEventListener('mousedown', e => e.stopPropagation());
 
-setColor(1); // start on BLUE (the player's team color)
-// bots stay OFF until a match actually starts — no phantom battle raging
-// behind the title screen and menus
-
-// ---------------------------------------------------------------------------
-// Player-facing Settings (persisted) + dev-only panel toggle.
-// The lil-gui Dev Panel is for deep tuning only, so it starts hidden and is
-// summoned with the backtick key; players use the Settings menu instead.
-// ---------------------------------------------------------------------------
-const settings = new Settings();
-settings.buildUI(document.getElementById('settings-body'));
-settings.apply({ controls, player, camera, match, audio, weapon });
-
-// Custom splatter designer (loads any saved design into the paint system)
-const splatDesigner = new SplatDesigner(paint, COLORS);
-document.getElementById('open-splat-btn').addEventListener('click', () => splatDesigner.show());
-
+// starts hidden; summon with the backtick key (dev only)
 gui.hide();
 let devPanelVisible = false;
 document.addEventListener('keydown', (e) => {
@@ -1250,6 +1263,24 @@ document.addEventListener('keydown', (e) => {
     if (devPanelVisible) gui.show(); else gui.hide();
   }
 });
+} // end DEV
+
+setColor(1); // start on BLUE (the player's team color)
+// bots stay OFF until a match actually starts — no phantom battle raging
+// behind the title screen and menus
+
+// ---------------------------------------------------------------------------
+// Player-facing Settings (persisted). The dev tuning panel above is gated on
+// DEV, so players use only this Settings menu.
+// ---------------------------------------------------------------------------
+const settings = new Settings();
+settings.buildUI(document.getElementById('settings-body'));
+settings.apply({ controls, player, camera, match, audio, weapon });
+
+// Custom splatter designer — kept for a future update; its menu button is
+// hidden, but any saved design still loads into the paint system.
+const splatDesigner = new SplatDesigner(paint, COLORS);
+document.getElementById('open-splat-btn').addEventListener('click', () => splatDesigner.show());
 
 // ---------------------------------------------------------------------------
 // Resize

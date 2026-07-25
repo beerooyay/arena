@@ -119,7 +119,7 @@ wss.on('connection', (ws) => {
         meta.id = id;
         room.clients.set(id, ws);
         send(ws, { t: 'join-ok', code: room.code, id });
-        send(room.host, { t: 'peer-join', id });
+        send(room.host, { t: 'peer-join', id, name: String(msg.name || '').slice(0, 14) });
         break;
       }
 

@@ -126,7 +126,7 @@ export class NetPlay {
     this._clockT = 0;
     this._statTally = null;    // host: id -> {name,team,kills,deaths,shots} at end
 
-    net.onPeer = (id) => this._onPeer(id);
+    net.onPeer = (id, name) => this._onPeer(id, name);
     net.onPeerGone = (id) => this._onPeerGone(id);
     net.onData = (id, msg) => this._onData(id, msg);
     net.onClosed = (reason) => this._teardown(reason);
@@ -139,7 +139,7 @@ export class NetPlay {
   mySpawnZ() { return this.me && this.me.team === 1 ? -26 : 26; }
 
   beginHost() {
-    this.me = { id: 'host', name: 'Player 1', team: 0 };
+    this.me = { id: 'host', name: this.deps.getPlayerName(), team: 0 };
     this.roster.set('host', this.me);
     this.scores = [0, 0];
     this._nextIdx = 2;
@@ -153,9 +153,10 @@ export class NetPlay {
   playerCount() { return this.roster.size; }
 
   // ---------------------------------------------------------------- host side
-  _onPeer(id) {
+  _onPeer(id, name) {
     if (this.net.role !== 'host') return; // clients get `welcome` instead
-    const p = { id, name: `Player ${this._nextIdx}`, team: (this._nextIdx - 1) % 2 };
+    const clean = (name || '').trim().slice(0, 14);
+    const p = { id, name: clean || `Player ${this._nextIdx}`, team: (this._nextIdx - 1) % 2 };
     this._nextIdx++;
     this.roster.set(id, p);
     this._addRemote(p);

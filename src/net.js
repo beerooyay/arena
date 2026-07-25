@@ -55,6 +55,7 @@ export class NetClient {
     // events (assigned by game code)
     this.onPeer = () => {};
     this.onPeerGone = () => {};
+    this._peerNames = {}; // id -> chosen name, carried from the signaling join
     this.onData = () => {};
     this.onClosed = () => {};
 
@@ -108,9 +109,9 @@ export class NetClient {
     return code;
   }
 
-  async joinRoom(code) {
+  async joinRoom(code, name = '') {
     await this._connect();
-    this.ws.send(JSON.stringify({ t: 'join', code }));
+    this.ws.send(JSON.stringify({ t: 'join', code, name }));
     const res = await this._expect('join');
     if (!res.ok) throw new Error(res.reason || 'join-failed');
     this.role = 'client';
@@ -139,6 +140,7 @@ export class NetClient {
 
       case 'peer-join': { // host: a joiner arrived — offer them a channel
         const id = msg.id;
+        this._peerNames[id] = msg.name || ''; // remembered until the channel opens
         const pc = new RTCPeerConnection(RTC_CONFIG);
         const entry = { pc, dc: null };
         this.peers.set(id, entry);
@@ -196,7 +198,7 @@ export class NetClient {
         this._dcOpenResolve();
         this._dcOpenResolve = null;
       }
-      this.onPeer(id);
+      this.onPeer(id, this._peerNames[id] || '');
     };
     dc.onclose = () => this._dropPeer(id);
     dc.onmessage = (e) => {

@@ -364,11 +364,13 @@ function endMatch(winnerTeamId) {
   gameoverScore.textContent = `${bots.scores[0]} – ${bots.scores[1]}`;
   buildCombatReport();
   document.getElementById('play-again-btn').textContent = 'Play Again';
+  document.getElementById('gameover-settings-btn').classList.remove('hidden');
   if (controls.isLocked) controls.unlock();
   showGameOver();
 }
 
-// Online match ended: show the combat report; leaving returns to the menu.
+// Online match ended: show the combat report, then everyone returns to the same
+// lobby (net session stays alive) where the host can start another match.
 let onlineResultShowing = false;
 function showOnlineResult(winner, scores, rows) {
   onlineResultShowing = true;
@@ -378,7 +380,8 @@ function showOnlineResult(winner, scores, rows) {
   renderReportRows((rows || []).map((r) => ({
     ...r, you: netplay.me && r.name === (netplay.roster.get(netplay.me.id) || {}).name,
   })));
-  document.getElementById('play-again-btn').textContent = 'Back to Menu';
+  document.getElementById('play-again-btn').textContent = 'Back to Lobby';
+  document.getElementById('gameover-settings-btn').classList.add('hidden'); // lobby has Leave
   if (controls.isLocked) controls.unlock();
   showGameOver();
 }
@@ -538,7 +541,7 @@ const netplay = new NetPlay(net, {
   onTagged: (shooterTeamId, hex) => onPlayerTagged(shooterTeamId, hex),
   showKill,
   onRosterChange: () => { updateNetHud(); renderLobby(); },
-  onStart: () => { setNetStatusHud(); enterNetArena(); }, // clients: match started
+  onStart: () => startNetMatchLocal(),  // clients: (re)start — fresh scoreline
   onClock: (secondsLeft) => setNetClock(secondsLeft),
   onMatchEnd: (winner, scores, rows) => showOnlineResult(winner, scores, rows),
   getLocalStats: () => ({ kills: playerStats.kills, deaths: playerStats.deaths, shots: playerStats.shots }),
@@ -588,23 +591,44 @@ function renderLobby() {
     lobbyRoster.appendChild(row);
   }
   const winConfig = document.getElementById('lobby-winconfig');
-  if (netplay.isHost) {
-    lobbyStartBtn.classList.remove('hidden');
-    winConfig.classList.remove('hidden');
+  const resumeBtn = document.getElementById('lobby-resume-btn');
+  const inProgress = netplay.started && !netplay.matchOver; // paused mid-match
+
+  resumeBtn.classList.toggle('hidden', !inProgress);
+  // host setup (win-condition + Start) only shows between matches
+  const showSetup = netplay.isHost && !inProgress;
+  winConfig.classList.toggle('hidden', !showSetup);
+  lobbyStartBtn.classList.toggle('hidden', !showSetup);
+  lobbyStartBtn.textContent = netplay.matchOver ? 'Next Match' : 'Start Game';
+
+  if (inProgress) {
+    lobbyHint.textContent = 'Match in progress — resume, or leave.';
+  } else if (netplay.isHost) {
     renderWinConfig();
     const fill = 10 - players.length;
     lobbyHint.textContent = fill > 0
-      ? `Start any time — ${fill} empty slot${fill === 1 ? '' : 's'} will fill with bots.`
+      ? `${netplay.matchOver ? 'Next match' : 'Start'} fills ${fill} empty slot${fill === 1 ? '' : 's'} with bots.`
       : 'Teams are full. Start when ready.';
   } else {
-    lobbyStartBtn.classList.add('hidden');
-    winConfig.classList.add('hidden');
-    lobbyHint.textContent = 'Waiting for the host to start the match…';
+    lobbyHint.textContent = netplay.matchOver
+      ? 'Match over — waiting for the host to start the next one…'
+      : 'Waiting for the host to start the match…';
   }
 }
 
 function showLobby() {
+  active = false;
   hideAllMenus();
+  // the lobby is a menu state — clear the in-game HUD
+  crosshair.classList.add('hidden');
+  hud.classList.add('hidden');
+  scoreboard.classList.add('hidden');
+  netHudEl.classList.add('hidden');
+  netStatusEl.classList.add('hidden');
+  respawnEl.classList.add('hidden');
+  killfeedEl.classList.add('hidden');
+  onlineResultShowing = false;
+  if (controls.isLocked) controls.unlock();
   lobbyOverlay.classList.remove('hidden');
   renderLobby();
 }
@@ -623,19 +647,26 @@ function hostStartMatch() {
 
   bots.setEnabledCounts(blueBots, redBots); // host owns the real bot AI
   netplay.hostStart(botRoster);             // tells clients to spawn ghosts + drop in
+  startNetMatchLocal();
+}
+
+// Fresh start of a net match: wipe my scoreline, spawn on my team's side.
+function startNetMatchLocal() {
+  playerStats.kills = 0; playerStats.deaths = 0; playerStats.shots = 0;
+  playerDead = false;
+  respawnEl.classList.add('hidden');
+  killfeedEl.classList.add('hidden');
+  camera.position.set(0, 1.7, netplay.mySpawnZ());
+  player.velocityY = 0;
   setNetStatusHud();
   enterNetArena();
 }
 
+// Enter/return to the arena (used by match start AND resume — no stat reset).
 function enterNetArena() {
-  playerStats.kills = 0; playerStats.deaths = 0; playerStats.shots = 0; // fresh scoreline
-  playerDead = false;
-  respawnEl.classList.add('hidden');
   scoreboard.classList.remove('hidden');
   netHudEl.classList.remove('hidden');
   updateNetHud();
-  camera.position.set(0, 1.7, netplay.mySpawnZ());
-  player.velocityY = 0;
   controls.lock();                   // click gesture → pointer lock → enterGame
 }
 
@@ -665,8 +696,9 @@ async function joinFlow(code, statusEl) {
     await net.joinRoom(code);
     netplay.beginClient();
     statusEl.textContent = '';
-    if (netplay.started) enterNetArena(); // match already in progress → drop in
-    else showLobby();                     // otherwise wait in the lobby
+    // land in the lobby; if a match is already running, the host's `welcome`
+    // fires onStart and pulls us straight into the arena
+    showLobby();
   } catch (e) {
     net.close(''); // teardown first — onEnded writes a generic note we overwrite
     statusEl.textContent =
@@ -678,6 +710,7 @@ async function joinFlow(code, statusEl) {
 }
 
 lobbyStartBtn.addEventListener('click', () => hostStartMatch());
+document.getElementById('lobby-resume-btn').addEventListener('click', () => enterNetArena());
 document.getElementById('lobby-leave-btn').addEventListener('click', () => {
   net.close('');
   showStart();
@@ -748,10 +781,8 @@ document.getElementById('settings-back-btn').addEventListener('click', () => {
   else showStart();
 });
 document.getElementById('play-again-btn').addEventListener('click', () => {
-  if (onlineResultShowing) {         // online match ended → leave to the menu
-    onlineResultShowing = false;
-    net.close('');                   // onEnded resets bots/scoreboard/session
-    showStart();
+  if (onlineResultShowing) {         // online match ended → back to the same lobby
+    showLobby();                     // net session stays alive; host can restart
     return;
   }
   resetMatch();
@@ -759,7 +790,12 @@ document.getElementById('play-again-btn').addEventListener('click', () => {
 });
 
 controls.addEventListener('lock', enterGame);
-controls.addEventListener('unlock', () => { if (!padSession && !match.over) showStart(); });
+controls.addEventListener('unlock', () => {
+  if (padSession || match.over) return;
+  // pausing an online match returns to the lobby, not the single-player menu
+  if (netplay.active) showLobby();
+  else showStart();
+});
 
 // ---------------------------------------------------------------------------
 // Direct number-key color selection (movement keys handled by InputManager)

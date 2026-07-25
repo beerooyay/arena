@@ -164,7 +164,8 @@ export class NetPlay {
       you: p,
       roster: [...this.roster.values()],
       scores: this.scores,
-      started: this.started,
+      started: this.started && !this.matchOver, // only "live" counts as in-progress
+      cfg: this.matchConfig,
       bots: this.botRoster,
     });
     this.net.send({ t: 'add', p }, id);
@@ -175,6 +176,7 @@ export class NetPlay {
   hostStart(botRoster) {
     this.started = true;
     this.matchOver = false;
+    this.scores = [0, 0];              // fresh scoreline (also covers rematches)
     this.botRoster = botRoster;
     this._matchStartAt = performance.now();
     this.net.send({ t: 'start', bots: botRoster, cfg: this.matchConfig });
@@ -217,9 +219,10 @@ export class NetPlay {
         this.deps.onRosterChange();
         break;
       }
-      case 'start': { // host began the match
+      case 'start': { // host began the match (also a rematch from the lobby)
         this.started = true;
         this.matchOver = false;
+        this.scores = [0, 0];
         this.botRoster = msg.bots || [];
         if (msg.cfg) this.matchConfig = msg.cfg;
         this._createGhosts();

@@ -122,7 +122,9 @@ lobby (or drop straight in if the match is already running).
 tags) or **Time limit** (match ends after M minutes); it's synced to everyone and
 shown in the HUD (target, or a live countdown). When it's met the host ends the
 match authoritatively and everyone sees the **combat report** (per-player K/D/shots,
-winner, final score) → Back to Menu.
+winner, final score). From there everyone returns to the **same lobby** — the host
+can start a **Next Match** (fresh scores, re-backfilled bots) or anyone can **Leave**.
+Pausing mid-match (Esc) drops you to the lobby with a **Resume** button.
 
 What syncs in v1: player positions/look (12Hz + smoothing), shots (real colored
 projectiles), tags (paint-hit + respawn + shared team score + kill feed), and the

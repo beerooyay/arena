@@ -1,0 +1,51 @@
+{
+  "name": "whiteout-paintball-desktop",
+  "version": "1.0.0",
+  "description": "WhiteOut Paintball — downloadable desktop build",
+  "author": "ceeboozwah",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "copygame": "node copy-game.mjs",
+    "start": "npm run copygame && electron .",
+    "dist": "npm run copygame && electron-builder",
+    "dist:mac": "npm run copygame && electron-builder --mac",
+    "dist:win": "npm run copygame && electron-builder --win",
+    "dist:linux": "npm run copygame && electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "io.itch.ceeboozwah.whiteoutpaintball",
+    "productName": "WhiteOut Paintball",
+    "artifactName": "WhiteOut-Paintball-${version}-${os}-${arch}.${ext}",
+    "files": ["main.js", "app/**/*", "build/icon.png"],
+    "directories": { "output": "dist" },
+    "compression": "maximum",
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["universal"] }],
+      "icon": "build/icon.png",
+      "category": "public.app-category.games",
+      "identity": null
+    },
+    "dmg": { "title": "WhiteOut Paintball" },
+    "win": {
+      "target": ["nsis", "portable"],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "WhiteOut Paintball"
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "icon": "build/icon.png",
+      "category": "Game"
+    }
+  }
+}

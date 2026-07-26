@@ -1,0 +1,48 @@
+name: Build desktop apps
+
+# Produces the downloadable installers for itch.io:
+#   • macOS  -> .dmg (universal: Intel + Apple Silicon)
+#   • Windows -> .exe (NSIS installer + portable)
+# Run it from the Actions tab ("Run workflow"), or by pushing a v* tag.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            script: dist:mac
+          - os: windows-latest
+            script: dist:win
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build installers
+        run: npm run ${{ matrix.script }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: whiteout-${{ matrix.os }}
+          path: |
+            desktop/dist/*.dmg
+            desktop/dist/*.exe
+          if-no-files-found: error

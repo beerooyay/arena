@@ -40,7 +40,11 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "WhiteOut Paintball"
+      "shortcutName": "WhiteOut Paintball",
+      "artifactName": "WhiteOut-Paintball-${version}-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "WhiteOut-Paintball-${version}-portable.${ext}"
     },
     "linux": {
       "target": ["AppImage"],

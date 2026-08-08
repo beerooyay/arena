@@ -39,6 +39,7 @@ export class PlayerController {
     this.blockers = [];
     this.groundMeshes = [];
     this.ceilings = [];
+    this.extraSolids = []; // per-frame {x,z,alive} for online bodies (humans/ghosts)
     this.bots = [];
     this._down = new THREE.Raycaster();
     this._down.far = 100;
@@ -141,6 +142,20 @@ export class PlayerController {
     if (this.sliding) { this.sliding = false; this.slideCooldown = SLIDE_COOLDOWN; }
   }
 
+  /** Snap fully upright, instantly — used on (re)spawn so dying mid-crouch,
+   *  -slide, or -dive never carries the low stance into the next life. */
+  resetStance() {
+    this.standUp();
+    this.crouch = 0;        // clear the eased camera dip (no lingering lean)
+    this.sliding = false;
+    this.slideT = 0;
+    this.slideSpeed = 0;
+    this.diving = false;
+    this.diveSpeed = 0;
+    this.slideCooldown = 0; // free to slide again right away
+    this._slidePress = false;
+  }
+
   stance() { return this.prone ? 'prone' : (this.crouching ? 'crouch' : 'stand'); }
   _setStance(s) {
     this.prone = (s === 'prone');
@@ -241,6 +256,13 @@ export class PlayerController {
       this._pressActive = false;
     }
 
+    // sprinting out of a crouch/prone stands you up and lets you run
+    if (input.sprint && movingInput && this.onGround && !this.sliding && !this.diving &&
+        (this.crouching || this.prone)) {
+      this.crouching = false;
+      this.prone = false;
+    }
+
     if (this.sliding) {
       this.slideT -= dt;
       const k = Math.max(0, this.slideT / this.slideTime); // 1 → 0 over the slide
@@ -255,7 +277,9 @@ export class PlayerController {
       pos.addScaledVector(this.diveDir, this.diveSpeed * dt);
       this.diveSpeed = Math.max(this.baseSpeed * 0.5, this.diveSpeed - dt * 9);
     } else {
-      let mag = input.sprint ? this.sprintSpeed : this.baseSpeed;
+      // sprint only counts with your feet on the ground — no sprinting through
+      // the air after a jump
+      let mag = (input.sprint && this.onGround) ? this.sprintSpeed : this.baseSpeed;
       if (this.prone) mag = this.proneSpeed;
       else if (this.crouching) mag = this.crouchSpeed;
       const speed = mag * dt;
@@ -308,13 +332,24 @@ export class PlayerController {
 
     // horizontal push-out vs blocker boxes
     const r = this.radius;
-    const pFeet = pos.y - eye;
-    const pHead = pos.y;
+    const STEP = 0.66; // max ledge height you auto-step / land onto
+    let pFeet = pos.y - eye;
+    let pHead = pos.y;
     for (const box of this.blockers) {
       if (pHead <= box.min.y || pFeet >= box.max.y) continue;
       const minX = box.min.x - r, maxX = box.max.x + r;
       const minZ = box.min.z - r, maxZ = box.max.z + r;
       if (pos.x > minX && pos.x < maxX && pos.z > minZ && pos.z < maxZ) {
+        // If the top is within step height of our feet, climb onto it instead
+        // of shoving sideways — fixes being bumped off when landing on edges
+        // and lets you step up low ledges. (Only when not moving upward.)
+        if (box.max.y - pFeet <= STEP && this.velocityY <= 0.01) {
+          pos.y = box.max.y + eye;
+          this.velocityY = 0;
+          this.onGround = true;
+          pFeet = pos.y - eye; pHead = pos.y; // refresh for later boxes
+          continue;
+        }
         const dL = pos.x - minX, dR = maxX - pos.x;
         const dB = pos.z - minZ, dF = maxZ - pos.z;
         const m = Math.min(dL, dR, dB, dF);
@@ -339,6 +374,23 @@ export class PlayerController {
         const push = (minDist - dist) / dist;
         pos.x += dx * push;
         pos.z += dz * push;
+      }
+    }
+
+    // push-out vs online bodies (remote humans + ghost bots) — same cylinder
+    if (pFeet < 2.1 && pHead > 0.3) {
+      const minDist = r + botR;
+      for (const s of this.extraSolids) {
+        if (!s.alive) continue;
+        const dx = pos.x - s.x;
+        const dz = pos.z - s.z;
+        const dist2 = dx * dx + dz * dz;
+        if (dist2 > 0 && dist2 < minDist * minDist) {
+          const dist = Math.sqrt(dist2);
+          const push = (minDist - dist) / dist;
+          pos.x += dx * push;
+          pos.z += dz * push;
+        }
       }
     }
 

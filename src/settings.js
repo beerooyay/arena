@@ -9,6 +9,9 @@
  */
 
 const STORAGE_KEY = 'whiteout.settings';
+// Bump when a changed default should be forced onto players who already have
+// settings saved. Currently: 2 = maxed-out Field of View.
+const SETTINGS_MIGRATION = 2;
 
 // Schema drives both persistence and the generated UI. `apply` receives the
 // live game targets so each option knows how to push itself into the engine.
@@ -30,7 +33,7 @@ const SCHEMA = [
   },
   {
     key: 'fov', label: 'Field of View',
-    min: 60, max: 110, step: 1, default: 75, unit: '°',
+    min: 60, max: 110, step: 1, default: 110, unit: '°', // maxed by default; players can lower it
     apply: (v, t) => { t.camera.fov = v; t.camera.updateProjectionMatrix(); },
   },
   {
@@ -67,6 +70,13 @@ export class Settings {
           this.values[s.key] = Math.min(s.max, Math.max(s.min, v));
         }
       }
+      // One-time migration: force the (now maxed) FOV default onto older saves.
+      // Runs once — after this the player is free to lower it and it sticks.
+      if (saved._mig !== SETTINGS_MIGRATION) {
+        const fov = SCHEMA.find((s) => s.key === 'fov');
+        if (fov) this.values.fov = fov.default;
+        this._save(); // persist the migrated value + marker
+      }
     } catch (e) {
       // corrupt/blocked storage — fall back to defaults silently
     }
@@ -74,7 +84,7 @@ export class Settings {
 
   _save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.values));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...this.values, _mig: SETTINGS_MIGRATION }));
     } catch (e) {
       // storage may be unavailable (private mode / itch sandbox) — ignore
     }

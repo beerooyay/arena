@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { addPlayerGlow, disposeGlow } from './playerGlow.js';
+import { teamSpawnXZ } from './spawns.js';
 
 /**
  * NetPlay — in-game multiplayer session on top of NetClient.
@@ -79,6 +81,7 @@ function makeAvatar(name, teamHex) {
   const label = makeNameSprite(name, teamHex);
   group.add(body, head, ring, label);
   group.userData = { bodyMat, teamMat, label };
+  addPlayerGlow(group, teamHex); // team-colored rim glow for contrast
   return group;
 }
 
@@ -107,6 +110,14 @@ export class NetPlay {
     this.deps = deps;
     this.roster = new Map();   // id -> {id, name, team}
     this.remotes = new Map();  // id -> {group, cur:{...}, target:{...}}
+    this.selfPosOverride = null; // set to the tank position while driving (else camera is used)
+
+    // --- tanks (host-authoritative) ---
+    this.tankNet = [null, null];        // client: latest tsync state per team {x,z,ry,ty,bp,hp,alive,driver}
+    this.tankDriver = [null, null];     // driver id per team (authoritative; '' / null = AI)
+    this.clientTankPose = [null, null]; // host: latest pose a client driver sent
+    this.tankHits = [0, 0];             // host: pending damage hits to apply per team
+    this._tankSendT = 0;
     this.scores = [0, 0];
     this.me = null;            // {id, name, team}
     this._sendT = 0;
@@ -137,6 +148,46 @@ export class NetPlay {
 
   /** My team's spawn point (BLUE side z=26, RED side z=-26). */
   mySpawnZ() { return this.me && this.me.team === 1 ? -26 : 26; }
+
+  // --- spawn slots: humans take slots 0..(H-1) on their team, in a stable
+  // roster order every peer agrees on; bots fill the rest (see host backfill).
+  _order(id) { return id === 'host' ? 0 : (parseInt(String(id).slice(1), 10) || 999); }
+
+  /** 0-based slot for a roster member within its own team. */
+  spawnSlotFor(id) {
+    const p = this.roster.get(id);
+    if (!p) return 0;
+    return [...this.roster.values()]
+      .filter((q) => q.team === p.team)
+      .sort((a, b) => this._order(a.id) - this._order(b.id))
+      .findIndex((q) => q.id === id);
+  }
+
+  /** [blueHumans, redHumans] — how many human players are on each team. */
+  humansPerTeam() {
+    const c = [0, 0];
+    for (const p of this.roster.values()) c[p.team]++;
+    return c;
+  }
+
+  /** My team spawn {x, z}, spread across my side by my slot. */
+  mySpawn() {
+    if (!this.me) return teamSpawnXZ(0, 0);
+    return teamSpawnXZ(this.me.team, this.spawnSlotFor(this.me.id));
+  }
+
+  /** {x,z,alive} for every OTHER player body, so the local player can't walk
+   *  through remote humans or (on clients) the host's ghost bots. */
+  collisionActors() {
+    const out = [];
+    for (const r of this.remotes.values()) {
+      out.push({ x: r.group.position.x, z: r.group.position.z, alive: true });
+    }
+    for (const g of this.ghostBots) {
+      out.push({ x: g.group.position.x, z: g.group.position.z, alive: g.alive });
+    }
+    return out;
+  }
 
   beginHost() {
     this.me = { id: 'host', name: this.deps.getPlayerName(), team: 0 };
@@ -187,6 +238,8 @@ export class NetPlay {
     if (this.net.role !== 'host') return;
     this.roster.delete(id);
     this._removeRemote(id);
+    // free any tank the departing player was driving
+    for (let t = 0; t < 2; t++) if (this.tankDriver[t] === id) this.tankDriver[t] = null;
     this.net.send({ t: 'remove', id });
     this.deps.onRosterChange();
   }
@@ -275,7 +328,10 @@ export class NetPlay {
         if (this.matchOver) break;
         this.scores[msg.team]++;
         const g = this.ghostBots[msg.i];
-        if (g) { g.alive = false; g.group.visible = false; }
+        if (g) {
+          if (g.alive && this.deps.onGhostBotDied) this.deps.onGhostBotDied(g.group.position);
+          g.alive = false; g.group.visible = false;
+        }
         break;
       }
       case 'add': {
@@ -304,7 +360,8 @@ export class NetPlay {
         // netGhost: visual only — the authoritative shooter already did hits
         this.deps.spawnProjectile(
           new THREE.Vector3(...msg.o), new THREE.Vector3(...msg.d),
-          msg.hex, team, 70, false, { netGhost: true });
+          msg.hex, team, msg.sp || 70, false, { netGhost: true },
+          msg.r ? { radius: msg.r, splatScale: msg.ss } : undefined);
         break;
       }
       case 'tag': {
@@ -314,6 +371,40 @@ export class NetPlay {
         this.scores[team]++;
         if (this.me && msg.victim === this.me.id) {
           this.deps.onTagged(team, msg.hex, msg.by || '');
+        }
+        break;
+      }
+
+      // --- tanks ---
+      case 'tenter': { // client wants to drive its team's tank (host decides)
+        if (this.isHost) {
+          const p = this.roster.get(senderId);
+          if (p && p.team === msg.team && !this.tankDriver[msg.team]) {
+            this.tankDriver[msg.team] = senderId;
+          }
+        }
+        break;
+      }
+      case 'texit': {
+        if (this.isHost && this.tankDriver[msg.team] === senderId) this.tankDriver[msg.team] = null;
+        break;
+      }
+      case 'tdrive': { // client driver's pose for its tank
+        if (this.isHost && this.tankDriver[msg.team] === senderId) {
+          this.clientTankPose[msg.team] = { x: msg.p[0], z: msg.p[1], ry: msg.p[2], ty: msg.ty, bp: msg.bp };
+        }
+        break;
+      }
+      case 'thit': { // a client's shell hit a tank — host applies the damage
+        if (this.isHost) this.tankHits[msg.team]++;
+        break;
+      }
+      case 'tsync': { // host's authoritative tank states
+        if (!this.isHost) {
+          for (const [team, x, z, ry, ty, bp, hp, al, drv, y] of msg.s) {
+            this.tankNet[team] = { x, z, ry, ty, bp, hp, alive: !!al, driver: drv, y };
+            this.tankDriver[team] = drv || null;
+          }
         }
         break;
       }
@@ -339,6 +430,7 @@ export class NetPlay {
   }
 
   _disposeAvatar(group) {
+    disposeGlow(group);
     this.deps.scene.remove(group);
     group.userData.bodyMat.dispose();
     group.userData.teamMat.dispose();
@@ -399,9 +491,12 @@ export class NetPlay {
       this._sendT = 0;
       const cam = this.deps.camera;
       _euler.setFromQuaternion(cam.quaternion);
+      // while driving the tank the camera is a 3rd-person rig, so broadcast the
+      // tank's own position instead of the camera's
+      const pos = this.selfPosOverride || cam.position;
       this.net.send({
         t: 's',
-        p: [+cam.position.x.toFixed(2), +cam.position.y.toFixed(2), +cam.position.z.toFixed(2)],
+        p: [+pos.x.toFixed(2), +pos.y.toFixed(2), +pos.z.toFixed(2)],
         ry: +_euler.y.toFixed(3),
       });
     }
@@ -462,16 +557,27 @@ export class NetPlay {
   }
 
   /** Announce a shot so everyone else sees the paintball (team drives color). */
-  sendShot(origin, dir, hex, team) {
+  sendShot(origin, dir, hex, team, opts = null) {
     if (!this.active) return;
-    this.net.send({
+    const m = {
       t: 'shot',
       o: [+origin.x.toFixed(2), +origin.y.toFixed(2), +origin.z.toFixed(2)],
       d: [+dir.x.toFixed(3), +dir.y.toFixed(3), +dir.z.toFixed(3)],
       hex,
       team: team ?? (this.me ? this.me.team : 0),
-    });
+    };
+    if (opts) { m.r = opts.radius; m.sp = opts.speed; m.ss = opts.splatScale; }
+    this.net.send(m);
   }
+
+  // --- tank sync API (main.js drives these) ---
+  sendTankEnter(team) { if (this.active) this.net.send({ t: 'tenter', team }); }
+  sendTankExit(team) { if (this.active) this.net.send({ t: 'texit', team }); }
+  sendTankDrive(team, x, z, ry, ty, bp) {
+    if (this.active) this.net.send({ t: 'tdrive', team, p: [+x.toFixed(2), +z.toFixed(2), +ry.toFixed(3)], ty: +ty.toFixed(3), bp: +bp.toFixed(3) });
+  }
+  sendTankHit(team) { if (this.active) this.net.send({ t: 'thit', team }); }
+  broadcastTankSync(snap) { if (this.active) this.net.send({ t: 'tsync', s: snap }); }
 
   /**
    * Shooter-side hit test of my projectile segment against remote players AND

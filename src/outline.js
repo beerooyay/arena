@@ -59,14 +59,22 @@ const OutlineShader = {
       vec4 sceneColor = texture2D(tDiffuse, vUv);
       vec2 texel = thickness / resolution;
 
+      // --- depth edges ---
+      float dC = readDepth(vUv);
+
+      // Sky guard: at the far plane there's no geometry (sky/clouds/sun are drawn
+      // in the beauty pass but excluded from this prepass). Depth-buffer
+      // quantisation there is tiny but gets amplified into speckle by the edge
+      // term below — invisible on the old white sky, but obvious on blue sky and
+      // clouds. Skip the outline entirely for far-plane pixels. Real geometry sits
+      // well under 0.5 orthographic depth, so nothing wanted is lost.
+      if (dC > 0.99) { gl_FragColor = sceneColor; return; }
+
       // 4 neighbour offsets (cross)
       vec2 uvN = vUv + vec2(0.0,  texel.y);
       vec2 uvS = vUv + vec2(0.0, -texel.y);
       vec2 uvE = vUv + vec2( texel.x, 0.0);
       vec2 uvW = vUv + vec2(-texel.x, 0.0);
-
-      // --- depth edges ---
-      float dC = readDepth(vUv);
       float dEdge =
         abs(dC - readDepth(uvN)) + abs(dC - readDepth(uvS)) +
         abs(dC - readDepth(uvE)) + abs(dC - readDepth(uvW));
@@ -92,7 +100,12 @@ const OutlineShader = {
   `,
 };
 
+// Objects on this layer are drawn in the beauty pass but skipped by the
+// normal/depth prepass, so they get no contour outline (e.g. smoke sprites).
+export const NO_OUTLINE_LAYER = 11;
+
 export function createOutline(renderer, scene, camera) {
+  camera.layers.enable(NO_OUTLINE_LAYER); // so the beauty pass still shows them
   const size = renderer.getSize(new THREE.Vector2());
   const pr = renderer.getPixelRatio();
   const w = Math.floor(size.x * pr);
@@ -136,9 +149,11 @@ export function createOutline(renderer, scene, camera) {
     scene.overrideMaterial = normalMaterial;
     scene.background = null;
     scene.fog = null;
+    camera.layers.disable(NO_OUTLINE_LAYER); // keep smoke etc. out of the edge pass
     renderer.setRenderTarget(normalRT);
     renderer.clear();
     renderer.render(scene, camera);
+    camera.layers.enable(NO_OUTLINE_LAYER);
     scene.overrideMaterial = prevOverride;
     scene.background = prevBg;
     scene.fog = prevFog;

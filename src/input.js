@@ -29,6 +29,9 @@ export class InputManager {
     this._padCrouchDown = false;
     this._colorDelta = 0;
     this._startQueued = false;
+    this._interactQueued = false; // E (kbd) / Y (pad) — enter/exit the tank
+    this._jetQueued = false;      // G (kbd) / dpad-up (pad) — launch/exit the jet
+    this._weaponQueued = null;    // 0/1 = select slot, -1 = swap, null = none
 
     // per-frame outputs
     this.move = { forward: 0, strafe: 0 };
@@ -63,6 +66,14 @@ export class InputManager {
     const wasDown = !!this.keys[e.code];
     this.keys[e.code] = down;
     if (down && e.code === 'Space') this._jumpQueued = true;
+    if (down && !wasDown && e.code === 'KeyE') this._interactQueued = true; // enter/exit tank
+    if (down && !wasDown && e.code === 'KeyG') this._jetQueued = true;      // launch/exit jet
+    // weapon select: 1 = paint marker, 2 = tank buster (Q also cycles)
+    if (down && !wasDown) {
+      if (e.code === 'Digit1') this._weaponQueued = 0;
+      else if (e.code === 'Digit2') this._weaponQueued = 1;
+      else if (e.code === 'KeyQ') this._weaponQueued = -1; // -1 = swap to the other
+    }
     if (e.code === 'ControlLeft' || e.code === 'KeyC') {
       // ignore auto-repeat so a held key doesn't spam the press edge
       if (down && !wasDown) this._crouchQueued = true;
@@ -99,6 +110,7 @@ export class InputManager {
       if (pressed(9) || pressed(8)) this._startQueued = true;
       if (pressed(5)) this._colorDelta += 1;                // RB -> next color
       if (pressed(4)) this._colorDelta -= 1;                // LB -> prev color
+      if (pressed(3)) this._interactQueued = true;          // Y -> enter/exit tank
 
       this._padShoot = !!b[7];                              // RT -> shoot
       this._padAim = !!b[6];                                // LT -> aim
@@ -119,5 +131,8 @@ export class InputManager {
   get crouchHeld() { return this._keyCrouchDown || this._padCrouchDown; }
   consumeCrouch() { const s = this._crouchQueued; this._crouchQueued = false; return s; }
   consumeStart() { const s = this._startQueued; this._startQueued = false; return s; }
+  consumeInteract() { const t = this._interactQueued; this._interactQueued = false; return t; }
+  consumeJet() { const j = this._jetQueued; this._jetQueued = false; return j; }
+  consumeWeapon() { const w = this._weaponQueued; this._weaponQueued = null; return w; }
   consumeColorDelta() { const d = this._colorDelta; this._colorDelta = 0; return d; }
 }

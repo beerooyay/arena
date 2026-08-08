@@ -25,6 +25,66 @@
     <span class="ch-dot"></span>
   </div>
 
+  <!-- Hitmarker: flashes on the crosshair whenever you tag an enemy or hit a tank -->
+  <div id="hitmarker"><i></i><i></i></div>
+
+  <!-- Tank-buster lock-on brackets (track the target tank on screen, at the hip) -->
+  <div id="buster-hud" class="hidden">
+    <span class="bh-c bh-tl"></span><span class="bh-c bh-tr"></span>
+    <span class="bh-c bh-bl"></span><span class="bh-c bh-br"></span>
+    <span class="bh-label" id="buster-lock-pct">0%</span>
+  </div>
+
+  <!-- Tank-buster scope overlay: the "screen" HUD when zoomed down the sight -->
+  <div id="buster-scope">
+    <div class="bs-vignette"></div>
+    <div class="bs-grid"></div>
+    <div class="bs-scan"></div>
+    <span class="bs-frame bs-tl"></span><span class="bs-frame bs-tr"></span>
+    <span class="bs-frame bs-bl"></span><span class="bs-frame bs-br"></span>
+
+    <!-- range ladder down the left edge -->
+    <div class="bs-ladder">
+      <span style="top:12%"><i></i>150</span>
+      <span style="top:31%"><i></i>100</span>
+      <span style="top:50%"><i></i>075</span>
+      <span style="top:69%"><i></i>050</span>
+      <span style="top:88%"><i></i>025</span>
+    </div>
+
+    <!-- top-left: target designation + solution -->
+    <div class="bs-data bs-left">
+      <div class="bs-row"><b>TGT</b><span id="bs-tgt">NO CONTACT</span></div>
+      <div class="bs-row"><b>RNG</b><span id="bs-rng">----</span><em>M</em></div>
+      <div class="bs-row"><b>BRG</b><span id="bs-brg">---</span><em>&deg;</em></div>
+    </div>
+
+    <!-- top-right: weapon + system state -->
+    <div class="bs-data bs-right">
+      <div class="bs-row"><b>MODE</b><span>TOP-ATTACK</span></div>
+      <div class="bs-row"><b>WHD</b><span>PAINT / HE</span></div>
+      <div class="bs-row"><b>SYS</b><span id="bs-sys">ARMED</span></div>
+    </div>
+
+    <div class="bs-reticle">
+      <span class="bs-h"></span><span class="bs-v"></span>
+      <span class="bs-tick bs-up"></span><span class="bs-tick bs-dn"></span>
+      <span class="bs-tick bs-lf"></span><span class="bs-tick bs-rt"></span>
+      <span class="bs-mil bs-mil1"></span><span class="bs-mil bs-mil2"></span>
+      <span class="bs-mil bs-mil3"></span><span class="bs-mil bs-mil4"></span>
+      <span class="bs-box" id="buster-scope-box"></span>
+      <span class="bs-diamond"></span>
+    </div>
+
+    <div class="bs-top">// PAINT WARHEAD &middot; VERTICAL LAUNCH &middot; TOP-ATTACK //</div>
+
+    <!-- lock solution bar + status -->
+    <div class="bs-solution">
+      <div class="bs-lockbar"><i id="bs-lockfill"></i></div>
+      <div class="bs-status" id="buster-scope-status">SEEKING</div>
+    </div>
+  </div>
+
   <!-- Paint hit: vignette + drips in the shooter's color -->
   <div id="paint-hit">
     <div class="ph-vignette"></div>
@@ -44,6 +104,71 @@
     <div class="respawn-sub">Respawning</div>
   </div>
 
+  <!-- Match-start countdown: everyone is frozen until it hits GO -->
+  <div id="countdown" class="hidden">5</div>
+
+  <!-- Tank HUD: status (armor/boost/speed) shows while driving; the gunsight
+       (compass/reticle/range) fades in only while zoomed -->
+  <div id="tank-sight" class="hidden">
+    <!-- zoom-only gunsight -->
+    <div class="ts-zoom" id="ts-zoom">
+      <div class="ts-vignette"></div>
+      <div class="ts-corner tl"></div><div class="ts-corner tr"></div>
+      <div class="ts-corner bl"></div><div class="ts-corner br"></div>
+      <div class="ts-compass">
+        <div class="ts-compass-ticks" id="ts-compass"></div>
+        <div class="ts-heading" id="ts-heading">000</div>
+      </div>
+      <svg class="ts-reticle" viewBox="-120 -120 240 240" aria-hidden="true">
+        <path d="M-70,-42 L-70,-70 L-42,-70" /><path d="M42,-70 L70,-70 L70,-42" />
+        <path d="M-70,42 L-70,70 L-42,70" /><path d="M42,70 L70,70 L70,42" />
+        <line x1="-28" y1="0" x2="-12" y2="0" /><line x1="12" y1="0" x2="28" y2="0" />
+        <line x1="0" y1="-28" x2="0" y2="-12" />
+        <circle cx="0" cy="0" r="11" />
+        <circle cx="0" cy="0" r="1.8" class="ts-dot" />
+        <line x1="-9" y1="28" x2="9" y2="28" /><line x1="-6" y1="42" x2="6" y2="42" /><line x1="-4" y1="56" x2="4" y2="56" />
+      </svg>
+      <div class="ts-range"><span id="ts-rng">---</span> m</div>
+      <div class="ts-gun">
+        <div class="ts-gun-cal">120MM SMOOTHBORE</div>
+        <div class="ts-gun-status" id="ts-gun-status">READY</div>
+      </div>
+    </div>
+
+    <!-- always-on status while driving -->
+    <div class="ts-armor">
+      <div class="ts-armor-lbl">ARMOR <span id="ts-armor">100</span>%</div>
+      <div class="ts-armor-bar"><div class="ts-armor-fill" id="ts-armor-fill"></div></div>
+    </div>
+    <div class="ts-boost" id="ts-boost">
+      <div class="ts-armor-lbl">BOOST</div>
+      <div class="ts-boost-bar"><div class="ts-boost-fill" id="ts-boost-fill"></div></div>
+    </div>
+    <div class="ts-speed"><span class="ts-speed-num" id="ts-speed">0</span><span class="ts-speed-unit">KM/H</span></div>
+    <div class="ts-exit">[<span id="ts-exit-key">E</span>] EXIT</div>
+  </div>
+
+  <!-- "Enter tank" prompt (proximity) -->
+  <div id="tank-prompt" class="hidden">[<span id="tank-prompt-key">E</span>] ENTER TANK</div>
+
+  <!-- Fighter jet HUD (3rd-person air support) -->
+  <div id="jet-hud" class="hidden">
+    <div class="jh-reticle">
+      <span class="jh-h"></span><span class="jh-v"></span>
+      <span class="jh-ring"></span>
+    </div>
+    <div class="jh-panel">
+      <div class="jh-gauge"><b>SPD</b><span id="jet-speed">0</span><em>m/s</em></div>
+      <div class="jh-throttle"><i id="jet-throttle-fill"></i></div>
+      <div class="jh-gauge"><b>ALT</b><span id="jet-alt">0</span><em>m</em></div>
+    </div>
+    <div class="jh-keys">MOUSE steer &nbsp;·&nbsp; W/S throttle &nbsp;·&nbsp; LMB guns &nbsp;·&nbsp; SPACE cluster bomb &nbsp;·&nbsp; G eject</div>
+    <div id="jet-warn" class="hidden">
+      <div class="jw-title">RETURN TO THE BATTLEFIELD</div>
+      <div class="jw-sub">AUTO-DESTRUCT IN <span id="jet-warn-count">8</span>s</div>
+    </div>
+  </div>
+
   <!-- Online session HUD (room code + player count) -->
   <div id="net-hud" class="hidden">
     <span class="hud-label">ROOM</span> <span id="net-code">—</span>
@@ -51,11 +176,56 @@
     <span id="net-status" class="hidden"></span>
   </div>
 
-  <!-- 5v5 scoreboard -->
+  <!-- 5v5 scoreboard — glossy angled panels -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="sb-person" viewBox="0 0 24 24">
+      <circle cx="12" cy="7.5" r="4"/>
+      <path d="M3.5 21.5c0-4.7 3.8-8.5 8.5-8.5s8.5 3.8 8.5 8.5z"/>
+    </symbol>
+    <!-- paint-splat mark for the kill feed -->
+    <symbol id="kf-splat-ico" viewBox="0 0 24 24">
+      <circle cx="11.5" cy="12" r="5.6"/>
+      <circle cx="18.6" cy="7.6" r="2.1"/>
+      <circle cx="5.6" cy="17.4" r="1.8"/>
+      <circle cx="19" cy="17" r="1.3"/>
+      <circle cx="6.4" cy="6.2" r="1.4"/>
+    </symbol>
+    <!-- paintball-marker silhouette for the kill feed -->
+    <symbol id="kf-gun-ico" viewBox="0 0 30 20">
+      <rect x="1" y="9" width="16" height="3.2" rx="1"/>
+      <rect x="12.5" y="6.6" width="9.5" height="6.4" rx="1.6"/>
+      <circle cx="18.6" cy="4.2" r="3.3"/>
+      <path d="M15.5 13 L14 18.5 L17 18.5 L18 13 Z"/>
+    </symbol>
+  </svg>
+
+  <!-- global multi-row kill feed (top-right) -->
+  <div id="killfeed-rows"></div>
   <div id="scoreboard" class="hidden">
-    <span class="team team-blue">BLUE <b id="score-blue">0</b></span>
-    <span class="vs">5v5</span>
-    <span class="team team-red"><b id="score-red">0</b> RED</span>
+    <div class="sb-main">
+      <div class="sb-team sb-blue">
+        <span class="sb-name">BLUE</span>
+        <span class="sb-score" id="score-blue">0</span>
+      </div>
+      <div class="sb-center"><span class="sb-timer" id="sb-timer">0:00</span></div>
+      <div class="sb-team sb-red">
+        <span class="sb-score" id="score-red">0</span>
+        <span class="sb-name">RED</span>
+      </div>
+    </div>
+    <div class="sb-sub">
+      <span class="sb-dots sb-dots-blue">
+        <svg class="sb-ico"><use href="#sb-person"/></svg>
+        <svg class="sb-ico"><use href="#sb-person"/></svg>
+        <svg class="sb-ico"><use href="#sb-person"/></svg>
+      </span>
+      <span class="sb-vs">5 vs 5</span>
+      <span class="sb-dots sb-dots-red">
+        <svg class="sb-ico"><use href="#sb-person"/></svg>
+        <svg class="sb-ico"><use href="#sb-person"/></svg>
+        <svg class="sb-ico"><use href="#sb-person"/></svg>
+      </span>
+    </div>
   </div>
 
   <!-- HUD -->
@@ -65,7 +235,6 @@
       <span id="color-swatch"></span>
       <span id="color-name">RED</span>
     </div>
-    <div id="splat-count"><span class="hud-label">SPLATS</span> <span id="splat-num">0</span></div>
   </div>
 
   <!-- Title / cover screen (first thing shown) -->
@@ -88,6 +257,9 @@
                autocomplete="off" spellcheck="false" />
       </div>
       <button id="play-btn">Free Play</button>
+      <button id="lights-out-toggle" class="mode-toggle" aria-pressed="false">
+        <span class="mode-dot"></span><span>Lights Out</span>
+      </button>
       <div class="menu-label">Multiplayer</div>
       <div class="menu-col">
         <button id="open-public-btn" class="secondary-btn wide">Find Public Server</button>

@@ -12,11 +12,14 @@
  * ~100 balls that's ~5k pair checks a substep, which is nothing.
  */
 
+// Position-Based Dynamics: predict positions, then relax non-penetration +
+// container constraints over several ITERATIONS so a densely packed hopper stays
+// FIRM (discrete rigid balls) instead of oozing like liquid. Velocity is read
+// back from the solved position change, which is naturally stable and settles.
 const SUBSTEPS = 2;
-const RESTITUTION = 0.18;   // how bouncy the balls are
-const WALL_FRICTION = 0.82; // tangential velocity kept on a wall hit
-const BALL_DAMP = 0.995;    // per-substep velocity damping so piles settle
-const MAX_ACCEL = 90;       // clamp inertial force (m/s²)
+const ITERATIONS = 8;       // constraint relaxation passes per substep (firmness)
+const LINEAR_DAMP = 0.9;    // per-substep velocity damping — settles yet still rattles
+const MAX_ACCEL = 40;       // clamp the inertial force so movement JOSTLES, not crushes
 
 export class HopperPhysics {
   /** @param {{count:number, innerRadius:number, innerHeight:number, ballRadius:number}} opts */
@@ -91,6 +94,8 @@ export class HopperPhysics {
   update(dt, downLocal, accelLocal) {
     if (!this.ready || dt <= 0) return;
     const clamp = (v) => Math.max(-MAX_ACCEL, Math.min(MAX_ACCEL, v));
+    // gravity swings around as you look; the hopper's own acceleration is folded
+    // in as an inertial force so the balls lurch when you start/stop/strafe.
     const gx = clamp(downLocal.x * 9.81 - (accelLocal ? accelLocal.x : 0));
     const gy = clamp(downLocal.y * 9.81 - (accelLocal ? accelLocal.y : 0));
     const gz = clamp(downLocal.z * 9.81 - (accelLocal ? accelLocal.z : 0));
@@ -100,69 +105,65 @@ export class HopperPhysics {
   }
 
   _step(h, gx, gy, gz) {
-    const { R, H, r, positions: P, vel: V } = this;
+    const { positions: P, vel: V } = this;
     const n = P.length;
-    const wallR = R - r;
-    const floorY = -H / 2 + r;
-    const ceilY = H / 2 - r;
 
-    // integrate
+    // 1) integrate velocity, remember the pre-solve position, predict forward
     for (let i = 0; i < n; i++) {
       const v = V[i], p = P[i];
-      v.x = (v.x + gx * h) * BALL_DAMP;
-      v.y = (v.y + gy * h) * BALL_DAMP;
-      v.z = (v.z + gz * h) * BALL_DAMP;
+      v.x += gx * h; v.y += gy * h; v.z += gz * h;
+      p.px = p.x; p.py = p.y; p.pz = p.z;
       p.x += v.x * h; p.y += v.y * h; p.z += v.z * h;
     }
 
-    // ball vs ball
-    const d2min = (r * 2) * (r * 2);
-    for (let i = 0; i < n; i++) {
-      const pi = P[i], vi = V[i];
-      for (let j = i + 1; j < n; j++) {
-        const pj = P[j];
-        let dx = pj.x - pi.x, dy = pj.y - pi.y, dz = pj.z - pi.z;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 >= d2min || d2 < 1e-12) continue;
-        const d = Math.sqrt(d2);
-        const nx = dx / d, ny = dy / d, nz = dz / d;
-        const overlap = r * 2 - d;
-        // positional split
-        const push = overlap * 0.5;
-        pi.x -= nx * push; pi.y -= ny * push; pi.z -= nz * push;
-        pj.x += nx * push; pj.y += ny * push; pj.z += nz * push;
-        // equal-mass impulse along the normal
-        const vj = V[j];
-        const rel = (vj.x - vi.x) * nx + (vj.y - vi.y) * ny + (vj.z - vi.z) * nz;
-        if (rel < 0) {
-          const imp = -(1 + RESTITUTION) * rel * 0.5;
-          vi.x -= nx * imp; vi.y -= ny * imp; vi.z -= nz * imp;
-          vj.x += nx * imp; vj.y += ny * imp; vj.z += nz * imp;
-        }
-      }
+    // 2) relax constraints several times — this is what keeps a packed hopper
+    //    FIRM (rigid balls) instead of squishy/liquid
+    for (let it = 0; it < ITERATIONS; it++) {
+      this._solveContacts();
+      this._solveContainer();
     }
 
-    // ball vs bin (cylinder wall + floor + lid)
+    // 3) read velocity back from the solved motion, then damp so piles settle
+    const inv = 1 / h;
     for (let i = 0; i < n; i++) {
-      const p = P[i], v = V[i];
-      const radial = Math.hypot(p.x, p.z);
-      if (radial > wallR) {
-        const nx = p.x / radial, nz = p.z / radial;
-        p.x = nx * wallR; p.z = nz * wallR;
-        const vn = v.x * nx + v.z * nz;
-        if (vn > 0) {
-          v.x -= (1 + RESTITUTION) * vn * nx;
-          v.z -= (1 + RESTITUTION) * vn * nz;
-          v.x *= WALL_FRICTION; v.z *= WALL_FRICTION; v.y *= WALL_FRICTION;
-        }
+      const v = V[i], p = P[i];
+      v.x = (p.x - p.px) * inv * LINEAR_DAMP;
+      v.y = (p.y - p.py) * inv * LINEAR_DAMP;
+      v.z = (p.z - p.pz) * inv * LINEAR_DAMP;
+    }
+  }
+
+  /** PBD: push every overlapping pair apart to exactly touching (positional). */
+  _solveContacts() {
+    const { r, positions: P } = this;
+    const n = P.length;
+    const dmin = r * 2, dmin2 = dmin * dmin;
+    for (let i = 0; i < n; i++) {
+      const pi = P[i];
+      for (let j = i + 1; j < n; j++) {
+        const pj = P[j];
+        const dx = pj.x - pi.x, dy = pj.y - pi.y, dz = pj.z - pi.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= dmin2 || d2 < 1e-12) continue;
+        const d = Math.sqrt(d2);
+        const corr = (dmin - d) * 0.5;
+        const nx = dx / d, ny = dy / d, nz = dz / d;
+        pi.x -= nx * corr; pi.y -= ny * corr; pi.z -= nz * corr;
+        pj.x += nx * corr; pj.y += ny * corr; pj.z += nz * corr;
       }
-      if (p.y < floorY) {
-        p.y = floorY;
-        if (v.y < 0) { v.y = -v.y * RESTITUTION; v.x *= WALL_FRICTION; v.z *= WALL_FRICTION; }
-      } else if (p.y > ceilY) {
-        p.y = ceilY;
-        if (v.y > 0) { v.y = -v.y * RESTITUTION; v.x *= WALL_FRICTION; v.z *= WALL_FRICTION; }
-      }
+    }
+  }
+
+  /** PBD: keep every ball inside the cylinder wall, floor and lid. */
+  _solveContainer() {
+    const { R, H, r, positions: P } = this;
+    const wallR = R - r, floorY = -H / 2 + r, ceilY = H / 2 - r;
+    for (let i = 0; i < P.length; i++) {
+      const p = P[i];
+      const rad = Math.hypot(p.x, p.z);
+      if (rad > wallR && rad > 1e-9) { const s = wallR / rad; p.x *= s; p.z *= s; }
+      if (p.y < floorY) p.y = floorY;
+      else if (p.y > ceilY) p.y = ceilY;
     }
   }
 }

@@ -38,12 +38,39 @@ export class Weapon {
     // --- tunables (wired to the dev panel) ---
     this.hipX = 0.19; this.hipY = -0.105; this.hipZ = -0.355;
     this.aimX = -0.025; this.aimY = -0.094; this.aimZ = -0.19;
+    // wall pullback: 0 = normal, 1 = pressed against a wall (tuck the gun back
+    // toward the camera so the barrel stops poking through geometry)
+    this.wallPull = 0;
+    this.wallPullZ = 0.3;   // how far back to tuck
+    this.wallPullY = -0.05; // slight downward tuck
     this.cant = 0.74;        // radians of roll when aiming (tips the loader clear)
     this.aimFov = 75;
     this.aimSpeed = 30;      // how fast the aim pose blends
     this.recoilAmount = 0.2;
 
+    // --- sprint pose (Call-of-Duty style angled carry + sway while running) ---
+    this.sprintX = 0.215; this.sprintY = -0.33; this.sprintZ = -0.34; // where the gun rides
+    this.sprintPitch = -0.82;  // rx — muzzle tips up
+    this.sprintYaw = 0.54;     // ry — muzzle swings inward across the screen
+    this.sprintRoll = 0.52;    // rz — cants the marker over
+    this.sprintSpeed = 20;     // how fast the sprint pose blends in/out
+    this.swaySpeed = 11.5;     // sway cadence (rad/s, ~footsteps)
+    this.swayX = 0.062;        // horizontal sway amplitude
+    this.swayY = 0.02;         // vertical bob amplitude
+    this.swayRoll = 0;         // roll-wobble amplitude
+
+    // --- slide pose (gun kicks up while sliding) ---
+    this.slidePitch = 0.94;    // rx — rotates the muzzle up during a slide
+    this.slideRoll = 0;        // rz — optional cant during a slide
+    this.slideX = 0.315;       // position offset X during a slide
+    this.slideY = 0.04;        // position offset Y (raises the gun) during a slide
+    this.slideZ = 0;           // position offset Z during a slide
+    this.slideBlend = 16;      // how fast the slide pose blends in/out
+
     this.aimT = 0;           // 0 = hip, 1 = aimed
+    this.sprintT = 0;        // 0 = normal, 1 = full sprint pose
+    this.slideT = 0;         // 0 = normal, 1 = full slide pose
+    this._swayPhase = 0;
     this._kick = 0;
 
     this._prevWorld = new THREE.Vector3();
@@ -53,6 +80,7 @@ export class Weapon {
 
     this._build(paintHex);
     this.viewScale = 0.8; // base viewmodel scale
+    this.refFov = 75;     // FOV viewScale was tuned at; scale tracks FOV vs this
     this.root.scale.setScalar(this.viewScale);
     // seat it in the hip pose immediately — otherwise it sits on the camera
     // origin (clipping into the lens) until the first update()
@@ -100,9 +128,10 @@ export class Weapon {
     add(new THREE.CylinderGeometry(0.0135, 0.0135, 0.11, 20), dark, 0, 0, -0.335, Math.PI / 2);
     add(new THREE.CylinderGeometry(0.0125, 0.0125, 0.02, 20), this.accentMat, 0, 0, -0.386, Math.PI / 2);
 
-    // receiver / body
+    // receiver / body (dark plate seated just below the body's top so their
+    // faces don't coincide and z-fight)
     add(new THREE.BoxGeometry(0.046, 0.058, 0.20), body, 0, -0.030, 0.015);
-    add(new THREE.BoxGeometry(0.050, 0.022, 0.115), dark, 0, -0.012, 0.005);
+    add(new THREE.BoxGeometry(0.044, 0.022, 0.115), dark, 0, -0.018, 0.005);
     // bolt/cocking cap at the rear
     add(new THREE.CylinderGeometry(0.017, 0.017, 0.03, 16), dark, 0, -0.012, 0.128, Math.PI / 2);
 
@@ -111,8 +140,9 @@ export class Weapon {
     add(new THREE.BoxGeometry(0.004, 0.016, 0.006), dark, 0, 0.030, -0.055); // front post
     add(new THREE.BoxGeometry(0.016, 0.012, 0.006), dark, 0, 0.028, 0.088);  // rear notch
 
-    // feed neck (hopper mounts here)
-    add(new THREE.CylinderGeometry(0.019, 0.021, 0.058, 16), dark, 0, 0.046, 0.035);
+    // feed neck / mount collar — wide enough to bridge the receiver up into the
+    // hopper base with no see-through gap
+    add(new THREE.CylinderGeometry(0.030, 0.034, 0.075, 16), dark, 0, 0.040, 0.035);
 
     // grip + trigger guard + trigger
     const grip = add(new THREE.BoxGeometry(0.034, 0.105, 0.048), rubber, 0, -0.108, 0.072);
@@ -137,6 +167,7 @@ export class Weapon {
       transparent: true, opacity: 0.26, depthWrite: false,
       side: THREE.DoubleSide,
     });
+    this.shellMat = shellMat; // thinned in Lights Out so the neon balls shine through
     this.materials.push(shellMat);
     const shell = new THREE.Mesh(
       new THREE.CylinderGeometry(HOPPER_INNER_R + 0.004, HOPPER_INNER_R + 0.004, HOPPER_INNER_H + 0.008, 24, 1, true),
@@ -177,6 +208,22 @@ export class Weapon {
     this.ballMat.color.setHex(hex);
     this.accentMat.color.setHex(hex);
     this.accentMat.emissive.setHex(hex);
+    if (this._neon) this.ballMat.emissive.setHex(hex); // keep the neon glow on colour change
+  }
+
+  /** "Lights Out": make the loaded hopper paintballs glow their own colour. */
+  setNeon(on) {
+    this._neon = on;
+    this.ballMat.emissive.copy(this.ballMat.color);
+    this.ballMat.emissiveIntensity = on ? 2.6 : 0;
+    // skip tone mapping so the emissive renders at full neon brightness instead
+    // of being compressed by ACES (that's what made it look muffled)
+    this.ballMat.toneMapped = !on;
+    this.ballMat.needsUpdate = true;
+    this.accentMat.emissiveIntensity = on ? 0.9 : 0.18;
+    this.accentMat.toneMapped = !on;
+    this.accentMat.needsUpdate = true;
+    if (this.shellMat) this.shellMat.opacity = on ? 0.1 : 0.26; // thin dome so balls shine through
   }
 
   /** Called on each shot for a little recoil kick. */
@@ -187,32 +234,65 @@ export class Weapon {
    * @param {boolean} aiming
    * @param {number} baseFov  the un-zoomed field of view, for scale compensation
    */
-  update(dt, aiming, baseFov = 75) {
+  update(dt, aiming, baseFov = 75, sprinting = false, sliding = false) {
     // --- aim blend ---
     const target = aiming ? 1 : 0;
     this.aimT += (target - this.aimT) * Math.min(1, dt * this.aimSpeed);
     const t = this.aimT;
 
-    // Zooming the FOV magnifies everything, viewmodel included — so the marker
-    // would balloon while aiming. Shrink it by the same factor the zoom
-    // magnifies by, which keeps its on-screen size constant.
-    const comp = Math.tan(THREE.MathUtils.degToRad(this.aimFov) / 2) /
-                 Math.tan(THREE.MathUtils.degToRad(baseFov) / 2);
-    this.root.scale.setScalar(this.viewScale * THREE.MathUtils.lerp(1, comp, t));
+    // --- sprint blend + running sway (aiming always wins over sprint) ---
+    const sTarget = (sprinting && !aiming) ? 1 : 0;
+    this.sprintT += (sTarget - this.sprintT) * Math.min(1, dt * this.sprintSpeed);
+    const s = this.sprintT;
+    this._swayPhase += dt * this.swaySpeed;
+    const swayPX = Math.sin(this._swayPhase) * this.swayX * s;      // side-to-side
+    const swayPY = Math.sin(this._swayPhase * 2) * this.swayY * s;  // vertical bob (2x cadence)
+    const swayRz = Math.sin(this._swayPhase) * this.swayRoll * s;   // roll wobble
+
+    // --- slide blend (kicks the muzzle up; overrides sprint/hip while sliding) ---
+    const slTarget = (sliding && !aiming) ? 1 : 0;
+    this.slideT += (slTarget - this.slideT) * Math.min(1, dt * this.slideBlend);
+    const sl = this.slideT;
+
+    // FOV magnifies everything the camera sees, viewmodel included — so a wider
+    // FOV shrinks the gun on screen and a narrower one (or ADS zoom) balloons it.
+    // Scale the marker by tan(currentFov/2)/tan(refFov/2) so its on-screen size
+    // stays constant across ANY chosen field of view and while zooming. curFov is
+    // the FOV the camera is actually at right now (base blended toward aimFov).
+    const curFov = THREE.MathUtils.lerp(baseFov, this.aimFov, t);
+    const comp = Math.tan(THREE.MathUtils.degToRad(curFov) / 2) /
+                 Math.tan(THREE.MathUtils.degToRad(this.refFov) / 2);
+    this.root.scale.setScalar(this.viewScale * comp);
 
     this._kick = Math.max(0, this._kick - dt * 7);
     const k = this._kick * this._kick * 0.012 * this.recoilAmount;
 
-    this.root.position.set(
-      THREE.MathUtils.lerp(this.hipX, this.aimX, t),
-      THREE.MathUtils.lerp(this.hipY, this.aimY, t) - k * 0.35,
-      THREE.MathUtils.lerp(this.hipZ, this.aimZ, t) + k * 1.6);
-    // hip pose is slightly toed-in; aiming rolls the marker so the hopper
-    // clears the sight line
-    this.root.rotation.set(
-      0.015 * (1 - t) + k * 1.2,
-      -0.075 * (1 - t),
-      this.cant * t);
+    const wp = this.wallPull;
+    // base hip↔aim pose, then blend toward the sprint carry by s
+    let px = THREE.MathUtils.lerp(this.hipX, this.aimX, t);
+    let py = THREE.MathUtils.lerp(this.hipY, this.aimY, t) - k * 0.35 + wp * this.wallPullY;
+    let pz = THREE.MathUtils.lerp(this.hipZ, this.aimZ, t) + k * 1.6 + wp * this.wallPullZ;
+    px = THREE.MathUtils.lerp(px, this.sprintX + swayPX, s);
+    py = THREE.MathUtils.lerp(py, this.sprintY + swayPY, s);
+    pz = THREE.MathUtils.lerp(pz, this.sprintZ, s);
+    // slide shifts the gun by its X/Y/Z offset (Y raises it)
+    px += this.slideX * sl;
+    py += this.slideY * sl;
+    pz += this.slideZ * sl;
+    this.root.position.set(px, py, pz);
+
+    // hip pose is slightly toed-in; aiming rolls the marker so the hopper clears
+    // the sight line; sprinting cants it to the angled running carry; sliding
+    // kicks the muzzle up
+    let rx = 0.015 * (1 - t) + k * 1.2;
+    let ry = -0.075 * (1 - t);
+    let rz = this.cant * t;
+    rx = THREE.MathUtils.lerp(rx, this.sprintPitch, s);
+    ry = THREE.MathUtils.lerp(ry, this.sprintYaw + swayPX * 3, s);
+    rz = THREE.MathUtils.lerp(rz, this.sprintRoll + swayRz, s);
+    rx = THREE.MathUtils.lerp(rx, this.slidePitch, sl);
+    rz = THREE.MathUtils.lerp(rz, this.slideRoll, sl);
+    this.root.rotation.set(rx, ry, rz);
 
     this._updateHopper(dt);
   }
@@ -234,7 +314,7 @@ export class Weapon {
       _vel.subVectors(_wpos, this._prevWorld).divideScalar(dt);
       _acc.subVectors(_vel, this._prevVel).divideScalar(dt);
       if (!isFinite(_acc.x) || _acc.length() > 400) _acc.set(0, 0, 0);
-      this._smoothAcc.lerp(_acc, Math.min(1, dt * 12));
+      this._smoothAcc.lerp(_acc, Math.min(1, dt * 18)); // snappier so balls lurch with movement
       this._prevVel.copy(_vel);
     } else {
       this._prevVel.set(0, 0, 0);

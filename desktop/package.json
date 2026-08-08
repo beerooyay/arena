@@ -1,6 +1,6 @@
 {
   "name": "whiteout-paintball-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "WhiteOut Paintball — downloadable desktop build",
   "author": "ceeboozwah",
   "license": "UNLICENSED",
@@ -15,25 +15,48 @@
     "dist:linux": "npm run copygame && electron-builder --linux"
   },
   "devDependencies": {
-    "electron": "^31.7.7",
+    "electron": "^43.2.0",
     "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "io.itch.ceeboozwah.whiteoutpaintball",
     "productName": "WhiteOut Paintball",
     "artifactName": "WhiteOut-Paintball-${version}-${os}-${arch}.${ext}",
-    "files": ["main.js", "app/**/*", "build/icon.png"],
-    "directories": { "output": "dist" },
+    "files": [
+      "main.js",
+      "steam.js",
+      "preload.js",
+      "app/**/*",
+      "build/icon.png"
+    ],
+    "asarUnpack": [
+      "**/node_modules/steamworks.js/**"
+    ],
+    "directories": {
+      "output": "dist"
+    },
     "compression": "maximum",
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["universal"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
       "icon": "build/icon.png",
       "category": "public.app-category.games",
       "identity": null
     },
-    "dmg": { "title": "WhiteOut Paintball" },
+    "dmg": {
+      "title": "WhiteOut Paintball"
+    },
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "icon": "build/icon.png"
     },
     "nsis": {
@@ -47,9 +70,14 @@
       "artifactName": "WhiteOut-Paintball-${version}-portable.${ext}"
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "icon": "build/icon.png",
       "category": "Game"
     }
+  },
+  "dependencies": {
+    "steamworks.js": "^0.4.0"
   }
 }

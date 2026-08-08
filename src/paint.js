@@ -22,7 +22,13 @@ function makeBlobTexture(seed) {
 
   const cx = size / 2, cy = size / 2;
 
-  // main irregular splat body via overlapping radial blobs
+  // Solid, opaque fills + a single soft blur for a clean edge. (Overlapping
+  // semi-transparent radial gradients used to leave a speckled partial-alpha
+  // ring inside the rim, which read as tiny dots once tinted.)
+  ctx.fillStyle = '#fff';
+  ctx.filter = 'blur(3px)';
+
+  // main irregular splat body via overlapping solid blobs
   const blobs = 5 + Math.floor(rnd() * 4);
   for (let i = 0; i < blobs; i++) {
     const ang = rnd() * Math.PI * 2;
@@ -30,35 +36,29 @@ function makeBlobTexture(seed) {
     const bx = cx + Math.cos(ang) * dist;
     const by = cy + Math.sin(ang) * dist;
     const r = size * (0.16 + rnd() * 0.18);
-    const g = ctx.createRadialGradient(bx, by, 0, bx, by, r);
-    g.addColorStop(0, 'rgba(255,255,255,1)');
-    g.addColorStop(0.7, 'rgba(255,255,255,1)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
     ctx.beginPath();
     ctx.arc(bx, by, r, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  // outward droplets / splatter dots
-  const dots = 10 + Math.floor(rnd() * 12);
+  // outward droplets / splatter dots (solid too)
+  const dots = 8 + Math.floor(rnd() * 8);
   for (let i = 0; i < dots; i++) {
     const ang = rnd() * Math.PI * 2;
-    const dist = size * (0.22 + rnd() * 0.24);
+    const dist = size * (0.24 + rnd() * 0.22);
     const dx = cx + Math.cos(ang) * dist;
     const dy = cy + Math.sin(ang) * dist;
-    const r = size * (0.01 + rnd() * 0.045);
-    const g = ctx.createRadialGradient(dx, dy, 0, dx, dy, r);
-    g.addColorStop(0, 'rgba(255,255,255,1)');
-    g.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = g;
+    const r = size * (0.015 + rnd() * 0.04);
     ctx.beginPath();
     ctx.arc(dx, dy, r, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.filter = 'none';
 
   const tex = new THREE.CanvasTexture(c);
   tex.anisotropy = 4;
+  tex.minFilter = THREE.LinearFilter; // no mipmaps -> no shimmering speckle
+  tex.generateMipmaps = false;
   return tex;
 }
 
@@ -119,6 +119,7 @@ export class PaintSystem {
   constructor(scene) {
     this.scene = scene;
     this.decals = [];
+    this._neon = false;  // "Lights Out": splats glow in their own colour
     this.growing = [];   // drips currently extending downward
     this.textures = [1, 2, 3, 4, 5].map(makeBlobTexture);
     this.dripTextures = [1, 2, 3].map(makeDripTexture);
@@ -180,12 +181,66 @@ export class PaintSystem {
     const tex = custom
       ? this.customTexture
       : this.textures[(Math.random() * this.textures.length) | 0];
+    // depth (z) stays shallow so the projector box can't wrap around an edge
+    // onto the neighbouring face and leave a hard square patch
     const decal = this._addDecal(mesh, point, orienter.rotation,
-      new THREE.Vector3(scale, scale, scale), colorHex, tex, custom);
+      new THREE.Vector3(scale, scale, Math.min(scale, 0.7)), colorHex, tex, custom);
 
     // drips use the blob drip textures, so skip them for custom designs
     if (s.dripsEnabled && !custom) this._spawnDrips(mesh, point, normal, colorHex, scale);
     return decal;
+  }
+
+  /**
+   * Build a splat decal on `mesh` at a world point/normal and RETURN it without
+   * adding it to the scene (caller owns it). Used to paint moving objects (the
+   * tank): the caller bakes it into the object's local space and parents it.
+   */
+  buildDecal(mesh, point, normal, colorHex, scaleMult = 1) {
+    const s = this.settings;
+    const scale = s.size * scaleMult * (1 + (Math.random() * 2 - 1) * s.sizeVariation);
+    const orienter = new THREE.Object3D();
+    orienter.position.copy(point);
+    orienter.lookAt(point.clone().add(normal));
+    orienter.rotateZ(Math.random() * Math.PI * 2);
+    const tex = this.textures[(Math.random() * this.textures.length) | 0];
+    let geom;
+    try {
+      geom = new DecalGeometry(mesh, point, orienter.rotation, new THREE.Vector3(scale, scale, Math.min(scale, 0.7)));
+    } catch (e) { return null; }
+    if (!geom || geom.attributes.position.count === 0) return null;
+    const mat = new THREE.MeshStandardMaterial({
+      transparent: true, opacity: s.opacity, roughness: 0.55, metalness: 0,
+      depthTest: true, depthWrite: false, polygonOffset: true,
+      polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+      alphaMap: tex, color: new THREE.Color(colorHex),
+    });
+    this._neonify(mat);
+    const decal = new THREE.Mesh(geom, mat);
+    decal.renderOrder = 2;
+    return decal;
+  }
+
+  /** Give a splat material a neon self-glow (or clear it), for Lights Out mode. */
+  _neonify(mat) {
+    if (!mat || !mat.emissive) return;
+    if (this._neon) {
+      mat.emissive.copy(mat.color);
+      mat.emissiveIntensity = 1.6;
+      mat.toneMapped = false; // full neon brightness (skip ACES compression)
+    } else {
+      mat.emissive.setRGB(0, 0, 0);
+      mat.emissiveIntensity = 0;
+      mat.toneMapped = true;
+    }
+    mat.needsUpdate = true;
+  }
+
+  /** Toggle the neon glow on every splat (existing + future). */
+  setNeon(on) {
+    this._neon = on;
+    for (const d of this.decals) this._neonify(d.material);
+    for (const g of this.growing) if (g.mesh) this._neonify(g.mesh.material);
   }
 
   /** Build + register one decal mesh on the target surface. */
@@ -219,6 +274,7 @@ export class PaintSystem {
       matOpts.color = new THREE.Color(colorHex);
     }
     const mat = new THREE.MeshStandardMaterial(matOpts);
+    this._neonify(mat);
 
     const decal = new THREE.Mesh(geom, mat);
     decal.renderOrder = 2;
@@ -278,7 +334,7 @@ export class PaintSystem {
   }
 
   _makeDripMaterial(colorHex, texture) {
-    return new THREE.MeshStandardMaterial({
+    const mat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(colorHex),
       alphaMap: texture,
       transparent: true,
@@ -291,6 +347,8 @@ export class PaintSystem {
       polygonOffsetFactor: -4,
       polygonOffsetUnits: -4,
     });
+    this._neonify(mat);
+    return mat;
   }
 
   /** Rebuild a growing drip's decal geometry for its current length. */

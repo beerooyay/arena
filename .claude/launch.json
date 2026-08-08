@@ -4,7 +4,7 @@
     {
       "name": "whiteout-paintball",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["-m", "http.server", "5178", "--directory", "/Users/bourgeois/WhiteOutPaintball"],
+      "runtimeArgs": ["/Users/bourgeois/WhiteOutPaintball/devserver.py", "5178"],
       "port": 5178
     }
   ]

@@ -16,11 +16,16 @@
  * and forms WebRTC connections directly between players.
  */
 
-const { app, BrowserWindow, protocol, shell } = require('electron');
+const { app, BrowserWindow, protocol, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const steam = require('./steam'); // Steam integration (safe no-op if unavailable)
 
 const ROOT = path.join(__dirname, 'app'); // the copied static game
+
+// The Steam overlay needs Electron command-line switches, so this must run
+// before the app is ready.
+steam.enableOverlay();
 
 const MIME = {
   '.html': 'text/html',
@@ -64,6 +69,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false, // keep the sim running when unfocused
+      preload: path.join(__dirname, 'preload.js'), // exposes window.steam
     },
   });
 
@@ -100,6 +106,12 @@ app.whenReady().then(() => {
       return new Response('Not found', { status: 404 });
     }
   });
+
+  steam.init(); // connect to Steam (no-op if not running / not the Steam build)
+
+  // Bridge the game -> Steam. Both are safe no-ops when Steam is unavailable.
+  ipcMain.handle('steam:available', () => steam.isAvailable());
+  ipcMain.handle('steam:unlock', (_e, apiName) => steam.unlockAchievement(apiName));
 
   createWindow();
 

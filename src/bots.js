@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { addPlayerGlow, disposeGlow } from './playerGlow.js';
+import { teamSpawnXZ } from './spawns.js';
 
 /**
  * BotSystem — simple 5v5 paintball AI.
@@ -116,6 +118,11 @@ export class BotSystem {
     this.perTeam = 5;
     this.fireInterval = opts.fireInterval ?? 90; // ms — matches the player
 
+    // First spawn slot bots take per team; human players occupy the slots below
+    // it. Free play: the player holds BLUE slot 0, so blue bots start at slot 1.
+    // Online: the host sets this to the number of humans on each team.
+    this._slotBase = [1, 0];
+
     this.teams = [
       { id: 0, name: 'BLUE', hex: 0x2f7bff },
       { id: 1, name: 'RED',  hex: 0xff3b3b },
@@ -195,6 +202,7 @@ export class BotSystem {
   _despawnAll() {
     for (const b of this.bots) {
       if (this.paint) for (const d of b.bodyDecals) this.paint.removeDecal(d);
+      disposeGlow(b.group);
       this.scene.remove(b.group);
       b.bodyMat.dispose();
       b.ringMat.dispose();
@@ -205,10 +213,11 @@ export class BotSystem {
     this.bots.length = 0;
   }
 
+  /** Bots fill the spawn slots above the humans on each team (see _slotBase). */
+  setSlotBase(blue, red) { this._slotBase = [blue, red]; }
+
   _spawnPoint(team, idx) {
-    const side = team.id === 0 ? 1 : -1;
-    const z = side * (22 + (idx % 2) * 7);
-    const x = -18 + idx * 9 + (Math.random() * 4 - 2);
+    const { x, z } = teamSpawnXZ(team.id, this._slotBase[team.id] + idx);
     return new THREE.Vector3(x, 0, z);
   }
 
@@ -242,6 +251,7 @@ export class BotSystem {
     marker.rotation.y = -0.10; // angled slightly inward, like a held gun
 
     group.add(body, head, ring, crown, label, marker);
+    addPlayerGlow(group, team.hex); // team-colored rim glow for contrast
 
     const bot = {
       team, hex: team.hex, group, body, head, bodyMat, ringMat,
@@ -334,6 +344,17 @@ export class BotSystem {
         else if (m === dR) bot.pos.x = maxX;
         else if (m === dB) bot.pos.z = minZ;
         else bot.pos.z = maxZ;
+      }
+    }
+    // push out of the tanks (cylinder approximation)
+    if (this.tankSolids) {
+      for (const ts of this.tankSolids) {
+        const dx = bot.pos.x - ts.x, dz = bot.pos.z - ts.z;
+        const d2 = dx * dx + dz * dz, md = ts.r + r;
+        if (d2 > 1e-4 && d2 < md * md) {
+          const d = Math.sqrt(d2), push = (md - d) / d;
+          bot.pos.x += dx * push; bot.pos.z += dz * push;
+        }
       }
     }
   }

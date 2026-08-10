@@ -181,6 +181,7 @@ export class NetPlay {
   collisionActors() {
     const out = [];
     for (const r of this.remotes.values()) {
+      if (r.inTank) continue; // no phantom body collision while they're in a tank
       out.push({ x: r.group.position.x, z: r.group.position.z, alive: true });
     }
     for (const g of this.ghostBots) {
@@ -351,6 +352,7 @@ export class NetPlay {
         if (r) {
           r.target.x = msg.p[0]; r.target.y = msg.p[1]; r.target.z = msg.p[2];
           r.target.ry = msg.ry;
+          r.inTank = !!msg.v; // driving a tank -> hidden + untargetable (the tank represents them)
         }
         break;
       }
@@ -419,6 +421,7 @@ export class NetPlay {
     this.remotes.set(p.id, {
       group,
       target: { x: group.position.x, y: EYE_HEIGHT, z: group.position.z, ry: 0 },
+      inTank: false, // true while this player is driving a tank: hidden + untargetable
     });
   }
 
@@ -468,6 +471,8 @@ export class NetPlay {
     const k = Math.min(1, dt * 10);
     for (const r of this.remotes.values()) {
       const g = r.group;
+      g.visible = !r.inTank; // in a tank: the tank is the avatar, so hide the body
+      // keep tracking the tank spot even while hidden, so exiting doesn't snap
       g.position.x += (r.target.x - g.position.x) * k;
       g.position.z += (r.target.z - g.position.z) * k;
       g.position.y += ((r.target.y - EYE_HEIGHT) - g.position.y) * k; // eye -> feet
@@ -498,6 +503,7 @@ export class NetPlay {
         t: 's',
         p: [+pos.x.toFixed(2), +pos.y.toFixed(2), +pos.z.toFixed(2)],
         ry: +_euler.y.toFixed(3),
+        v: this.selfPosOverride ? 1 : 0, // 1 = in a tank -> peers hide my body + can't shoot it
       });
     }
 
@@ -590,6 +596,7 @@ export class NetPlay {
     for (const [id, r] of this.remotes) {
       const p = this.roster.get(id);
       if (this.me && p && p.team === this.me.team) continue; // no friendly fire
+      if (r.inTank) continue; // in a tank -> untargetable (shoot the tank instead)
       _center.copy(r.group.position); _center.y += 1.2;
       const t = raySphere(origin, dir, _center, 0.7);
       if (t >= 0 && t < bestT) {
@@ -644,7 +651,7 @@ export class NetPlay {
     const out = [];
     for (const [id, r] of this.remotes) {
       const p = this.roster.get(id);
-      if (p) out.push({ pos: r.group.position, team: p.team, alive: true });
+      if (p && !r.inTank) out.push({ pos: r.group.position, team: p.team, alive: true }); // skip tank drivers
     }
     return out;
   }
@@ -655,6 +662,7 @@ export class NetPlay {
     for (const [id, r] of this.remotes) {
       const p = this.roster.get(id);
       if (!p || p.team === shooterTeam) continue;
+      if (r.inTank) continue; // in a tank -> untargetable by bots too
       _center.copy(r.group.position); _center.y += 1.2;
       const t = raySphere(origin, dir, _center, 0.7);
       if (t >= 0 && t < bestT) { bestT = t; best = { id }; }

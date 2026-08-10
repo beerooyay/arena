@@ -343,6 +343,7 @@ function setNightMode(on) {
     setArenaEmissive(0x000000, 0);
     daySky.group.visible = true;
     nightSky.group.visible = false;
+    nightSky.resetEgg(); // calm the moon when leaving Lights Out
     paint.setNeon(false);
     weapon.setNeon(false);
     document.body.classList.remove('lights-out');
@@ -1398,7 +1399,9 @@ function shoot() {
     .add(_forward.clone().multiplyScalar(0.6));
   // aim straight at the crosshair point and fly flat, so the round lands dead-on
   const dir = crosshairAimPoint().sub(origin).normalize().clone();
-  spawnProjectile(origin, dir, hex, PLAYER_TEAM, 70, true, playerStats, { gravity: 0 });
+  const p = spawnProjectile(origin, dir, hex, PLAYER_TEAM, 70, true, playerStats, { gravity: 0 });
+  // Lights Out easter egg: a round aimed at the moon homes up and splats it
+  if (p && nightMode && nightSky.aimHitsMoon(origin, _forward)) p.moonBound = true;
   playerStats.shots++;
   weapon.kick();
   netplay.sendShot(origin, dir, hex); // no-op unless an online match is live
@@ -1990,6 +1993,50 @@ function clusterBurst(pos, hex) {
   for (let n = 0; n < 4; n++) emitBusterSmoke(origin);
 }
 
+// ---------------------------------------------------------------------------
+// Lights Out moon easter egg: rounds aimed at the moon home up and splat it;
+// enough splats wake the angry moon, which spews paintballs onto the arena.
+// ---------------------------------------------------------------------------
+const _moonC = new THREE.Vector3(), _moonDir = new THREE.Vector3(), _moonMouth = new THREE.Vector3();
+let _moonFireAcc = 0;
+function updateMoonProjectile(p, i, dt) {
+  nightSky.getMoonWorld(_moonC);
+  _moonDir.subVectors(_moonC, p.mesh.position);
+  const dist = _moonDir.length();
+  _moonDir.multiplyScalar(1 / Math.max(dist, 1e-4));
+  if (dist <= nightSky.moonRadius + 0.4) {                 // reached the surface
+    const surface = _moonC.clone().addScaledVector(_moonDir, -nightSky.moonRadius);
+    nightSky.hitMoon(surface, p.hex);
+    audio.play('splat', { volume: 0.5, rate: 0.85 + Math.random() * 0.1 });
+    if (nightSky.registerHit()) audio.play('countdownGo', { volume: 0.6, rate: 0.6 }); // egg-triggered cue
+    removeProjectile(i);
+    return;
+  }
+  p.mesh.position.addScaledVector(_moonDir, 170 * dt);      // home straight up to the moon, fast
+  if (performance.now() - p.born > 3000) removeProjectile(i); // safety net
+}
+
+// While the moon's mouth is open, rain paintballs down onto the arena (visual
+// paint only — netGhost, so nobody is unfairly killed from the sky).
+function updateMoonBarrage(dt) {
+  if (!nightMode || !nightSky.firing) { _moonFireAcc = 0; return; }
+  _moonFireAcc += dt;
+  const interval = 0.06; // ~2 rounds every 0.06s (~33/s) raining down
+  while (_moonFireAcc >= interval) {
+    _moonFireAcc -= interval;
+    nightSky.mouthWorld(_moonMouth);
+    for (let n = 0; n < 2; n++) {
+      const col = EXPLOSION_COLORS[(Math.random() * EXPLOSION_COLORS.length) | 0];
+      // aim at a random spot on the ARENA floor (world-fixed, ±55) so it actually
+      // lands on the map — the moon itself sits well outside the arena bounds
+      const tx = (Math.random() - 0.5) * 110, tz = (Math.random() - 0.5) * 110;
+      _moonDir.set(tx - _moonMouth.x, 0.5 - _moonMouth.y, tz - _moonMouth.z).normalize();
+      spawnProjectile(_moonMouth.clone(), _moonDir.clone(), col, PLAYER_TEAM, 95 + Math.random() * 45,
+        false, { netGhost: true }, { splatScale: 1.5, gravity: -6 }); // light gravity so it reaches
+    }
+  }
+}
+
 // Push the on-foot player out of any tank hull (oriented box, follows heading).
 function pushOutOfTank() {
   const pr = player.radius;
@@ -2233,6 +2280,7 @@ function updateProjectiles(dt) {
     // tank-buster warhead flies its own guided top-attack arc, not ballistics
     if (p.tankBuster) { updateBusterProjectile(p, i, dt); continue; }
     if (p.clusterBomb) { updateClusterBomb(p, i, dt); continue; }
+    if (p.moonBound) { updateMoonProjectile(p, i, dt); continue; }
     p.prev.copy(p.mesh.position);
     p.vel.y += (p.gravity != null ? p.gravity : PROJ_GRAV) * dt;
     p.mesh.position.addScaledVector(p.vel, dt);
@@ -2937,6 +2985,7 @@ function animate() {
   }
 
   if (simRunning) updateProjectiles(dt);
+  if (simRunning) updateMoonBarrage(dt); // angry moon rains paint while its mouth is open
   paint.update(dt);
 
   if (netplay.active) {

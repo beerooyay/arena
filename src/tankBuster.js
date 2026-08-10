@@ -65,21 +65,25 @@ export class TankBuster {
   }
 
   _build(paintHex) {
-    // same light palette as the paint marker so it reads as a clean 3D object
-    // against the white arena (NOT a black silhouette). metalness stays 0.
-    const body = new THREE.MeshStandardMaterial({ color: 0xd2d7dd, roughness: 0.55, metalness: 0 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x9aa2ac, roughness: 0.65, metalness: 0 });
-    const rubber = new THREE.MeshStandardMaterial({ color: 0x7b828a, roughness: 0.95, metalness: 0 });
+    // Clean white sci-fi launcher (styled after the reference art): white body,
+    // gunmetal fittings, glowing blue accents + a big bolted breech drum with a
+    // blue core. metalness stays 0 (no env map) — form comes from diffuse + the
+    // contour outline pass.
+    const body  = new THREE.MeshStandardMaterial({ color: 0xeceff2, roughness: 0.5,  metalness: 0 }); // white shell
+    const panel = new THREE.MeshStandardMaterial({ color: 0xc7ccd2, roughness: 0.55, metalness: 0 }); // light-grey panels
+    const dark  = new THREE.MeshStandardMaterial({ color: 0x565b63, roughness: 0.6,  metalness: 0 }); // gunmetal
+    const black = new THREE.MeshStandardMaterial({ color: 0x41464d, roughness: 0.7,  metalness: 0 }); // handle / grips
+    const steel = new THREE.MeshStandardMaterial({ color: 0xbcc1c8, roughness: 0.4,  metalness: 0 }); // muzzle face
     this.accentMat = new THREE.MeshStandardMaterial({
-      color: paintHex, roughness: 0.4, metalness: 0,
-      emissive: new THREE.Color(paintHex), emissiveIntensity: 0.3,
+      color: paintHex, roughness: 0.35, metalness: 0,
+      emissive: new THREE.Color(paintHex), emissiveIntensity: 0.6, // bright glowing blue strips/core
     });
-    // the targeting optic lens glows so it reads as "electronics"
+    // targeting-optic lock indicator: glows cyan, pulses when locked (see update)
     this.lensMat = new THREE.MeshStandardMaterial({
       color: 0x39d0ff, roughness: 0.3, metalness: 0,
       emissive: new THREE.Color(0x39d0ff), emissiveIntensity: 0.9,
     });
-    this.materials = [body, dark, rubber, this.accentMat, this.lensMat];
+    this.materials = [body, panel, dark, black, steel, this.accentMat, this.lensMat];
 
     const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
       const m = new THREE.Mesh(geo, mat);
@@ -87,43 +91,63 @@ export class TankBuster {
       m.castShadow = false; m.receiveShadow = false;
       this.root.add(m); return m;
     };
+    const R = Math.PI / 2; // lay a cylinder (default +Y) along the tube axis (Z)
 
-    // --- main launch tube (origin roughly on the tube axis) ---
-    add(new THREE.CylinderGeometry(0.062, 0.062, 0.92, 24), body, 0, 0, -0.16, Math.PI / 2);
-    // muzzle ring at the front, paint-accent
-    add(new THREE.CylinderGeometry(0.078, 0.09, 0.12, 24), this.accentMat, 0, 0, -0.62, Math.PI / 2);
-    // rear venturi cone (backblast end)
-    add(new THREE.CylinderGeometry(0.066, 0.11, 0.18, 24), dark, 0, 0, 0.34, Math.PI / 2);
-    // a couple of barrel bands
-    add(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 24), dark, 0, 0, -0.36, Math.PI / 2);
-    add(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 24), dark, 0, 0, 0.02, Math.PI / 2);
+    // ===== FRONT BARREL (points forward, -Z) with a blue muzzle ring =====
+    add(new THREE.CylinderGeometry(0.058, 0.062, 0.09, 20), dark, 0, 0, -0.24, R);      // base collar
+    add(new THREE.CylinderGeometry(0.044, 0.044, 0.40, 20), body, 0, 0, -0.45, R);      // white barrel
+    add(new THREE.TorusGeometry(0.046, 0.006, 8, 20), panel, 0, 0, -0.40);              // barrel band
+    add(new THREE.CylinderGeometry(0.05, 0.05, 0.05, 20), dark, 0, 0, -0.63, R);        // dark muzzle collar
+    add(new THREE.CylinderGeometry(0.053, 0.053, 0.035, 20), this.accentMat, 0, 0, -0.665, R); // blue muzzle ring
 
-    // --- warhead: a fat paint round sitting in the muzzle (this is what fires) ---
-    add(new THREE.SphereGeometry(0.07, 18, 14), this.accentMat, 0, 0, -0.66);
+    // ===== MAIN BODY =====
+    add(new THREE.CylinderGeometry(0.082, 0.082, 0.46, 24), body, 0, 0, 0.0, R);        // rounded core
+    add(new THREE.BoxGeometry(0.12, 0.05, 0.34), body, 0, 0.075, -0.03);                // flat top (scope deck)
+    add(new THREE.BoxGeometry(0.115, 0.06, 0.30), panel, 0, -0.055, 0.0);               // belly housing
+    add(new THREE.BoxGeometry(0.006, 0.10, 0.30), panel, 0.084, 0.0, -0.02);            // right side plate
+    add(new THREE.BoxGeometry(0.006, 0.10, 0.30), panel, -0.084, 0.0, -0.02);           // left side plate
+    // blue accent strips on the flanks + a top strip
+    add(new THREE.BoxGeometry(0.01, 0.03, 0.15), this.accentMat, 0.088, 0.015, -0.07);
+    add(new THREE.BoxGeometry(0.01, 0.03, 0.15), this.accentMat, -0.088, 0.015, -0.07);
+    add(new THREE.BoxGeometry(0.05, 0.009, 0.12), this.accentMat, 0, 0.101, -0.12);
+    // small vent lights near the scope deck
+    for (let i = 0; i < 3; i++) add(new THREE.BoxGeometry(0.008, 0.026, 0.008), this.accentMat, -0.02 + i * 0.02, 0.055, -0.17);
 
-    // --- top targeting optic (the lock-on sight) ---
-    add(new THREE.BoxGeometry(0.12, 0.1, 0.24), body, 0, 0.12, -0.02);
-    // the front lens (the "camera" that feeds the scope screen)
-    add(new THREE.CylinderGeometry(0.034, 0.034, 0.02, 16), this.lensMat, 0, 0.12, -0.15, Math.PI / 2);
+    // ===== REAR BREECH DRUM (big, nearest the camera, +Z) with blue core =====
+    add(new THREE.CylinderGeometry(0.10, 0.085, 0.04, 26), dark, 0, 0, 0.235, R);       // shoulder into the drum
+    add(new THREE.CylinderGeometry(0.112, 0.112, 0.12, 28), dark, 0, 0, 0.30, R);       // the drum
+    add(new THREE.CylinderGeometry(0.098, 0.098, 0.025, 28), steel, 0, 0, 0.362, R);    // silver rear face
+    const core = add(new THREE.SphereGeometry(0.05, 20, 14), this.accentMat, 0, 0, 0.368); // blue core button
+    core.scale.set(1, 1, 0.42);                                                          // shallow, set into the face (not a protruding egg)
+    for (let i = 0; i < 8; i++) {                                                        // rim bolts
+      const a = (i / 8) * Math.PI * 2;
+      add(new THREE.CylinderGeometry(0.009, 0.009, 0.022, 8), black, Math.cos(a) * 0.09, Math.sin(a) * 0.09, 0.366, R);
+    }
 
-    // --- digital scope screen: the flat REAR face of the optic, facing the player ---
-    // the optic box spans z ∈ [-0.14, 0.10]; its back face (max z) points at us.
+    // ===== DIGITAL SCOPE (top, faces the player) =====
+    add(new THREE.BoxGeometry(0.085, 0.055, 0.10), black, 0, 0.115, -0.06);             // riser
+    add(new THREE.BoxGeometry(0.16, 0.12, 0.03), black, 0, 0.15, 0.0);                  // screen bezel
+    add(new THREE.BoxGeometry(0.013, 0.08, 0.02), this.accentMat, 0.084, 0.15, -0.004); // bezel side strips
+    add(new THREE.BoxGeometry(0.013, 0.08, 0.02), this.accentMat, -0.084, 0.15, -0.004);
+    add(new THREE.BoxGeometry(0.03, 0.012, 0.01), this.lensMat, 0, 0.09, -0.11);        // cyan lock indicator
+    // the live screen (render-target feed is assigned in main.js), facing +Z
     this.screenMat = new THREE.MeshBasicMaterial({ color: 0x0b0f14, toneMapped: false });
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.108, 0.086), this.screenMat);
-    screen.position.set(0, 0.12, 0.101); // a hair proud of the box's back face
-    screen.renderOrder = 3;              // draw over the optic body
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.132, 0.094), this.screenMat);
+    screen.position.set(0, 0.15, 0.016);
+    screen.renderOrder = 3;
     this.root.add(screen);
     this.screen = screen;
 
-    // --- pistol grip + trigger guard ---
-    const grip = add(new THREE.BoxGeometry(0.05, 0.15, 0.07), rubber, 0, -0.13, 0.06);
-    grip.rotation.x = -0.2;
-    add(new THREE.TorusGeometry(0.045, 0.008, 8, 16, Math.PI), dark, 0, -0.06, 0.0, 0, 0, Math.PI);
-    // fore grip
-    const fore = add(new THREE.BoxGeometry(0.045, 0.12, 0.05), rubber, 0, -0.11, -0.34);
-    fore.rotation.x = 0.18;
+    // ===== GRIPS =====
+    const grip = add(new THREE.BoxGeometry(0.05, 0.15, 0.06), black, 0, -0.135, 0.10);  // pistol grip
+    grip.rotation.x = -0.28;
+    add(new THREE.BoxGeometry(0.02, 0.075, 0.008), this.accentMat, 0, -0.13, 0.073);    // grip accent
+    add(new THREE.TorusGeometry(0.045, 0.008, 8, 16, Math.PI), dark, 0, -0.055, 0.05, 0, 0, Math.PI); // trigger guard
+    const fore = add(new THREE.BoxGeometry(0.045, 0.14, 0.05), black, 0, -0.135, -0.18);// fore grip
+    fore.rotation.x = 0.22;
+    add(new THREE.BoxGeometry(0.018, 0.07, 0.008), this.accentMat, 0, -0.13, -0.206);   // fore-grip accent
 
-    this._muzzleLocal = new THREE.Vector3(0, 0, -0.72); // tube tip, local
+    this._muzzleLocal = new THREE.Vector3(0, 0, -0.70); // barrel tip, local
     this._optic = this.root.children.find((c) => c.material === this.lensMat);
   }
 

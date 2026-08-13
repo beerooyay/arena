@@ -147,6 +147,19 @@ export function createNightSky(scene) {
     for (const s of splats) { if (s.parent) s.parent.remove(s); s.geometry.dispose(); s.material.dispose(); }
     splats.length = 0;
   }
+  function placeSplat(local, hex) {
+    const spl = new THREE.Mesh(
+      new THREE.PlaneGeometry(3.4, 3.4),
+      new THREE.MeshBasicMaterial({ map: splatTex, color: hex, transparent: true, depthWrite: false, fog: false, toneMapped: false }));
+    spl.position.copy(local);
+    spl.lookAt(local.clone().multiplyScalar(2));
+    spl.rotateZ(Math.random() * Math.PI * 2);
+    spl.layers.set(NO_OUTLINE_LAYER);
+    spl.renderOrder = 2;
+    moonPivot.add(spl);
+    splats.push(spl);
+    if (splats.length > 40) { const o = splats.shift(); if (o.parent) o.parent.remove(o); o.geometry.dispose(); o.material.dispose(); }
+  }
 
   return {
     group,
@@ -174,23 +187,16 @@ export function createNightSky(scene) {
       return disc >= 0 && (-b + Math.sqrt(disc)) > 0; // sphere is in front
     },
 
-    /** Splat the moon at a world point (baked to moon-local so it spins with it). */
+    /** Splat the moon at a world point; returns the moon-LOCAL point (to relay). */
     hitMoon(worldPoint, hex) {
       moonPivot.updateWorldMatrix(true, false);
       const local = _v.copy(worldPoint).applyMatrix4(_inv.copy(moonPivot.matrixWorld).invert());
       local.normalize().multiplyScalar(MOON_R - 0.05);
-      const spl = new THREE.Mesh(
-        new THREE.PlaneGeometry(3.4, 3.4),
-        new THREE.MeshBasicMaterial({ map: splatTex, color: hex, transparent: true, depthWrite: false, fog: false, toneMapped: false }));
-      spl.position.copy(local);
-      spl.lookAt(local.clone().multiplyScalar(2));
-      spl.rotateZ(Math.random() * Math.PI * 2);
-      spl.layers.set(NO_OUTLINE_LAYER);
-      spl.renderOrder = 2;
-      moonPivot.add(spl);
-      splats.push(spl);
-      if (splats.length > 40) { const o = splats.shift(); if (o.parent) o.parent.remove(o); o.geometry.dispose(); o.material.dispose(); }
+      placeSplat(local, hex);
+      return [+local.x.toFixed(2), +local.y.toFixed(2), +local.z.toFixed(2)];
     },
+    /** Splat at a given moon-local point (for network-relayed hits from peers). */
+    hitMoonLocal(p, hex) { placeSplat(_v.set(p[0], p[1], p[2]), hex); },
 
     /** Count a moon hit. Returns true on the hit that triggers the easter egg. */
     registerHit() {
@@ -199,6 +205,9 @@ export function createNightSky(scene) {
       if (hits >= HIT_THRESHOLD) { state = 'reveal'; revealT = 0; return true; }
       return false;
     },
+
+    /** Force the egg to wake (network-triggered by the host in multiplayer). */
+    wake() { if (state === 'idle') { state = 'reveal'; revealT = 0; } },
 
     /** Force back to a calm idle moon (e.g. when leaving night mode). */
     resetEgg() { state = 'idle'; hits = 0; revealT = 0; mouthOpen = 0; fireT = 0; clearSplats(); moonPivot.quaternion.copy(idleQuat); mouth.scale.y = 0.14; },

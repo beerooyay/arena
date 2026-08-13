@@ -342,6 +342,8 @@ canvas { display: block; }
 .mode-toggle.on .mode-dot {
   background: #9fb4ff; box-shadow: 0 0 10px rgba(159,180,255,.95);
 }
+/* locked in online play: only the host sets the mode, and never mid-match */
+.mode-toggle.disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
 .secondary-btn {
   border: 1px solid #cfd3d9; cursor: pointer;
   background: #fff; color: #2b2f36;

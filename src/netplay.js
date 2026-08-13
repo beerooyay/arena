@@ -118,6 +118,10 @@ export class NetPlay {
     this.clientTankPose = [null, null]; // host: latest pose a client driver sent
     this.tankHits = [0, 0];             // host: pending damage hits to apply per team
     this._tankSendT = 0;
+
+    // --- Lights Out moon easter egg (host tallies hits; wake is broadcast) ---
+    this._moonHits = 0;
+    this._moonWoken = false;
     this.scores = [0, 0];
     this.me = null;            // {id, name, team}
     this._sendT = 0;
@@ -410,6 +414,17 @@ export class NetPlay {
         }
         break;
       }
+
+      // --- Lights Out moon easter egg ---
+      case 'mhit': { // someone painted the moon: everyone splats; the host tallies
+        if (this.deps.onMoonSplat) this.deps.onMoonSplat(msg.p, msg.hex);
+        if (this.isHost) { this._moonHits++; this._checkMoonWake(); }
+        break;
+      }
+      case 'mwake': { // host says the moon woke — everyone plays it + barrages
+        if (this.deps.onMoonWake) this.deps.onMoonWake();
+        break;
+      }
     }
   }
 
@@ -584,6 +599,22 @@ export class NetPlay {
   }
   sendTankHit(team) { if (this.active) this.net.send({ t: 'thit', team }); }
   broadcastTankSync(snap) { if (this.active) this.net.send({ t: 'tsync', s: snap }); }
+
+  // --- moon easter-egg sync API ---
+  /** I painted the moon. Tell peers to splat it; the host tallies toward waking. */
+  sendMoonHit(local, hex) {
+    if (!this.active) return;
+    this.net.send({ t: 'mhit', p: local, hex }); // host -> all clients; client -> host (auto-relayed)
+    if (this.isHost) { this._moonHits++; this._checkMoonWake(); }
+  }
+  _checkMoonWake() {
+    if (this._moonWoken || this._moonHits < 8) return;
+    this._moonWoken = true;
+    this.net.send({ t: 'mwake' });
+    if (this.deps.onMoonWake) this.deps.onMoonWake();
+  }
+  /** Host: re-arm the moon once the egg has finished (called from the main loop). */
+  rearmMoon() { if (this.isHost) { this._moonHits = 0; this._moonWoken = false; } }
 
   /**
    * Shooter-side hit test of my projectile segment against remote players AND

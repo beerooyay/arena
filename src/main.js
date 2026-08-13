@@ -953,10 +953,29 @@ document.getElementById('play-btn').addEventListener('click', () => {
 // "Lights Out" mode toggle — flips night mode live (so you preview it behind the
 // menu) and it carries into whatever match you start, free play or online.
 const lightsOutToggle = document.getElementById('lights-out-toggle');
-lightsOutToggle.addEventListener('click', () => {
-  setNightMode(!nightMode);
+// flip night mode AND keep the toggle button in sync (used by the click handler
+// and by the online match start, so clients follow the host's Lights Out setting)
+function setNightUI(on) {
+  setNightMode(on);
   lightsOutToggle.classList.toggle('on', nightMode);
   lightsOutToggle.setAttribute('aria-pressed', String(nightMode));
+}
+// Lights Out is a whole-MATCH mode, so it can't differ between players. You may
+// change it only in free play, or as the HOST in the online lobby before the
+// match goes live — never as a client, and never mid-match.
+function nightToggleAllowed() {
+  if (!netplay.active) return true;                    // free play: your call
+  if (!netplay.isHost) return false;                   // online: only the host decides
+  return !(netplay.started && !netplay.matchOver);     // host: not during a live match
+}
+function refreshNightToggle() {
+  const allowed = nightToggleAllowed();
+  lightsOutToggle.classList.toggle('disabled', !allowed);
+  lightsOutToggle.setAttribute('aria-disabled', String(!allowed));
+}
+lightsOutToggle.addEventListener('click', () => {
+  if (!nightToggleAllowed()) return; // ignore — the host owns the match mode
+  setNightUI(!nightMode);
 });
 document.getElementById('open-settings-btn').addEventListener('click', () => showSettings('start'));
 document.getElementById('open-howto-btn').addEventListener('click', () => showHowTo());
@@ -1043,7 +1062,7 @@ const netplay = new NetPlay(net, {
   spawnProjectile,
   onTagged: (shooterTeamId, hex, name) => onPlayerTagged(shooterTeamId, hex, name),
   showKill,
-  onRosterChange: () => { updateNetHud(); renderLobby(); },
+  onRosterChange: () => { updateNetHud(); renderLobby(); refreshNightToggle(); },
   onStart: () => startNetMatchLocal(),  // clients: (re)start — fresh scoreline
   onClock: (secondsLeft) => setNetClock(secondsLeft),
   onMatchEnd: (winner, scores, rows) => showOnlineResult(winner, scores, rows),
@@ -1052,6 +1071,8 @@ const netplay = new NetPlay(net, {
   getBotSnapshot: () => bots.netSnapshot(),
   tagBot: (idx, team) => bots.tagBotByIndex(idx, team),
   onGhostBotDied: (pos) => explodePlayer(pos), // client: enemy ghost bots pop into paint too
+  onMoonSplat: (p, hex) => nightSky.hitMoonLocal(p, hex), // a peer painted the moon
+  onMoonWake: () => { nightSky.wake(); audio.play('countdownGo', { volume: 0.6, rate: 0.6 }); }, // the moon woke for everyone
   onEnded: (reason) => {
     netHudEl.classList.add('hidden');
     bots.setEnabled(false);   // menus stay frozen; Play starts a fresh match
@@ -1062,6 +1083,7 @@ const netplay = new NetPlay(net, {
     publicStatus.textContent = note;
     if (!lobbyOverlay.classList.contains('hidden')) showStart();
     if (controls.isLocked) controls.unlock(); // unlock handler shows the menu
+    refreshNightToggle(); // back to free play — the toggle is yours again
   },
 });
 
@@ -1140,6 +1162,7 @@ function showLobby() {
   if (controls.isLocked) controls.unlock();
   lobbyOverlay.classList.remove('hidden');
   renderLobby();
+  refreshNightToggle(); // in the lobby, only the host may pick the mode
 }
 
 // Host clicks Start: backfill empty slots to 5v5 with bots, then drop in.
@@ -1156,12 +1179,15 @@ function hostStartMatch() {
 
   bots.setSlotBase(blueHumans, redHumans);  // bots fill slots above the humans
   bots.setEnabledCounts(blueBots, redBots); // host owns the real bot AI
+  netplay.matchConfig.night = nightMode;    // sync Lights Out to everyone in the match
   netplay.hostStart(botRoster);             // tells clients to spawn ghosts + drop in
   startNetMatchLocal();
 }
 
 // Fresh start of a net match: wipe my scoreline, spawn on my team's side.
 function startNetMatchLocal() {
+  setNightUI(!!netplay.matchConfig.night); // match the host's Lights Out setting (host: no-op)
+  refreshNightToggle();                    // lock the toggle now that the match is live
   playerStats.kills = 0; playerStats.deaths = 0; playerStats.shots = 0;
   playerDead = false;
   setWeaponsVisible(true); // restore the gun in case a prior death hid it
@@ -1998,7 +2024,59 @@ function clusterBurst(pos, hex) {
 // enough splats wake the angry moon, which spews paintballs onto the arena.
 // ---------------------------------------------------------------------------
 const _moonC = new THREE.Vector3(), _moonDir = new THREE.Vector3(), _moonMouth = new THREE.Vector3();
+const _mbSeg = new THREE.Vector3(), _mbDir = new THREE.Vector3(), _mbEnd = new THREE.Vector3();
 let _moonFireAcc = 0;
+let _moonWasActive = false; // edge-detect the egg finishing (to re-arm in MP)
+
+// A barrage round: real ballistics, but it kills EVERYONE it catches (the moon
+// is on no team). The on-foot player dies "by ANGRY MOON"; bots die neutrally.
+function updateMoonBarrageProjectile(p, i, dt) {
+  p.prev.copy(p.mesh.position);
+  p.vel.y += (p.gravity != null ? p.gravity : -12) * dt;
+  p.mesh.position.addScaledVector(p.vel, dt);
+  const seg = _mbSeg.subVectors(p.mesh.position, p.prev);
+  const dist = seg.length();
+  if (dist > 1e-5) {
+    const dir = _mbDir.copy(seg).multiplyScalar(1 / dist);
+    // resolve a wall first so it can't pass through geometry
+    raycaster.set(p.prev, dir);
+    raycaster.far = dist + 0.13;
+    const wallHit = raycaster.intersectObjects(arena.paintTargets, false)[0];
+    const reach = wallHit ? Math.min(dist + 0.13, wallHit.distance) : dist + 0.13;
+    const segEnd = wallHit ? _mbEnd.copy(p.prev).addScaledVector(dir, reach) : p.mesh.position;
+
+    // caught the on-foot player? (respects spawn protection; safe in a vehicle)
+    if (active && !playerDead && !tankMode && !jetMode && performance.now() >= bots._playerInvulnUntil
+        && segHitsSphere(p.prev, segEnd, camera.position, 0.7)) {
+      onPlayerTagged(1, p.hex, 'ANGRY MOON');
+      removeProjectile(i); return;
+    }
+    // caught a bot? (host / free play own the bots)
+    if (!netplay.active || netplay.isHost) {
+      for (let bi = 0; bi < bots.bots.length; bi++) {
+        const b = bots.bots[bi];
+        if (!b.alive) continue;
+        _tankHit.set(b.pos.x, b.pos.y + 1.1, b.pos.z);
+        if (segHitsSphere(p.prev, segEnd, _tankHit, 0.7)) {
+          bots.moonKill(bi);
+          audio.playAt('bodyHit', _tankHit, { volume: 0.55, rate: 0.85, refDistance: 6, maxDistance: 70 });
+          removeProjectile(i); return;
+        }
+      }
+    }
+    // otherwise splat on the wall it reached
+    if (wallHit) {
+      const n = wallHit.face
+        ? wallHit.face.normal.clone().transformDirection(wallHit.object.matrixWorld).normalize()
+        : new THREE.Vector3(0, 1, 0);
+      paint.splat(wallHit.object, wallHit.point, n, p.hex, p.splatScale || 1, false);
+      const k = Math.max(0, 1 - camera.position.distanceTo(wallHit.point) / 45);
+      audio.play('splat', { volume: 0.7 * k * k, rate: 0.94 + Math.random() * 0.12 });
+      removeProjectile(i); return;
+    }
+  }
+  if (performance.now() - p.born > 4000) removeProjectile(i);
+}
 function updateMoonProjectile(p, i, dt) {
   nightSky.getMoonWorld(_moonC);
   _moonDir.subVectors(_moonC, p.mesh.position);
@@ -2006,9 +2084,13 @@ function updateMoonProjectile(p, i, dt) {
   _moonDir.multiplyScalar(1 / Math.max(dist, 1e-4));
   if (dist <= nightSky.moonRadius + 0.4) {                 // reached the surface
     const surface = _moonC.clone().addScaledVector(_moonDir, -nightSky.moonRadius);
-    nightSky.hitMoon(surface, p.hex);
+    const local = nightSky.hitMoon(surface, p.hex); // splat locally, get the moon-local point
     audio.play('splat', { volume: 0.5, rate: 0.85 + Math.random() * 0.1 });
-    if (nightSky.registerHit()) audio.play('countdownGo', { volume: 0.6, rate: 0.6 }); // egg-triggered cue
+    if (netplay.active) {
+      netplay.sendMoonHit(local, p.hex);   // MP: peers splat too; the host tallies + wakes it
+    } else if (nightSky.registerHit()) {
+      audio.play('countdownGo', { volume: 0.6, rate: 0.6 }); // SP: local trigger cue
+    }
     removeProjectile(i);
     return;
   }
@@ -2031,8 +2113,9 @@ function updateMoonBarrage(dt) {
       // lands on the map — the moon itself sits well outside the arena bounds
       const tx = (Math.random() - 0.5) * 110, tz = (Math.random() - 0.5) * 110;
       _moonDir.set(tx - _moonMouth.x, 0.5 - _moonMouth.y, tz - _moonMouth.z).normalize();
-      spawnProjectile(_moonMouth.clone(), _moonDir.clone(), col, PLAYER_TEAM, 95 + Math.random() * 45,
-        false, { netGhost: true }, { splatScale: 1.5, gravity: -6 }); // light gravity so it reaches
+      const mb = spawnProjectile(_moonMouth.clone(), _moonDir.clone(), col, PLAYER_TEAM, 95 + Math.random() * 45,
+        false, null, { splatScale: 1.5, gravity: -6 }); // light gravity so it reaches
+      mb.moonBarrage = true; // lethal to anyone caught under it (see updateMoonBarrageProjectile)
     }
   }
 }
@@ -2281,6 +2364,7 @@ function updateProjectiles(dt) {
     if (p.tankBuster) { updateBusterProjectile(p, i, dt); continue; }
     if (p.clusterBomb) { updateClusterBomb(p, i, dt); continue; }
     if (p.moonBound) { updateMoonProjectile(p, i, dt); continue; }
+    if (p.moonBarrage) { updateMoonBarrageProjectile(p, i, dt); continue; }
     p.prev.copy(p.mesh.position);
     p.vel.y += (p.gravity != null ? p.gravity : PROJ_GRAV) * dt;
     p.mesh.position.addScaledVector(p.vel, dt);
@@ -2889,11 +2973,14 @@ function animate() {
     // online: also collide with remote humans + ghost bots so nobody overlaps
     player.extraSolids = netplay.active ? netplay.collisionActors() : [];
     const crouchPress = ready && input.consumeCrouch();
+    // Pulling the trigger on the marker CANCELS sprint (like other shooters): the
+    // gun comes up to fire instead of swaying, and you drop to normal move speed.
+    const firing = ready && input.shootHeld && currentWeapon === 0;
     player.update(
       dt,
       ready
         ? {
-            forward: input.move.forward, strafe: input.move.strafe, sprint: input.sprint,
+            forward: input.move.forward, strafe: input.move.strafe, sprint: input.sprint && !firing,
             crouchPress, crouchHeld: input.crouchHeld,
           }
         : { forward: 0, strafe: 0, sprint: false, crouchPress: false, crouchHeld: false },
@@ -2928,7 +3015,7 @@ function animate() {
     // sprint pose: holding sprint, moving, grounded, not aiming or sliding.
     // slide pose: while the player is sliding (it takes over from sprint).
     const moving = Math.hypot(input.move.forward, input.move.strafe) > 0.1;
-    const sprinting = ready && input.sprint && moving && !input.aimHeld &&
+    const sprinting = ready && input.sprint && moving && !input.aimHeld && !firing &&
       player.onGround && !player.sliding && !player.diving;
     if (currentWeapon === 0) weapon.update(dt, ready && input.aimHeld, settings.get('fov'), sprinting, player.sliding);
     else tankBuster.update(dt, ready && input.aimHeld, settings.get('fov'), sprinting, player.sliding);
@@ -2986,6 +3073,9 @@ function animate() {
 
   if (simRunning) updateProjectiles(dt);
   if (simRunning) updateMoonBarrage(dt); // angry moon rains paint while its mouth is open
+  // MP: once the egg finishes (moon back to idle), let the host re-arm the tally
+  if (nightSky.active) _moonWasActive = true;
+  else if (_moonWasActive) { _moonWasActive = false; if (netplay.active) netplay.rearmMoon(); }
   paint.update(dt);
 
   if (netplay.active) {

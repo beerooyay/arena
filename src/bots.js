@@ -199,6 +199,18 @@ export class BotSystem {
     return true;
   }
 
+  /** Kill a bot with NO team credit — environmental (e.g. the angry moon). */
+  moonKill(idx) {
+    const bot = this.bots[idx];
+    if (!bot || !bot.alive) return false;
+    bot.alive = false;
+    bot.respawnAt = performance.now() + 3000;
+    bot.deaths++;
+    bot.group.visible = false;
+    if (this.paint) { for (const d of bot.bodyDecals) this.paint.removeDecal(d); bot.bodyDecals = []; }
+    return true;
+  }
+
   _despawnAll() {
     for (const b of this.bots) {
       if (this.paint) for (const d of b.bodyDecals) this.paint.removeDecal(d);

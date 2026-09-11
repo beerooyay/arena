@@ -344,6 +344,20 @@ canvas { display: block; }
 }
 /* locked in online play: only the host sets the mode, and never mid-match */
 .mode-toggle.disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
+
+/* map picker — segmented button row */
+.map-picker { display: flex; gap: 8px; }
+.map-btn {
+  flex: 1; padding: 10px 8px; border-radius: 10px; cursor: pointer;
+  border: 1.5px solid rgba(0,0,0,.14); background: #fff; color: #1c1f24;
+  font: 700 14px system-ui, sans-serif; transition: all .12s ease;
+}
+.map-btn:hover { border-color: rgba(0,0,0,.28); }
+.map-btn.on {
+  background: #1c1f24; color: #fff; border-color: #1c1f24;
+  box-shadow: 0 2px 10px rgba(0,0,0,.18);
+}
+.map-btn.disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
 .secondary-btn {
   border: 1px solid #cfd3d9; cursor: pointer;
   background: #fff; color: #2b2f36;

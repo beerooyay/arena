@@ -25,7 +25,7 @@ const OutlineShader = {
     strength:      { value: 0.6 },   // overall visibility 0..1
     thickness:     { value: 1.2 },   // sample offset in pixels
     depthBias:     { value: 0.6 },   // sensitivity to depth edges
-    normalBias:    { value: 0.9 },   // sensitivity to normal edges
+    normalBias:    { value: 0.2 },   // sensitivity to normal edges (hardcoded baseline, day + night)
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;

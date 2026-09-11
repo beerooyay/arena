@@ -584,7 +584,7 @@ export class Tank {
         }
       }
     }
-    const A = 57; // keep the hull inside the arena perimeter
+    const A = (this.arena.size || 60) - 3; // keep the hull inside the arena perimeter (scales with the map)
     this.pos.x = THREE.MathUtils.clamp(this.pos.x, -A, A);
     this.pos.z = THREE.MathUtils.clamp(this.pos.z, -A, A);
   }

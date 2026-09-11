@@ -15,7 +15,7 @@ import { AudioManager } from './audio.js';
 import { NetClient, signalUrl } from './net.js';
 import { NetPlay } from './netplay.js';
 import { GLOW, setGlow } from './playerGlow.js';
-import { teamSpawnXZ, SPAWNS_PER_TEAM, SPAWN_EYE_Y } from './spawns.js';
+import { teamSpawnXZ, SPAWNS_PER_TEAM, SPAWN_EYE_Y, setArenaSize, tankSpawn } from './spawns.js';
 import { Tank } from './tank.js';
 import { Jet } from './jet.js';
 import { TankFX } from './tankFX.js';
@@ -96,7 +96,17 @@ scene.add(sun.target);
 // ---------------------------------------------------------------------------
 // Arena + systems
 // ---------------------------------------------------------------------------
-const arena = buildArena(scene);
+// Map selection (1 = original, 2 = larger symmetric). Persisted; the menu picker
+// swaps it live (see setMap). ?map= still works as a quick override.
+const MAPS = [
+  { id: 1, name: 'Backlot' },
+  { id: 2, name: 'Coliseum' },
+];
+const _urlMap = parseInt(new URLSearchParams(location.search).get('map'), 10);
+let _savedMap = 1;
+try { _savedMap = parseInt(localStorage.getItem('wo.map'), 10) || 1; } catch {}
+let arena = buildArena(scene, Math.max(1, Math.min(MAPS.length, _urlMap || _savedMap)));
+setArenaSize(arena.size); // spawns/tanks scale to this map's half-extent
 const paint = new PaintSystem(scene);
 
 // One drivable tank per team, parked at each team's base. Press T (near your
@@ -190,9 +200,10 @@ function tankRunOver() {
   }
 }
 function spawnTanks() {
-  // parked in each team's back corner, clear of the 5 player spawn lanes (x -40..40)
-  tanks[0].spawn(46, 55, Math.PI); // BLUE near +Z wall, facing into the arena
-  tanks[1].spawn(-46, -55, 0);     // RED near -Z wall, facing into the arena
+  // parked in each team's back corner, clear of the player spawn lanes (scales with the map)
+  const b = tankSpawn(0), r = tankSpawn(1);
+  tanks[0].spawn(b.x, b.z, b.heading); // BLUE near +Z wall, facing into the arena
+  tanks[1].spawn(r.x, r.z, r.heading); // RED near -Z wall, facing into the arena
 }
 spawnTanks();
 // tunables live on tanks[0] (dev panel); mirrored onto tanks[1] each frame
@@ -209,7 +220,7 @@ let tankZoomT = 0;
 const jet = new Jet(scene, 0); // player's BLUE team (PLAYER_TEAM is defined later)
 jet.arenaBlockers = arena.blockers; // for chase-cam wall pull-in
 let jetMode = false;
-const JET_BOUND = 92;      // half-extent of the "in bounds" box (arena is 60); beyond → warning
+let JET_BOUND = arena.size + 32; // half-extent of the "in bounds" box (past the walls); beyond → warning
 const JET_CEILING = 120;   // max altitude before the same warning
 const JET_RETURN_SECS = 8; // seconds to get back before the jet self-destructs
 let jetWarnT = 0;          // counts UP while out of bounds; explodes at JET_RETURN_SECS
@@ -977,6 +988,46 @@ lightsOutToggle.addEventListener('click', () => {
   if (!nightToggleAllowed()) return; // ignore — the host owns the match mode
   setNightUI(!nightMode);
 });
+
+// --- Map selection: rebuild the arena in place and re-point every system ---
+function setMap(mapId) {
+  mapId = Math.max(1, Math.min(MAPS.length, mapId | 0));
+  if (mapId === arena.mapId) return;
+  if (netplay.active) { refreshMapPicker(); return; } // free play only for now (MP map sync is a follow-up)
+  try { localStorage.setItem('wo.map', String(mapId)); } catch {}
+  paint.clear();                                    // drop paint from the old map
+  scene.remove(arena.group);                        // dispose the old arena
+  arena.group.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+  for (const m of arena.materials) m.dispose();
+  arena = buildArena(scene, mapId);                 // build + re-wire everything holding an arena ref
+  setArenaSize(arena.size);
+  JET_BOUND = arena.size + 32;
+  jet.arenaBlockers = arena.blockers;
+  player.setWorld(arena.blockers, arena.groundMeshes, arena.ceilings, bots.bots);
+  bots.arena = arena;
+  for (const t of tanks) t.arena = arena;
+  spawnTanks();
+  refreshMapPicker();
+}
+const mapPickerEl = document.getElementById('map-picker');
+function refreshMapPicker() {
+  if (!mapPickerEl) return;
+  const locked = netplay.active; // the map is chosen in free play; MP map sync is a follow-up
+  for (const b of mapPickerEl.querySelectorAll('.map-btn')) {
+    b.classList.toggle('on', +b.dataset.map === arena.mapId);
+    b.classList.toggle('disabled', locked);
+  }
+}
+if (mapPickerEl) {
+  for (const m of MAPS) {
+    const b = document.createElement('button');
+    b.className = 'map-btn'; b.dataset.map = m.id; b.textContent = m.name;
+    if (m.id === arena.mapId) b.classList.add('on'); // initial highlight (netplay not up yet)
+    b.addEventListener('click', () => setMap(m.id));
+    mapPickerEl.appendChild(b);
+  }
+}
+
 document.getElementById('open-settings-btn').addEventListener('click', () => showSettings('start'));
 document.getElementById('open-howto-btn').addEventListener('click', () => showHowTo());
 document.getElementById('howto-back-btn').addEventListener('click', () => showStart());
@@ -1062,7 +1113,7 @@ const netplay = new NetPlay(net, {
   spawnProjectile,
   onTagged: (shooterTeamId, hex, name) => onPlayerTagged(shooterTeamId, hex, name),
   showKill,
-  onRosterChange: () => { updateNetHud(); renderLobby(); refreshNightToggle(); },
+  onRosterChange: () => { updateNetHud(); renderLobby(); refreshNightToggle(); refreshMapPicker(); },
   onStart: () => startNetMatchLocal(),  // clients: (re)start — fresh scoreline
   onClock: (secondsLeft) => setNetClock(secondsLeft),
   onMatchEnd: (winner, scores, rows) => showOnlineResult(winner, scores, rows),
@@ -1084,6 +1135,7 @@ const netplay = new NetPlay(net, {
     if (!lobbyOverlay.classList.contains('hidden')) showStart();
     if (controls.isLocked) controls.unlock(); // unlock handler shows the menu
     refreshNightToggle(); // back to free play — the toggle is yours again
+    refreshMapPicker();
   },
 });
 
@@ -1163,6 +1215,7 @@ function showLobby() {
   lobbyOverlay.classList.remove('hidden');
   renderLobby();
   refreshNightToggle(); // in the lobby, only the host may pick the mode
+  refreshMapPicker();
 }
 
 // Host clicks Start: backfill empty slots to 5v5 with bots, then drop in.
@@ -1188,6 +1241,7 @@ function hostStartMatch() {
 function startNetMatchLocal() {
   setNightUI(!!netplay.matchConfig.night); // match the host's Lights Out setting (host: no-op)
   refreshNightToggle();                    // lock the toggle now that the match is live
+  refreshMapPicker();
   playerStats.kills = 0; playerStats.deaths = 0; playerStats.shots = 0;
   playerDead = false;
   setWeaponsVisible(true); // restore the gun in case a prior death hid it
@@ -1426,7 +1480,7 @@ function shoot() {
   // aim straight at the crosshair point and fly flat, so the round lands dead-on
   const dir = crosshairAimPoint().sub(origin).normalize().clone();
   const p = spawnProjectile(origin, dir, hex, PLAYER_TEAM, 70, true, playerStats, { gravity: 0 });
-  // Lights Out easter egg: a round aimed at the moon homes up and splats it
+  // easter egg: a round aimed at the moon (night) homes to it
   if (p && nightMode && nightSky.aimHitsMoon(origin, _forward)) p.moonBound = true;
   playerStats.shots++;
   weapon.kick();
@@ -1503,7 +1557,7 @@ function applyAimZoom() {
 // ==========================================================================
 const BUSTER = {
   range: 155, coneCos: Math.cos(0.11), // TIGHT cone (~6°): tank must be on the reticle
-  lockTime: 0.8, fireInterval: 2600,   // s to lock, ms between busts
+  lockTime: 1.5, fireInterval: 2600,   // s to lock, ms between busts
   ascendSpeed: 55, cruiseSpeed: 72, plungeSpeed: 95,
   apex: 55, damage: 20,                 // metres up, armour per hit
   turnRadius: 12,                       // m — radius of the rounded flight-path corners (bigger = more sweeping)
@@ -2111,7 +2165,8 @@ function updateMoonBarrage(dt) {
       const col = EXPLOSION_COLORS[(Math.random() * EXPLOSION_COLORS.length) | 0];
       // aim at a random spot on the ARENA floor (world-fixed, ±55) so it actually
       // lands on the map — the moon itself sits well outside the arena bounds
-      const tx = (Math.random() - 0.5) * 110, tz = (Math.random() - 0.5) * 110;
+      const span = (arena.size - 8) * 2; // rain across the whole arena floor
+      const tx = (Math.random() - 0.5) * span, tz = (Math.random() - 0.5) * span;
       _moonDir.set(tx - _moonMouth.x, 0.5 - _moonMouth.y, tz - _moonMouth.z).normalize();
       const mb = spawnProjectile(_moonMouth.clone(), _moonDir.clone(), col, PLAYER_TEAM, 95 + Math.random() * 45,
         false, null, { splatScale: 1.5, gravity: -6 }); // light gravity so it reaches

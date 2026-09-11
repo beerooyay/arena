@@ -131,29 +131,40 @@ export function buildArena(scene, mapId = 1) {
   // MAP 1 — the original test arena (unchanged)
   // =========================================================================
   function buildMap1() {
+    // The original Backlot layout, preserved exactly, with every asymmetric
+    // piece also placed at its 180-degree mirror (-x,-z) so both teams get
+    // identical cover. (The pillar ring was already symmetric — placed as-is.)
+    const mBox = (w, h, d, x, y, z, mat) => { addBox(w, h, d, x, y, z, mat); addBox(w, h, d, -x, y, -z, mat); };
+    const mRamp = (x, z, rotY, len, wide, rise) => { addRamp(x, z, rotY, len, wide, rise); addRamp(-x, -z, rotY + Math.PI, len, wide, rise); };
+
     const RAMPS = [
       [-38, -10, 0, 8, 5, 3],
       [38, 8, Math.PI, 9, 6, 3.5],
       [6, 44, Math.PI, 9, 6, 3.5],
       [-50, -28, 0, 8, 5, 3],
     ];
-    const _rects = RAMPS.map(([x, z, rotY, len, wide]) => {
-      const hx = Math.abs(Math.cos(rotY)) * wide / 2 + Math.abs(Math.sin(rotY)) * len / 2;
-      const hz = Math.abs(Math.sin(rotY)) * wide / 2 + Math.abs(Math.cos(rotY)) * len / 2;
-      const pad = 3.5;
-      return { x0: x - hx - pad, x1: x + hx + pad, z0: z - hz - pad, z1: z + hz + pad };
-    });
+    // keep-out rects around every ramp AND its mirror (the ramp set is symmetric,
+    // so a spot clear of all of them is clear for both a piece and its mirror)
+    const _rects = [];
+    for (const [x, z, rotY, len, wide] of RAMPS) {
+      for (const [mx, mz, mr] of [[x, z, rotY], [-x, -z, rotY + Math.PI]]) {
+        const hx = Math.abs(Math.cos(mr)) * wide / 2 + Math.abs(Math.sin(mr)) * len / 2;
+        const hz = Math.abs(Math.sin(mr)) * wide / 2 + Math.abs(Math.cos(mr)) * len / 2;
+        const pad = 3.5;
+        _rects.push({ x0: mx - hx - pad, x1: mx + hx + pad, z0: mz - hz - pad, z1: mz + hz + pad });
+      }
+    }
     const nearRamp = (x, z) => _rects.some((r) => x > r.x0 && x < r.x1 && z > r.z0 && z < r.z1);
 
-    // interior dividing walls
-    addBox(18, 5, 1, -18, 2.5, -8, wallMat);
-    addBox(1, 5, 16, 10, 2.5, 14, wallMat);
-    addBox(14, 4, 1, 22, 2, -20, wallMat);
-    addBox(12, 4, 1, -30, 2, 16, wallMat);
-    addBox(1, 4, 14, 34, 2, 30, wallMat);
-    addBox(10, 3.5, 1, 4, 1.75, 6, wallMat);
-    addBox(1, 3.5, 10, -6, 1.75, -2, wallMat);
-    addBox(16, 4, 1, -40, 2, -34, wallMat);
+    // interior dividing walls (original + mirror)
+    mBox(18, 5, 1, -18, 2.5, -8, wallMat);
+    mBox(1, 5, 16, 10, 2.5, 14, wallMat);
+    mBox(14, 4, 1, 22, 2, -20, wallMat);
+    mBox(12, 4, 1, -30, 2, 16, wallMat);
+    mBox(1, 4, 14, 34, 2, 30, wallMat);
+    mBox(10, 3.5, 1, 4, 1.75, 6, wallMat);
+    mBox(1, 3.5, 10, -6, 1.75, -2, wallMat);
+    mBox(16, 4, 1, -40, 2, -34, wallMat);
 
     const crateSpots = [
       [-6, 6, 2], [-4, 5, 2], [-5, 5, 4],
@@ -173,9 +184,10 @@ export function buildArena(scene, mapId = 1) {
     ];
     for (const [x, z, s] of crateSpots) {
       if (nearRamp(x, z)) continue;
-      addBox(s, s, s, x, s / 2, z, crateMat);
+      mBox(s, s, s, x, s / 2, z, crateMat);
     }
 
+    // the pillar ring is already 180-degree symmetric — place as-is (no mirror)
     const pillarSpots = [
       [-30, -30], [30, 30], [-30, 30], [30, -30], [0, 0],
       [-15, 22], [15, -22], [-45, -45], [45, 45], [22, 40], [-22, -40],
@@ -185,7 +197,7 @@ export function buildArena(scene, mapId = 1) {
       addPillar(x, z);
     }
 
-    for (const [x, z, rotY, len, wide, rise] of RAMPS) addRamp(x, z, rotY, len, wide, rise);
+    for (const [x, z, rotY, len, wide, rise] of RAMPS) mRamp(x, z, rotY, len, wide, rise);
 
     const barrierSpots = [
       [-2, -28, 8, 1.2], [20, 4, 1.2, 8], [-34, 4, 6, 1.2], [8, 28, 10, 1.2],
@@ -196,7 +208,7 @@ export function buildArena(scene, mapId = 1) {
     ];
     for (const [x, z, w, d] of barrierSpots) {
       if (nearRamp(x, z)) continue;
-      addBox(w, 1.3, d, x, 0.65, z, barrierMat);
+      mBox(w, 1.3, d, x, 0.65, z, barrierMat);
     }
 
     const coverSpots = [
@@ -207,7 +219,7 @@ export function buildArena(scene, mapId = 1) {
     ];
     for (const [x, z, w, d] of coverSpots) {
       if (nearRamp(x, z)) continue;
-      addBox(w, 2.2, d, x, 1.1, z, coverMat);
+      mBox(w, 2.2, d, x, 1.1, z, coverMat);
     }
   }
 

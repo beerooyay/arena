@@ -1010,6 +1010,8 @@ function setMap(mapId) {
   refreshMapPicker();
 }
 const mapPickerEl = document.getElementById('map-picker');
+const lcArenaName = document.getElementById('lc-arena-name');
+const lcArenaSub = document.getElementById('lc-arena-sub');
 function refreshMapPicker() {
   if (!mapPickerEl) return;
   const locked = netplay.active; // the map is chosen in free play; MP map sync is a follow-up
@@ -1017,6 +1019,10 @@ function refreshMapPicker() {
     b.classList.toggle('on', +b.dataset.map === arena.mapId);
     b.classList.toggle('disabled', locked);
   }
+  // reflect the active map in the Featured Arena card
+  const m = MAPS.find((x) => x.id === arena.mapId);
+  if (lcArenaName && m) lcArenaName.textContent = m.name;
+  if (lcArenaSub) lcArenaSub.textContent = arena.mapId === 2 ? 'LARGE · SYMMETRIC' : 'SYMMETRIC ARENA';
 }
 if (mapPickerEl) {
   for (const m of MAPS) {
@@ -1031,6 +1037,75 @@ if (mapPickerEl) {
 document.getElementById('open-settings-btn').addEventListener('click', () => showSettings('start'));
 document.getElementById('open-howto-btn').addEventListener('click', () => showHowTo());
 document.getElementById('howto-back-btn').addEventListener('click', () => showStart());
+
+// ---------------------------------------------------------------------------
+// Home screen (launcher) wiring. The visible tiles drive the existing menu
+// flows: the real game actions run through the same code paths as before, and
+// the legacy hook buttons (#open-*) still own those handlers — we just click
+// them. Cosmetic economy/social tiles show a "coming soon" toast so every
+// control responds instead of sitting dead.
+// ---------------------------------------------------------------------------
+const playBtn = document.getElementById('play-btn');
+const lcModes = [...document.querySelectorAll('.lc-mode')];
+function setActiveMode(el) {
+  for (const m of lcModes) m.classList.toggle('is-active', m === el);
+}
+// QUICK MATCH / PRACTICE start a local match; they differ only in whether bots
+// fill the arena. PLAY NOW keeps its own handler (bots per the current setting).
+function startLocalPlay(withBots, modeEl) {
+  if (!netplay.active && !sessionLive) guiState.bots5v5 = withBots;
+  if (modeEl) setActiveMode(modeEl);
+  playBtn.click();
+}
+document.getElementById('mode-quick').addEventListener('click', (e) => startLocalPlay(true, e.currentTarget));
+document.getElementById('mode-practice').addEventListener('click', (e) => startLocalPlay(false, e.currentTarget));
+document.getElementById('mode-private').addEventListener('click', (e) => {
+  setActiveMode(e.currentTarget); document.getElementById('open-private-btn').click();
+});
+document.getElementById('mode-custom').addEventListener('click', (e) => {
+  setActiveMode(e.currentTarget); document.getElementById('open-public-btn').click();
+});
+
+// bottom nav + top-right gear + how-to
+document.getElementById('nav-settings').addEventListener('click', () => document.getElementById('open-settings-btn').click());
+document.getElementById('lc-top-settings').addEventListener('click', () => document.getElementById('open-settings-btn').click());
+document.getElementById('lc-howto').addEventListener('click', () => document.getElementById('open-howto-btn').click());
+// Splats (custom splat designer) is kept for a future update — surface a toast
+// rather than opening the unfinished designer.
+document.getElementById('nav-splats').addEventListener('click', () => showToast('Splats'));
+
+// EXIT → back to the title / cover screen
+document.getElementById('nav-exit').addEventListener('click', () => {
+  hideAllMenus();
+  started = false;
+  titleSplatEl.innerHTML = '';
+  startBtn.classList.remove('hit');
+  titleEl.style.display = '';
+  titleEl.classList.remove('title-out');
+});
+
+// profile name mirrors the name field
+const lcPname = document.getElementById('lc-pname');
+function refreshLcName() { lcPname.textContent = getPlayerName() || 'Recruit'; }
+refreshLcName();
+nameInput.addEventListener('input', refreshLcName);
+
+// "coming soon" toast for tiles whose systems aren't built yet
+let _toastEl = null, _toastTimer = 0;
+function showToast(label) {
+  if (!_toastEl) {
+    _toastEl = document.createElement('div');
+    _toastEl.className = 'lc-toast';
+    document.body.appendChild(_toastEl);
+  }
+  _toastEl.innerHTML = `<strong>${label}</strong> &middot; coming soon`;
+  _toastEl.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => _toastEl.classList.remove('show'), 1800);
+}
+for (const el of document.querySelectorAll('[data-soon]')) {
+  el.addEventListener('click', () => showToast(el.dataset.soon));
+}
 
 // ---------------------------------------------------------------------------
 // Multiplayer: NetClient (rooms + WebRTC channels) + NetPlay (in-game sync).

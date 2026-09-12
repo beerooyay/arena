@@ -3,6 +3,11 @@ import { NO_OUTLINE_LAYER } from './outline.js';
 
 const DOWN = new THREE.Vector3(0, -1, 0);
 
+// reused temporaries for laying out track-link instances each frame
+const _LM = new THREE.Matrix4();
+const _LEX = new THREE.Vector3(), _LEY = new THREE.Vector3(), _LEZ = new THREE.Vector3();
+const _LP = { y: 0, z: 0, ny: 0, nz: 0, ty: 0, tz: 0 };
+
 /**
  * Tank — a drivable paintball tank.
  *
@@ -20,19 +25,70 @@ const DOWN = new THREE.Vector3(0, -1, 0);
  * All the feel values are public so the dev panel can tune them live.
  */
 
-function treadTexture() {
-  const c = document.createElement('canvas');
-  c.width = 64; c.height = 64;
-  const x = c.getContext('2d');
-  x.fillStyle = '#26292d'; x.fillRect(0, 0, 64, 64);
-  x.fillStyle = '#474b52';
-  for (let i = 0; i < 8; i++) x.fillRect(0, i * 8, 64, 4);   // track links
-  x.fillStyle = '#1c1e21';
-  for (let i = 0; i < 8; i++) x.fillRect(0, i * 8 + 5, 64, 2); // shadow line
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(1, 5);
-  return t;
+// Merge a few indexed BufferGeometries (position + normal) into one. Used to
+// fuse the parts of a single track-link shoe so the whole belt is drawn as one
+// instanced mesh. (BufferGeometryUtils isn't vendored, so this is a tiny local.)
+function mergeGeos(geos) {
+  let vCount = 0, iCount = 0;
+  for (const g of geos) { vCount += g.attributes.position.count; iCount += g.index ? g.index.count : g.attributes.position.count; }
+  const pos = new Float32Array(vCount * 3), nor = new Float32Array(vCount * 3);
+  const idx = new Uint16Array(iCount);
+  let vo = 0, io = 0;
+  for (const g of geos) {
+    pos.set(g.attributes.position.array, vo * 3);
+    nor.set(g.attributes.normal.array, vo * 3);
+    const gc = g.attributes.position.count;
+    if (g.index) { const gi = g.index.array; for (let k = 0; k < gi.length; k++) idx[io++] = gi[k] + vo; }
+    else { for (let k = 0; k < gc; k++) idx[io++] = k + vo; }
+    vo += gc;
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.setIndex(new THREE.BufferAttribute(idx, 1));
+  return out;
+}
+
+/**
+ * A closed "stadium" path around the running gear — straight ground run and top
+ * run, with semicircular wraps around the rear sprocket and front idler —
+ * sampled in the belt's local YZ plane (x = 0). Individual track-link shoes are
+ * laid out along it so they circulate around the loop like a real belt. at(s)
+ * fills `out` with the position, tangent and outward normal at arc-length s.
+ */
+function makeTrackPath({ zRear, zFront, R, yc }) {
+  const pts = [];   // { z, y, nz, ny, tz, ty }
+  const push = (z, y, nz, ny) => pts.push({ z, y, nz, ny });
+  const ARC = 14;
+  push(zFront, yc - R, 0, -1); push(zRear, yc - R, 0, -1);        // bottom run
+  for (let i = 1; i < ARC; i++) { const a = -Math.PI / 2 - (Math.PI * i) / ARC; push(zRear + R * Math.cos(a), yc + R * Math.sin(a), Math.cos(a), Math.sin(a)); } // rear wrap
+  push(zRear, yc + R, 0, 1); push(zFront, yc + R, 0, 1);          // top run
+  for (let i = 1; i < ARC; i++) { const a = Math.PI / 2 - (Math.PI * i) / ARC; push(zFront + R * Math.cos(a), yc + R * Math.sin(a), Math.cos(a), Math.sin(a)); }   // front wrap
+
+  const n = pts.length;
+  const cum = new Array(n + 1); cum[0] = 0;
+  for (let i = 0; i < n; i++) { const a = pts[i], b = pts[(i + 1) % n]; cum[i + 1] = cum[i] + Math.hypot(b.z - a.z, b.y - a.y); }
+  const perimeter = cum[n];
+  for (let i = 0; i < n; i++) {   // tangent = direction of travel around the loop
+    const a = pts[(i - 1 + n) % n], b = pts[(i + 1) % n];
+    const tz = b.z - a.z, ty = b.y - a.y, L = Math.hypot(tz, ty) || 1;
+    pts[i].tz = tz / L; pts[i].ty = ty / L;
+  }
+  return {
+    perimeter,
+    at(s, out) {
+      s = ((s % perimeter) + perimeter) % perimeter;
+      let i = 0; while (i < n - 1 && cum[i + 1] <= s) i++;
+      const a = pts[i], b = pts[(i + 1) % n];
+      const f = (s - cum[i]) / ((cum[i + 1] - cum[i]) || 1);
+      out.y = a.y + (b.y - a.y) * f; out.z = a.z + (b.z - a.z) * f;
+      out.ny = a.ny + (b.ny - a.ny) * f; out.nz = a.nz + (b.nz - a.nz) * f;
+      const nl = Math.hypot(out.ny, out.nz) || 1; out.ny /= nl; out.nz /= nl;
+      out.ty = a.ty + (b.ty - a.ty) * f; out.tz = a.tz + (b.tz - a.tz) * f;
+      const tl = Math.hypot(out.ty, out.tz) || 1; out.ty /= tl; out.tz /= tl;
+      return out;
+    },
+  };
 }
 
 function smokeTexture() {
@@ -108,7 +164,6 @@ export class Tank {
     this.speed = 0;
     this.turretYaw = 0;        // local to hull
     this.barrelPitch = 0.12;
-    this._trackScroll = 0;
     this.pos = new THREE.Vector3(0, 0, 0);
     this._radius = 1.5;        // collision radius vs walls (hugs objects, not caught far off)
     this.enabled = false;
@@ -209,40 +264,130 @@ export class Tank {
     this.root.add(cap);
     this._exhaustLocal = new THREE.Vector3(-1.05, 1.75, -2.15); // tip, local to hull
 
-    // --- tracks + road wheels ---
-    this.trackMats = [];
-    this.wheels = [];
+    // --- running gear: belt + wheels, per side (real tank layout) ---
+    // rear drive SPROCKET (toothed), front IDLER, road wheels on the ground run,
+    // return rollers on the top run. Each side is animated by its OWN travel so
+    // turning shows the two tracks moving at different speeds (skid steering).
+    const GAUGE = 1.5;      // lateral offset of each track from centre
+    const Z_END = 2.05;     // sprocket / idler centres
+    const R = 0.46;         // belt / end-wheel radius
+    const YC = 0.5;         // belt centreline height
+    const RW_R = 0.33;      // road-wheel radius (sized so a row of 5 sits clean)
+    const RW_Y = 0.43;      // road-wheel centre — a touch below the end wheels, on the belt
+    this.trackGauge = GAUGE;
+    const TW = 0.5;         // track / link width
+
+    // --- materials: steel-grey link shoes, dark pins, light dished wheels ---
+    const linkSteel = new THREE.MeshStandardMaterial({ color: 0x5a5f66, roughness: 0.5, metalness: 0.4 });
+    const linkDark = new THREE.MeshStandardMaterial({ color: 0x2c2f34, roughness: 0.6, metalness: 0.3 });
+    const tireMat = new THREE.MeshStandardMaterial({ color: 0x2c2f34, roughness: 0.75, metalness: 0.05 });
+    const wheelGrey = new THREE.MeshStandardMaterial({ color: 0xc2c7cd, roughness: 0.55, metalness: 0.15 });
+    const hubMat = new THREE.MeshStandardMaterial({ color: 0x5a5e64, roughness: 0.6, metalness: 0.25 });
+    const sprocketMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.55, metalness: 0.3 });
+
+    // --- the belt: individual link shoes laid out around a stadium path ---
+    const path = makeTrackPath({ zRear: -Z_END, zFront: Z_END, R, yc: YC });
+    const N_LINKS = Math.max(20, Math.round(path.perimeter / 0.34)); // ~link every 34cm
+    const SP = path.perimeter / N_LINKS;                              // exact link spacing
+    // one link shoe = a steel plate + grouser ridge; a dark connector pin +
+    // guide horn. Local axes: X = width, Y = outward (up), Z = around the loop.
+    const shoe = new THREE.BoxGeometry(TW, 0.09, SP * 0.82);
+    const grouser = new THREE.BoxGeometry(TW * 0.86, 0.05, SP * 0.5); grouser.translate(0, 0.06, 0);
+    const steelLinkGeo = mergeGeos([shoe, grouser]);
+    const pin = new THREE.CylinderGeometry(0.05, 0.05, TW + 0.06, 8); pin.rotateZ(Math.PI / 2); pin.translate(0, -0.01, SP * 0.5);
+    const horn = new THREE.BoxGeometry(0.13, 0.17, SP * 0.34); horn.translate(0, -0.11, 0);
+    const darkLinkGeo = mergeGeos([pin, horn]);
+
+    // --- reusable wheel parts (axes baked to X so rotation.x rolls them) ---
+    const tireGeo = new THREE.CylinderGeometry(RW_R, RW_R, 0.4, 22); tireGeo.rotateZ(Math.PI / 2);
+    const discGeo = new THREE.CylinderGeometry(RW_R * 0.8, RW_R * 0.8, 0.44, 22); discGeo.rotateZ(Math.PI / 2);
+    const rwHubGeo = new THREE.CylinderGeometry(RW_R * 0.3, RW_R * 0.3, 0.48, 12); rwHubGeo.rotateZ(Math.PI / 2);
+    const boltGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.46, 6); boltGeo.rotateZ(Math.PI / 2);
+    const makeRoadWheel = () => {
+      const g = new THREE.Group();
+      const tire = new THREE.Mesh(tireGeo, tireMat); tire.castShadow = true;
+      g.add(tire, new THREE.Mesh(discGeo, wheelGrey), new THREE.Mesh(rwHubGeo, hubMat));
+      for (let i = 0; i < 6; i++) {                       // bolt ring (shows the spin)
+        const a = (i / 6) * Math.PI * 2;
+        const b = new THREE.Mesh(boltGeo, hubMat);
+        b.position.set(0, Math.sin(a) * RW_R * 0.52, Math.cos(a) * RW_R * 0.52);
+        g.add(b);
+      }
+      return g;
+    };
+    // rear DRIVE SPROCKET: hub disc ringed with trapezoid teeth that mesh the links
+    const makeSprocket = () => {
+      const g = new THREE.Group();
+      const disc = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.6, R * 0.6, 0.38, 22), sprocketMat);
+      disc.geometry.rotateZ(Math.PI / 2); disc.castShadow = true;
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.28, R * 0.28, 0.5, 12), hubMat);
+      hub.geometry.rotateZ(Math.PI / 2);
+      g.add(disc, hub);
+      const toothGeo = new THREE.CylinderGeometry(0.11, 0.16, 0.34, 4); toothGeo.rotateX(Math.PI / 2); // wedge
+      const teeth = 11;
+      for (let i = 0; i < teeth; i++) {
+        const a = (i / teeth) * Math.PI * 2;
+        const t = new THREE.Mesh(toothGeo, sprocketMat);
+        t.position.set(0, Math.sin(a) * R * 0.82, Math.cos(a) * R * 0.82);
+        t.rotation.set(0, 0, 0); t.rotation.x = -a; t.castShadow = true;
+        g.add(t);
+      }
+      return g;
+    };
+    // front IDLER: a plain dished wheel the size of the sprocket
+    const makeIdler = () => {
+      const g = new THREE.Group();
+      const tire = new THREE.Mesh(new THREE.CylinderGeometry(R, R, 0.4, 22), tireMat); tire.geometry.rotateZ(Math.PI / 2); tire.castShadow = true;
+      const disc = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.78, R * 0.78, 0.44, 22), wheelGrey); disc.geometry.rotateZ(Math.PI / 2);
+      const hub = new THREE.Mesh(new THREE.CylinderGeometry(R * 0.28, R * 0.28, 0.48, 12), hubMat); hub.geometry.rotateZ(Math.PI / 2);
+      g.add(tire, disc, hub);
+      return g;
+    };
+    const rollerGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.36, 14); rollerGeo.rotateZ(Math.PI / 2);
+
+    this.tracks = [];
     for (const side of [-1, 1]) {
-      const tex = treadTexture();
-      const tMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.95, metalness: 0 });
-      this.trackMats.push({ mat: tMat, tex });
-      // track belt (long slab down each side)
-      const track = new THREE.Mesh(new THREE.BoxGeometry(0.62, 1.0, 4.6), tMat);
-      track.position.set(side * 1.5, 0.5, 0);
-      track.castShadow = true; track.receiveShadow = true;
-      this.root.add(track);
-      // fender over the top of the track
-      const fender = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.12, 4.4), darkMat);
-      fender.position.set(side * 1.5, 1.02, 0);
-      this.root.add(fender);
-      // road wheels — cylinder axis baked to X so mesh.rotation.x rolls them
-      const wGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.5, 18);
-      wGeo.rotateZ(Math.PI / 2);
+      const group = new THREE.Group();
+      group.position.x = side * GAUGE;
+      this.root.add(group);
+      const wheels = []; // { obj, r }
+
+      // the belt — two instanced meshes (steel shoes + dark pins/horns) whose
+      // per-link matrices are updated each frame to circulate around the path
+      const steelIM = new THREE.InstancedMesh(steelLinkGeo, linkSteel, N_LINKS);
+      const darkIM = new THREE.InstancedMesh(darkLinkGeo, linkDark, N_LINKS);
+      steelIM.castShadow = true; steelIM.receiveShadow = true;
+      steelIM.frustumCulled = false; darkIM.frustumCulled = false;
+      group.add(steelIM, darkIM);
+
+      // road wheels along the ground run
       for (let i = 0; i < 5; i++) {
-        const w = new THREE.Mesh(wGeo, darkMat);
-        w.position.set(side * 1.55, 0.42, -1.7 + i * 0.85);
-        w.castShadow = true;
-        this.root.add(w);
-        this.wheels.push(w);
+        const w = makeRoadWheel();
+        w.position.set(0, RW_Y, -1.24 + i * 0.62);
+        group.add(w);
+        wheels.push({ obj: w, r: RW_R });
       }
-      // drive sprocket + idler (a touch bigger, at the ends)
-      for (const z of [-2.1, 2.1]) {
-        const s = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 0.52, 18), darkMat);
-        s.geometry.rotateZ(Math.PI / 2);
-        s.position.set(side * 1.55, 0.5, z);
-        this.root.add(s);
-        this.wheels.push(s);
+      // return rollers on the top run
+      for (const z of [-0.8, 0.8]) {
+        const r = new THREE.Mesh(rollerGeo, tireMat);
+        r.position.set(0, YC + R - 0.04, z);
+        group.add(r);
+        wheels.push({ obj: r, r: 0.14 });
       }
+      // rear DRIVE SPROCKET + front IDLER
+      const sprocket = makeSprocket(); sprocket.position.set(0, YC, -Z_END);
+      group.add(sprocket); wheels.push({ obj: sprocket, r: R });
+      const idler = makeIdler(); idler.position.set(0, YC, Z_END);
+      group.add(idler); wheels.push({ obj: idler, r: R });
+
+      // fender over the top run
+      const fender = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.12, 4.5), darkMat);
+      fender.position.set(0, YC + R + 0.16, 0);
+      group.add(fender);
+
+      const track = { side, path, N: N_LINKS, offset: 0, steelIM, darkIM, wheels };
+      this._layoutLinks(track); // initial placement
+      this.tracks.push(track);
     }
 
     // --- turret (rotates 360) ---
@@ -381,7 +526,9 @@ export class Tank {
       : forward < 0 ? forward * this.reverseSpeed : 0;
     this.speed += THREE.MathUtils.clamp(targetSpeed - this.speed, -this.accel * dt, this.accel * dt);
     // steering (a touch stronger the faster you go, but usable when creeping)
+    const prevHeading = this.heading;
     this.heading -= turn * this.turnSpeed * dt * (0.4 + 0.6 * Math.min(1, Math.abs(this.speed) / this.driveSpeed));
+    const dHeading = this.heading - prevHeading;
 
     const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
     const dist = this.speed * dt;
@@ -412,13 +559,44 @@ export class Tank {
     this._recoil = Math.max(0, this._recoil - dt * 6);
     this.recoilGroup.position.z = -this._recoil * this.recoilAmount;
 
-    // --- animate tracks + wheels from actual travel ---
-    const roll = dist / 0.42; // wheel radius
-    for (const w of this.wheels) w.rotation.x += roll;
-    this._trackScroll -= dist * 0.5;
-    for (const { tex } of this.trackMats) tex.offset.y = this._trackScroll;
+    // --- animate the tracks from each side's own ground travel ---
+    this._animateTracks(dist, dHeading);
 
     this._updateSmoke(dt);
+  }
+
+  /**
+   * Drive the running gear from motion. Each track's true ground travel is the
+   * hull-centre travel plus/minus the yaw contribution at its lateral offset —
+   * so the two tracks move at different speeds when turning, and counter-rotate
+   * in a pivot turn (real skid steering). The link belt circulates and the
+   * wheels spin by that per-side travel.
+   */
+  _animateTracks(dist, dHeading) {
+    const b = this.trackGauge;
+    for (const t of this.tracks) {
+      const travel = dist - dHeading * t.side * b; // this side's ground travel
+      t.offset += travel;
+      this._layoutLinks(t);
+      for (const w of t.wheels) w.obj.rotation.x += travel / w.r;
+    }
+  }
+
+  /** Position every track-link instance along the belt path from t.offset. */
+  _layoutLinks(t) {
+    const per = t.path.perimeter;
+    for (let i = 0; i < t.N; i++) {
+      t.path.at((i / t.N) * per + t.offset, _LP);
+      _LEY.set(0, _LP.ny, _LP.nz);          // outward (link up)
+      _LEZ.set(0, _LP.ty, _LP.tz);          // tangent (link length, around the loop)
+      _LEX.crossVectors(_LEY, _LEZ).normalize(); // track width (±X)
+      _LM.makeBasis(_LEX, _LEY, _LEZ);
+      _LM.setPosition(0, _LP.y, _LP.z);
+      t.steelIM.setMatrixAt(i, _LM);
+      t.darkIM.setMatrixAt(i, _LM);
+    }
+    t.steelIM.instanceMatrix.needsUpdate = true;
+    t.darkIM.instanceMatrix.needsUpdate = true;
   }
 
   _updateSmoke(dt) {
@@ -688,18 +866,17 @@ export class Tank {
     this.pos.x += (x - this.pos.x) * k;
     this.pos.z += (z - this.pos.z) * k;
     if (typeof y === 'number') this.pos.y += (y - this.pos.y) * k; // follow ramp jumps
-    const dh = ((ry - this.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI; this.heading += dh * k;
+    const dh = ((ry - this.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    const dHeading = dh * k; this.heading += dHeading;
     const dt = ((ty - this.turretYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI; this.turretYaw += dt * k;
     this.barrelPitch += (bp - this.barrelPitch) * k;
     this.root.position.copy(this.pos);
     this.root.rotation.y = this.heading;
     this.turret.rotation.y = this.turretYaw;
     this.barrelPivot.rotation.x = -this.barrelPitch;
-    // roll wheels + scroll tracks from the interpolated forward movement
+    // roll wheels + scroll each belt from the interpolated per-side travel
     const fwd = Math.sin(this.heading) * (this.pos.x - px) + Math.cos(this.heading) * (this.pos.z - pz);
-    for (const w of this.wheels) w.rotation.x += fwd / 0.42;
-    this._trackScroll -= fwd * 0.5;
-    for (const { tex } of this.trackMats) tex.offset.y = this._trackScroll;
+    this._animateTracks(fwd, dHeading);
     this._updateSmoke(0.016);
   }
 

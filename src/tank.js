@@ -380,9 +380,10 @@ export class Tank {
       const idler = makeIdler(); idler.position.set(0, YC, Z_END);
       group.add(idler); wheels.push({ obj: idler, r: R });
 
-      // fender over the top run
-      const fender = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.12, 4.5), darkMat);
-      fender.position.set(0, YC + R + 0.16, 0);
+      // fender over the top run — matched to the hull length so it doesn't jut
+      // out past the nose/tail, and seated right on the belt's top run
+      const fender = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.1, 4.2), darkMat);
+      fender.position.set(0, YC + R + 0.11, 0);
       group.add(fender);
 
       const track = { side, path, N: N_LINKS, offset: 0, steelIM, darkIM, wheels };

@@ -135,14 +135,14 @@ export class Weapon {
     // bolt/cocking cap at the rear
     add(new THREE.CylinderGeometry(0.017, 0.017, 0.03, 16), dark, 0, -0.012, 0.128, Math.PI / 2);
 
-    // top rail + iron sights (used when aiming)
-    add(new THREE.BoxGeometry(0.020, 0.008, 0.16), dark, 0, 0.019, 0.02);
-    add(new THREE.BoxGeometry(0.004, 0.016, 0.006), dark, 0, 0.030, -0.055); // front post
-    add(new THREE.BoxGeometry(0.016, 0.012, 0.006), dark, 0, 0.028, 0.088);  // rear notch
+    // top rail + iron sights (seated flush on the receiver top, y = -0.001)
+    add(new THREE.BoxGeometry(0.020, 0.008, 0.16), dark, 0, 0.003, 0.02);
+    add(new THREE.BoxGeometry(0.004, 0.016, 0.006), dark, 0, 0.015, -0.055); // front post
+    add(new THREE.BoxGeometry(0.016, 0.012, 0.006), dark, 0, 0.013, 0.088);  // rear notch
 
-    // feed neck / mount collar — wide enough to bridge the receiver up into the
-    // hopper base with no see-through gap
-    add(new THREE.CylinderGeometry(0.030, 0.034, 0.075, 16), dark, 0, 0.040, 0.035);
+    // feed neck / mount collar — bridges the receiver top up into the hopper
+    // base with no see-through gap (bottom tucked into the receiver)
+    add(new THREE.CylinderGeometry(0.030, 0.034, 0.079, 16), dark, 0, 0.038, 0.035);
 
     // grip + trigger guard + trigger
     const grip = add(new THREE.BoxGeometry(0.034, 0.105, 0.048), rubber, 0, -0.108, 0.072);
@@ -150,10 +150,11 @@ export class Weapon {
     add(new THREE.TorusGeometry(0.030, 0.005, 8, 18, Math.PI), dark, 0, -0.058, 0.012, 0, 0, Math.PI);
     add(new THREE.BoxGeometry(0.007, 0.022, 0.006), this.accentMat, 0, -0.048, 0.012);
 
-    // air tank, angled down and back
-    const tank = add(new THREE.CylinderGeometry(0.024, 0.024, 0.115, 18), body, 0, -0.078, 0.163, Math.PI / 2);
-    tank.rotation.x = Math.PI / 2 - 0.30;
-    add(new THREE.CylinderGeometry(0.012, 0.012, 0.03, 12), dark, 0, -0.053, 0.126, Math.PI / 2);
+    // air tank, mounted at the rear ASA and angled down + back so its neck tucks
+    // into the receiver (no gap); the regulator collar bridges the joint
+    const tank = add(new THREE.CylinderGeometry(0.024, 0.024, 0.115, 18), body, 0, -0.082, 0.17, Math.PI / 2);
+    tank.rotation.x = Math.PI / 2 + 0.30;
+    add(new THREE.CylinderGeometry(0.016, 0.016, 0.05, 12), dark, 0, -0.06, 0.12, Math.PI / 2);
 
     // --- hopper -----------------------------------------------------------
     this.hopper = new THREE.Group();

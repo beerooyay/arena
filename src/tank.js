@@ -104,6 +104,21 @@ function smokeTexture() {
   return new THREE.CanvasTexture(c);
 }
 
+// Louvered engine-screen texture for the deck / rear / side air intakes.
+function grilleTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const x = c.getContext('2d');
+  x.fillStyle = '#333740'; x.fillRect(0, 0, 64, 64);
+  for (let i = 0; i < 8; i++) {
+    x.fillStyle = '#1c1f24'; x.fillRect(0, i * 8 + 4, 64, 4);   // dark louver gap
+    x.fillStyle = '#5a6069'; x.fillRect(0, i * 8 + 2, 64, 1.5); // highlight lip
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4;
+  return t;
+}
+
 export class Tank {
   constructor(scene, arena, teamId = 0) {
     this.scene = scene;
@@ -252,17 +267,9 @@ export class Tank {
     deck.position.y = 1.55;
     this.root.add(hull, glacis, deck);
 
-    // exhaust pipe (rear-left, angled up/back) — smoke puffs spawn at its tip
-    const exhaustMat = new THREE.MeshStandardMaterial({ color: 0x55585d, roughness: 0.85, metalness: 0 });
-    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.7, 12), exhaustMat);
-    pipe.position.set(-1.05, 1.35, -1.9);
-    pipe.rotation.x = -0.5;
-    this.root.add(pipe);
-    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.13, 0.12, 12), darkMat);
-    cap.position.set(-1.05, 1.68, -2.06);
-    cap.rotation.x = -0.5;
-    this.root.add(cap);
-    this._exhaustLocal = new THREE.Vector3(-1.05, 1.75, -2.15); // tip, local to hull
+    // exhaust: the rear muffler (built in _addDetails) is the outlet; smoke
+    // puffs spawn just above its right end
+    this._exhaustLocal = new THREE.Vector3(0.6, 1.1, -2.3); // over the muffler end, local to hull
 
     // --- running gear: belt + wheels, per side (real tank layout) ---
     // rear drive SPROCKET (toothed), front IDLER, road wheels on the ground run,
@@ -426,6 +433,138 @@ export class Tank {
     this.recoilGroup.add(barrel, muzzleBrake);
     this.barrelPivot.add(this.recoilGroup);
     this._barrelLen = 3.05; // pivot -> muzzle tip along local +Z
+
+    this._addDetails(hullMat, darkMat, accent);
+  }
+
+  /**
+   * Cosmetic detailing (hull + turret) modelled to the reference: headlights,
+   * tow shackles, vision visors, engine grilles, deck hatches, stowage, a rear
+   * muffler + tail lights, antennas, a turret cupola/hatch/insignia, and bolt
+   * rows. Everything is measured to sit flush on its parent with no clipping.
+   * Hull parts go on this.root; turret parts on this.turret (they rotate).
+   */
+  _addDetails(hullMat, darkMat, accent) {
+    // hull box: x[-1.35,1.35] y[0.8,1.5] z[-2.1,2.1]; deck top y=1.675; fenders
+    // at x=+-1.5, top y=1.12; turret cylinder r~1.05-1.2, local y[0,0.7].
+    const fit = new THREE.MeshStandardMaterial({ color: 0x6b7078, roughness: 0.6, metalness: 0.25 });
+    const bolt = new THREE.MeshStandardMaterial({ color: 0x7a7f86, roughness: 0.5, metalness: 0.35 });
+    const slit = new THREE.MeshStandardMaterial({ color: 0x1b1e22, roughness: 0.85 });
+    const lensW = new THREE.MeshStandardMaterial({ color: 0xf1eede, emissive: 0xfff2b0, emissiveIntensity: 0.35, roughness: 0.3 });
+    const lensR = new THREE.MeshStandardMaterial({ color: 0xcf2626, emissive: 0xff2323, emissiveIntensity: 0.45, roughness: 0.3 });
+    const grille = new THREE.MeshStandardMaterial({ map: grilleTexture(), color: 0x565b63, roughness: 0.85, metalness: 0.25 });
+
+    const D = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0, parent = this.root) => {
+      const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
+      m.castShadow = true; parent.add(m); return m;
+    };
+    // bolt collectors (instanced per-parent so turret bolts rotate with it)
+    const hb = [], tb = [];
+    const boltLine = (arr, a, b, n) => { for (let i = 0; i < n; i++) { const t = n <= 1 ? 0.5 : i / (n - 1); arr.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]); } };
+
+    // reusable geometries
+    const H = Math.PI / 2;
+    const hatchDisc = new THREE.CylinderGeometry(0.26, 0.26, 0.05, 18);
+    const hatchRim = new THREE.CylinderGeometry(0.29, 0.29, 0.03, 18);
+
+    // ===================== HULL — FRONT =====================
+    // driver's visor (left) + radio/MG port (right) on the vertical upper front
+    D(new THREE.BoxGeometry(0.5, 0.2, 0.06), hullMat, -0.5, 1.3, 2.11);
+    D(new THREE.BoxGeometry(0.44, 0.05, 0.03), slit, -0.5, 1.31, 2.15);
+    D(new THREE.BoxGeometry(0.34, 0.3, 0.06), hullMat, 0.55, 1.26, 2.11);
+    D(new THREE.CylinderGeometry(0.07, 0.07, 0.06, 12), slit, 0.55, 1.26, 2.15, H);
+    // headlights on the fender corners, OUTBOARD of the glacis (over the tracks)
+    // and pushed forward so they stand proud of the glacis nose — no occlusion
+    for (const sx of [-1, 1]) {
+      D(new THREE.BoxGeometry(0.2, 0.2, 0.2), fit, sx * 1.42, 1.24, 1.98);                       // mount block
+      D(new THREE.CylinderGeometry(0.13, 0.13, 0.16, 16), darkMat, sx * 1.42, 1.35, 2.1, H);     // bucket
+      D(new THREE.CylinderGeometry(0.1, 0.1, 0.03, 16), lensW, sx * 1.42, 1.35, 2.19, H);        // lens
+      D(new THREE.TorusGeometry(0.12, 0.02, 8, 18), fit, sx * 1.42, 1.35, 2.18);                 // rim ring
+    }
+    // front tow shackles: a bow (U) whose two ends meet a cross-pin held by a
+    // clevis tab on the glacis — all proud of the nose so it reads as one whole
+    // closed shackle (no gap between bow and pin, no clip into the glacis)
+    for (const sx of [-1, 1]) {
+      D(new THREE.BoxGeometry(0.2, 0.15, 0.14), fit, sx * 0.5, 1.0, 2.56);                        // clevis tab on glacis
+      const u = D(new THREE.TorusGeometry(0.15, 0.035, 8, 18, Math.PI), fit, sx * 0.5, 0.93, 2.63); // bow, ends up at the pin
+      u.rotation.z = Math.PI;
+      D(new THREE.CylinderGeometry(0.03, 0.03, 0.36, 10), fit, sx * 0.5, 0.94, 2.63, 0, 0, H);    // cross-pin through the bow ends
+    }
+    boltLine(hb, [-1.15, 1.46, 2.11], [1.15, 1.46, 2.11], 9);   // top of front plate
+    boltLine(hb, [-0.95, 0.88, 2.32], [0.95, 0.88, 2.32], 7);   // glacis lower edge
+
+    // ===================== HULL — SIDES =====================
+    for (const sx of [-1, 1]) {
+      // upper-side engine intake grille (rear third)
+      D(new THREE.BoxGeometry(0.04, 0.4, 0.9), grille, sx * 1.36, 1.28, -1.1, 0, 0, 0);
+      // stowage box on the fender
+      D(new THREE.BoxGeometry(0.42, 0.2, 0.85), darkMat, sx * 1.5, 1.22, 0.85);
+      // horizontal tool / tow rod along the upper side (clear of the grille)
+      D(new THREE.CylinderGeometry(0.03, 0.03, 1.2, 10), fit, sx * 1.37, 1.42, 0.15, 0, 0, H).rotation.set(H, 0, 0);
+      // small square access panel (front)
+      D(new THREE.BoxGeometry(0.03, 0.34, 0.5), hullMat, sx * 1.355, 1.2, 1.2);
+      boltLine(hb, [sx * 1.36, 1.04, 1.45], [sx * 1.36, 1.04, -1.9], 8); // lower side row
+    }
+
+    // ===================== HULL — TOP DECK =====================
+    // two front hatches (driver + radio) forward of the raised deck
+    for (const sx of [-1, 1]) {
+      D(hatchRim, darkMat, sx * 0.48, 1.51, 1.78);
+      D(hatchDisc, fit, sx * 0.48, 1.53, 1.78);
+      D(new THREE.BoxGeometry(0.16, 0.03, 0.05), bolt, sx * 0.48, 1.56, 1.78);
+    }
+    // rear engine-deck louver grilles (behind the raised deck)
+    for (const sx of [-1, 1]) D(new THREE.BoxGeometry(0.6, 0.04, 0.52), grille, sx * 0.36, 1.51, -1.78);
+    // raised-deck edge bolts
+    boltLine(hb, [-1.1, 1.69, 1.45], [1.1, 1.69, 1.45], 8);
+    boltLine(hb, [-1.1, 1.69, -1.45], [1.1, 1.69, -1.45], 8);
+
+    // ===================== HULL — REAR =====================
+    // horizontal exhaust muffler across the lower rear plate (clear of tracks)
+    const mMat = new THREE.MeshStandardMaterial({ color: 0x55585d, roughness: 0.85 });
+    D(new THREE.CylinderGeometry(0.13, 0.13, 1.2, 14), mMat, 0, 0.92, -2.24, 0, 0, H);
+    D(new THREE.CylinderGeometry(0.14, 0.14, 0.06, 14), fit, 0.6, 0.92, -2.24, 0, 0, H);
+    D(new THREE.CylinderGeometry(0.14, 0.14, 0.06, 14), fit, -0.6, 0.92, -2.24, 0, 0, H);
+    // rear engine grille + tail lights
+    D(new THREE.BoxGeometry(1.5, 0.5, 0.04), grille, 0, 1.2, -2.11);
+    for (const sx of [-1, 1]) D(new THREE.CylinderGeometry(0.06, 0.06, 0.04, 12), lensR, sx * 1.0, 1.05, -2.11, H);
+    boltLine(hb, [-1.15, 1.46, -2.11], [1.15, 1.46, -2.11], 9);
+
+    // ===================== TURRET =====================
+    const T = this.turret;
+    // commander's cupola lid + rim (the cupola body already exists at 0.45,0.78,-0.2)
+    D(new THREE.CylinderGeometry(0.36, 0.4, 0.04, 16), fit, 0.45, 0.95, -0.2, 0, 0, 0, T);
+    D(new THREE.CylinderGeometry(0.3, 0.3, 0.05, 16), darkMat, 0.45, 0.98, -0.2, 0, 0, 0, T);
+    // loader's hatch on the other side of the roof
+    D(new THREE.CylinderGeometry(0.3, 0.3, 0.04, 16), darkMat, -0.45, 0.71, 0.0, 0, 0, 0, T);
+    D(new THREE.CylinderGeometry(0.33, 0.33, 0.03, 16), fit, -0.45, 0.7, 0.0, 0, 0, 0, T);
+    D(new THREE.BoxGeometry(0.18, 0.04, 0.05), bolt, -0.45, 0.74, 0.0, 0, 0, 0, T);
+    // team insignia roundel on each turret side, centred on the stripe band
+    for (const sx of [-1, 1]) D(new THREE.CylinderGeometry(0.2, 0.2, 0.03, 20), accent, sx * 1.06, 0.35, 0.12, 0, 0, H, T);
+    // side vision port blocks with slits
+    for (const sx of [-1, 1]) {
+      D(new THREE.BoxGeometry(0.06, 0.12, 0.16), fit, sx * 1.05, 0.55, 0.62, 0, 0, 0, T);
+      D(new THREE.BoxGeometry(0.03, 0.03, 0.12), slit, sx * 1.09, 0.55, 0.62, 0, 0, 0, T);
+    }
+    // two antennas rising from the turret rear stowage box
+    D(new THREE.CylinderGeometry(0.05, 0.06, 0.08, 8), fit, 0.5, 0.66, -1.15, 0, 0, 0, T);
+    D(new THREE.CylinderGeometry(0.012, 0.012, 1.1, 6), fit, 0.5, 1.2, -1.15, 0, 0, 0, T);
+    D(new THREE.CylinderGeometry(0.05, 0.06, 0.08, 8), fit, -0.35, 0.66, -1.1, 0, 0, 0, T);
+    D(new THREE.CylinderGeometry(0.01, 0.01, 0.75, 6), fit, -0.35, 1.03, -1.1, 0, 0, 0, T);
+    // turret-base bolt ring
+    for (let i = 0; i < 16; i++) { const a = (i / 16) * Math.PI * 2; tb.push([Math.sin(a) * 1.14, 0.16, Math.cos(a) * 1.14]); }
+
+    // ===================== instanced bolts =====================
+    const boltGeo = new THREE.SphereGeometry(0.024, 6, 4);
+    const mkBolts = (arr, parent) => {
+      if (!arr.length) return;
+      const im = new THREE.InstancedMesh(boltGeo, bolt, arr.length);
+      const d = new THREE.Object3D();
+      arr.forEach((p, i) => { d.position.set(p[0], p[1], p[2]); d.updateMatrix(); im.setMatrixAt(i, d.matrix); });
+      im.castShadow = true; parent.add(im);
+    };
+    mkBolts(hb, this.root);
+    mkBolts(tb, this.turret);
   }
 
   setColor(hex) {

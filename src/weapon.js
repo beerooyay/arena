@@ -104,14 +104,15 @@ export class Weapon {
     // NOTE: metalness must stay 0 — there's no environment map in this scene, so
     // any metalness renders as near-black and flattens the model into a
     // silhouette. Form comes from diffuse shading + the contour outline pass.
-    const body = new THREE.MeshStandardMaterial({ color: 0xd2d7dd, roughness: 0.55, metalness: 0 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x9aa2ac, roughness: 0.65, metalness: 0 });
-    const rubber = new THREE.MeshStandardMaterial({ color: 0x7b828a, roughness: 0.95, metalness: 0 });
+    const body = new THREE.MeshStandardMaterial({ color: 0xcdd2d9, roughness: 0.5, metalness: 0 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x868c95, roughness: 0.65, metalness: 0 });
+    const rubber = new THREE.MeshStandardMaterial({ color: 0x33373e, roughness: 0.9, metalness: 0 });
+    const black = new THREE.MeshStandardMaterial({ color: 0x1c1e22, roughness: 0.8, metalness: 0 });
     this.accentMat = new THREE.MeshStandardMaterial({
       color: paintHex, roughness: 0.4, metalness: 0,
-      emissive: new THREE.Color(paintHex), emissiveIntensity: 0.18,
+      emissive: new THREE.Color(paintHex), emissiveIntensity: 0.2,
     });
-    this.materials = [body, dark, rubber, this.accentMat];
+    this.materials = [body, dark, rubber, black, this.accentMat];
 
     const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
       const m = new THREE.Mesh(geo, mat);
@@ -123,38 +124,53 @@ export class Weapon {
       return m;
     };
 
-    // barrel (origin sits on this axis) + porting + muzzle tip
-    add(new THREE.CylinderGeometry(0.0105, 0.0105, 0.34, 20), body, 0, 0, -0.215, Math.PI / 2);
-    add(new THREE.CylinderGeometry(0.0135, 0.0135, 0.11, 20), dark, 0, 0, -0.335, Math.PI / 2);
-    add(new THREE.CylinderGeometry(0.0125, 0.0125, 0.02, 20), this.accentMat, 0, 0, -0.386, Math.PI / 2);
+    const H = Math.PI / 2;
 
-    // receiver / body (dark plate seated just below the body's top so their
-    // faces don't coincide and z-fight)
-    add(new THREE.BoxGeometry(0.046, 0.058, 0.20), body, 0, -0.030, 0.015);
-    add(new THREE.BoxGeometry(0.044, 0.022, 0.115), dark, 0, -0.018, 0.005);
-    // bolt/cocking cap at the rear
-    add(new THREE.CylinderGeometry(0.017, 0.017, 0.03, 16), dark, 0, -0.012, 0.128, Math.PI / 2);
+    // ===== barrel: long silver barrel, ported muzzle, red tip (origin on axis) =====
+    add(new THREE.CylinderGeometry(0.011, 0.011, 0.42, 20), body, 0, 0, -0.25, H);        // main barrel
+    add(new THREE.CylinderGeometry(0.014, 0.014, 0.055, 20), dark, 0, 0, -0.055, H);      // barrel collar at the receiver
+    add(new THREE.CylinderGeometry(0.017, 0.017, 0.12, 20), dark, 0, 0, -0.47, H);        // ported muzzle body
+    for (let i = 0; i < 3; i++) for (const sx of [-1, 1])                                  // port holes on top
+      add(new THREE.CylinderGeometry(0.0035, 0.0035, 0.02, 6), black, sx * 0.006, 0.014, -0.435 - i * 0.028);
+    add(new THREE.CylinderGeometry(0.018, 0.018, 0.025, 20), this.accentMat, 0, 0, -0.542, H); // red muzzle tip
 
-    // top rail + iron sights (seated flush on the receiver top, y = -0.001)
-    add(new THREE.BoxGeometry(0.020, 0.008, 0.16), dark, 0, 0.003, 0.02);
-    add(new THREE.BoxGeometry(0.004, 0.016, 0.006), dark, 0, 0.015, -0.055); // front post
-    add(new THREE.BoxGeometry(0.016, 0.012, 0.006), dark, 0, 0.013, 0.088);  // rear notch
+    // ===== receiver / body: angular silver with red accents =====
+    add(new THREE.BoxGeometry(0.052, 0.064, 0.22), body, 0, -0.028, 0.02);               // main receiver
+    add(new THREE.BoxGeometry(0.048, 0.03, 0.14), dark, 0, -0.052, 0.0);                 // dark lower receiver
+    for (const sx of [-1, 1])                                                             // diagonal red side stripes
+      add(new THREE.BoxGeometry(0.006, 0.018, 0.13), this.accentMat, sx * 0.027, -0.022, 0.0, 0.34);
+    add(new THREE.BoxGeometry(0.03, 0.014, 0.006), this.accentMat, 0, 0.006, -0.09);      // red front-top bar
+    add(new THREE.CylinderGeometry(0.013, 0.013, 0.008, 16), this.accentMat, 0, -0.018, -0.095, H); // red bolt eye
+    add(new THREE.CylinderGeometry(0.017, 0.017, 0.03, 16), dark, 0, -0.01, 0.14, H);     // rear bolt cap
 
-    // feed neck / mount collar — bridges the receiver top up into the hopper
-    // base with no see-through gap (bottom tucked into the receiver)
-    add(new THREE.CylinderGeometry(0.030, 0.034, 0.079, 16), dark, 0, 0.038, 0.035);
+    // ===== top rail with red end blocks =====
+    add(new THREE.BoxGeometry(0.024, 0.01, 0.15), dark, 0, 0.007, 0.02);                  // rail
+    add(new THREE.BoxGeometry(0.026, 0.016, 0.022), this.accentMat, 0, 0.012, -0.05);     // front red block
+    add(new THREE.BoxGeometry(0.026, 0.016, 0.022), this.accentMat, 0, 0.012, 0.088);     // rear red block
 
-    // grip + trigger guard + trigger
-    const grip = add(new THREE.BoxGeometry(0.034, 0.105, 0.048), rubber, 0, -0.108, 0.072);
+    // ===== feed neck / mount collar — bridges the receiver up into the hopper base =====
+    add(new THREE.CylinderGeometry(0.030, 0.034, 0.079, 16), dark, 0, 0.04, 0.035);
+
+    // ===== grip (black) + red band + trigger guard + trigger =====
+    const grip = add(new THREE.BoxGeometry(0.036, 0.11, 0.05), rubber, 0, -0.11, 0.075);
     grip.rotation.x = -0.22;
-    add(new THREE.TorusGeometry(0.030, 0.005, 8, 18, Math.PI), dark, 0, -0.058, 0.012, 0, 0, Math.PI);
-    add(new THREE.BoxGeometry(0.007, 0.022, 0.006), this.accentMat, 0, -0.048, 0.012);
+    add(new THREE.TorusGeometry(0.03, 0.006, 8, 18, Math.PI), dark, 0, -0.058, 0.012, 0, 0, Math.PI); // trigger guard
+    add(new THREE.BoxGeometry(0.008, 0.024, 0.007), this.accentMat, 0, -0.05, 0.012);     // red trigger
 
-    // air tank, mounted at the rear ASA and angled down + back so its neck tucks
-    // into the receiver (no gap); the regulator collar bridges the joint
-    const tank = add(new THREE.CylinderGeometry(0.024, 0.024, 0.115, 18), body, 0, -0.082, 0.17, Math.PI / 2);
-    tank.rotation.x = Math.PI / 2 + 0.30;
-    add(new THREE.CylinderGeometry(0.016, 0.016, 0.05, 12), dark, 0, -0.06, 0.12, Math.PI / 2);
+    // ===== CO2 tank — a solid ASA block at the grip's bottom-rear, then a
+    // stepped regulator and the silver bottle running horizontally back toward
+    // the shoulder. Everything in-line so the mount reads as one clean assembly. =====
+    add(new THREE.BoxGeometry(0.044, 0.052, 0.058), dark, 0, -0.152, 0.12);           // ASA block at the grip rear
+    const co2 = new THREE.Group();
+    co2.position.set(0, -0.162, 0.152);   // regulator end (front), off the ASA
+    co2.rotation.x = -Math.PI / 2;         // horizontal; local -Y -> BACK (+z), toward the shoulder
+    this.root.add(co2);
+    const cadd = (geo, mat, y) => { const m = new THREE.Mesh(geo, mat); m.position.set(0, y, 0); co2.add(m); return m; };
+    cadd(new THREE.CylinderGeometry(0.036, 0.036, 0.05, 18), rubber, 0.02);          // fat regulator body (at the ASA)
+    cadd(new THREE.CylinderGeometry(0.024, 0.024, 0.03, 18), dark, -0.02);           // regulator neck / step
+    cadd(new THREE.CylinderGeometry(0.03, 0.03, 0.16, 18), body, -0.11);             // silver bottle
+    cadd(new THREE.CylinderGeometry(0.032, 0.032, 0.02, 18), this.accentMat, -0.165);// red band near the rear
+    cadd(new THREE.SphereGeometry(0.03, 16, 10), dark, -0.195);                       // domed rear cap
 
     // --- hopper -----------------------------------------------------------
     this.hopper = new THREE.Group();

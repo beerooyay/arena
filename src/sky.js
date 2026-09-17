@@ -12,26 +12,33 @@ import { NO_OUTLINE_LAYER } from './outline.js';
  * fog where the 8m walls meet the sky.
  */
 function cloudTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 256;
-  const x = c.getContext('2d');
-  // build a fluffy puff from several overlapping soft radial blobs
+  const S = 256;
+  // 1. Build the puff SHAPE as an alpha mask (union of soft radial blobs).
+  const m = document.createElement('canvas'); m.width = m.height = S;
+  const mx = m.getContext('2d');
   const blob = (cx, cy, r, a) => {
-    const g = x.createRadialGradient(cx, cy, 0, cx, cy, r);
+    const g = mx.createRadialGradient(cx, cy, 0, cx, cy, r);
     g.addColorStop(0, `rgba(255,255,255,${a})`);
     g.addColorStop(0.6, `rgba(255,255,255,${a * 0.5})`);
     g.addColorStop(1, 'rgba(255,255,255,0)');
-    x.fillStyle = g;
-    x.beginPath(); x.arc(cx, cy, r, 0, Math.PI * 2); x.fill();
+    mx.fillStyle = g;
+    mx.beginPath(); mx.arc(cx, cy, r, 0, Math.PI * 2); mx.fill();
   };
-  blob(128, 150, 74, 0.95);
-  blob(84, 160, 54, 0.9);
-  blob(172, 158, 58, 0.9);
-  blob(108, 128, 48, 0.85);
-  blob(152, 132, 44, 0.85);
-  blob(196, 168, 40, 0.8);
-  blob(60, 170, 38, 0.8);
-  return new THREE.CanvasTexture(c);
+  blob(128, 150, 74, 0.95); blob(84, 160, 54, 0.9); blob(172, 158, 58, 0.9);
+  blob(108, 128, 48, 0.85); blob(152, 132, 44, 0.85); blob(196, 168, 40, 0.8); blob(60, 170, 38, 0.8);
+
+  // 2. Final texture: OPAQUE WHITE rgb everywhere, alpha taken from the mask.
+  // Keeping rgb white in the transparent regions stops mipmap generation (esp.
+  // in Safari) from bleeding the see-through pixels' undefined/black rgb into
+  // the cloud edges as coloured speckle.
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d');
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, S, S);
+  x.globalCompositeOperation = 'destination-in';
+  x.drawImage(m, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 4;
+  return t;
 }
 
 export function createDaySky(scene, sunDir) {

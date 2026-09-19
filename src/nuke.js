@@ -76,17 +76,27 @@ export class Nuke {
     this.t = 0;                 // seconds in the current phase
 
     // --- tunables (wired to dev sliders in main.js) ---
-    this.dropHeight = 260;      // how high the bomb starts
-    this.fallTime = 2.3;        // seconds to reach the ground
-    this.blastRadius = 40;      // how far the shockwave reaches (world units)
-    this.shockTime = 0.7;       // seconds for the ring to reach blastRadius
-    this.knockback = 42;        // player launch speed at ground zero
-    this.shakeAmp = 1.2;        // camera-shake strength
-    this.cloudHeight = 64;      // apex of the mushroom cap
-    this.capRadius = 25;        // billow radius of the cap
-    this.riseTime = 3.6;        // seconds for the cloud to reach full height
-    this.holdTime = 5.5;        // seconds the cloud lingers at full size
-    this.fadeTime = 4.5;        // seconds it takes to dissipate
+    this.dropHeight = 300;      // how high the bomb starts
+    this.fallTime = 2.4;        // seconds to reach the ground
+    this.shockTime = 0.9;       // seconds for the ring to reach blastRadius
+    this.knockback = 40;        // player shove speed at ground zero
+    this.shakeAmp = 1.4;        // camera-shake strength
+    this.riseTime = 4.2;        // seconds for the cloud to reach full height
+    this.holdTime = 6.0;        // seconds the cloud lingers at full size
+    this.fadeTime = 5.0;        // seconds it takes to dissipate
+
+    // MAP-RELATIVE sizing — computed from arena.size on each trigger so the
+    // blast and cloud fill whatever map you're on (Backlot 60, Coliseum 78).
+    this.blastScale = 1.8;      // shockwave reach   = arena.size * this (map-wide)
+    this.capScale = 0.9;        // mushroom cap radius = arena.size * this
+    this.heightScale = 1.55;    // mushroom apex       = arena.size * this
+    // live values (recomputed in trigger(); these are just fallbacks)
+    this.blastRadius = 108;
+    this.cloudHeight = 93;
+    this.capRadius = 54;
+    // cap the upward launch so the shockwave can NEVER throw a player over the
+    // 8m perimeter wall and off the map — apex stays well under the wall top.
+    this.maxLaunchUp = 11;
 
     // --- pools ---
     this.puffs = [];            // mushroom stem/cap/fire sprites
@@ -170,6 +180,13 @@ export class Nuke {
   trigger(target) {
     if (this.active) return false;
     this.center.copy(target); this.center.y = 0;
+    // size the blast + cloud to the current map so it always reads as map-wide
+    if (this.arena && this.arena.size) {
+      const S = this.arena.size;
+      this.blastRadius = S * this.blastScale;
+      this.cloudHeight = S * this.heightScale;
+      this.capRadius = S * this.capScale;
+    }
     this.state = 'falling'; this.t = 0;
     this.bomb.position.set(this.center.x, this.dropHeight, this.center.z);
     this.bomb.visible = true;
@@ -274,7 +291,10 @@ export class Nuke {
         const len = Math.hypot(nx, nz) || 1;
         nx /= len; nz /= len;
         const power = this.knockback * (0.35 + 0.65 * f);
-        this.player.applyImpulse(nx * power, nz * power, 8 + 16 * f);
+        // upward launch is capped low (apex < wall height) so the perimeter walls
+        // always contain the player — a map-wide blast never throws you off the map
+        const up = Math.min(this.maxLaunchUp, 4 + this.maxLaunchUp * f);
+        this.player.applyImpulse(nx * power, nz * power, up);
       }
     }
 
@@ -316,7 +336,7 @@ export class Nuke {
       const col = Math.random() < 0.22 ? PAINT[(Math.random() * PAINT.length) | 0] : baseCol;
       const m = new THREE.Mesh(new THREE.BoxGeometry(cs.x, cs.y, cs.z),
         new THREE.MeshStandardMaterial({ color: col, roughness: 0.8, metalness: 0, transparent: true, opacity: 1 }));
-      m.castShadow = true; m.layers.set(0);
+      m.castShadow = false; m.layers.set(0); // many chunks at once — skip shadows for FPS
       m.position.set(
         c.x + (Math.random() - 0.5) * size.x,
         c.y + (Math.random() - 0.5) * size.y,
@@ -379,12 +399,14 @@ export class Nuke {
 
   // ---- fireball, mushroom, ground ring -------------------------------------
   _spawnFireball() {
-    // a cluster of bright fire puffs boiling up out of ground zero
-    for (let i = 0; i < 16; i++) {
-      const a = Math.random() * Math.PI * 2, r = Math.random() * 6;
-      this._puff(this.center.x + Math.cos(a) * r, 2 + Math.random() * 5, this.center.z + Math.sin(a) * r, {
-        role: 'fire', color: i % 2 ? 0xff7a1e : 0xffc24d, size: 8 + Math.random() * 8,
-        life: 1.6 + Math.random() * 1.0, o0: 0.95, rise: 6 + Math.random() * 5,
+    // a cluster of bright fire puffs boiling up out of ground zero, scaled to blast
+    const scl = Math.max(1, this.blastRadius / 40);
+    const N = Math.round(16 * Math.min(2.4, scl));
+    for (let i = 0; i < N; i++) {
+      const a = Math.random() * Math.PI * 2, r = Math.random() * 6 * scl;
+      this._puff(this.center.x + Math.cos(a) * r, 2 + Math.random() * 5 * scl, this.center.z + Math.sin(a) * r, {
+        role: 'fire', color: i % 2 ? 0xff7a1e : 0xffc24d, size: (8 + Math.random() * 8) * scl,
+        life: 1.8 + Math.random() * 1.2, o0: 0.95, rise: (6 + Math.random() * 5) * Math.min(2, scl),
       });
     }
   }
@@ -392,39 +414,43 @@ export class Nuke {
   _spawnMushroom() {
     const cx = this.center.x, cz = this.center.z;
     const total = this.riseTime + this.holdTime + this.fadeTime;
-    const capBase = this.cloudHeight * 0.66;  // where the stem ends and the cap begins
+    const capBase = this.cloudHeight * 0.66;   // where the stem ends and the cap begins
+    // scale puff size + count so a huge cap stays a solid mass, not a sparse spray
+    const scl = Math.max(1, this.capRadius / 25);
+    const cnt = Math.min(2.4, scl);
     // STEM — a rising column that fills out and lightens toward the cap
-    const STEM = 28;
+    const STEM = Math.round(28 * cnt);
     for (let i = 0; i < STEM; i++) {
       const u = i / (STEM - 1);
-      const a = Math.random() * Math.PI * 2, r = (2.6 + u * 3.6) * (0.5 + Math.random() * 0.6);
+      const a = Math.random() * Math.PI * 2, r = (2.6 + u * 3.6) * scl * (0.5 + Math.random() * 0.6);
       this._puff(cx + Math.cos(a) * r, 0, cz + Math.sin(a) * r, {
-        role: 'stem', color: this._smokeCol(0.12 + u * 0.5), size: 9 + u * 7 + Math.random() * 4,
+        role: 'stem', color: this._smokeCol(0.12 + u * 0.5), size: (9 + u * 7 + Math.random() * 4) * scl,
         targetY: 5 + u * capBase, r0: r, delay: u * 0.45, grow: 2.4, life: total,
       });
     }
     // CAP — a broad billowing dome that overhangs the stem (widest at the rim,
     // outer puffs curling down and under for the classic mushroom silhouette)
-    const CAP = 60;
+    const CAP = Math.round(60 * cnt);
     for (let i = 0; i < CAP; i++) {
       const a = Math.random() * Math.PI * 2;
       const shell = Math.pow(Math.random(), 0.55);       // 0 centre .. 1 rim (biased outward)
       const rTarget = this.capRadius * (0.22 + shell * 0.92);
-      const yTarget = this.cloudHeight - shell * this.capRadius * 0.62 + (Math.random() - 0.5) * 4;
+      const yTarget = this.cloudHeight - shell * this.capRadius * 0.62 + (Math.random() - 0.5) * 4 * scl;
       // rim puffs sit lower & in shadow -> a touch darker; the crown catches light
       this._puff(cx, 4, cz, {
         role: 'cap', color: this._smokeCol(0.85 - shell * 0.35 + Math.random() * 0.12),
-        size: 16 + shell * 8 + Math.random() * 10,
+        size: (16 + shell * 8 + Math.random() * 10) * scl,
         a, rTarget, yTarget, curl: 0.5 + shell, delay: 0.3 + shell * 0.5 + Math.random() * 0.4,
         grow: 3.0, life: total,
       });
     }
     // a rounded crown of a few big soft puffs right at the top centre
-    for (let i = 0; i < 6; i++) {
+    const CROWN = Math.round(6 * cnt);
+    for (let i = 0; i < CROWN; i++) {
       const a = Math.random() * Math.PI * 2, r = this.capRadius * 0.25 * Math.random();
       this._puff(cx, 4, cz, {
-        role: 'cap', color: this._smokeCol(0.92), size: 20 + Math.random() * 10,
-        a, rTarget: r, yTarget: this.cloudHeight + 3 + Math.random() * 4, curl: 0.3,
+        role: 'cap', color: this._smokeCol(0.92), size: (20 + Math.random() * 10) * scl,
+        a, rTarget: r, yTarget: this.cloudHeight + (3 + Math.random() * 4) * scl, curl: 0.3,
         delay: 0.5 + Math.random() * 0.4, grow: 3.2, life: total,
       });
     }

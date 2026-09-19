@@ -2951,14 +2951,15 @@ const fNuke = gui.addFolder('Nuke');
 fNuke.add({ drop: () => { if (active && !nuke.active) nuke.trigger(new THREE.Vector3(camera.position.x, 0, camera.position.z - 24)); } }, 'drop').name('Detonate (dev)');
 fNuke.add(nuke, 'dropHeight', 80, 400, 10).name('Drop Height');
 fNuke.add(nuke, 'fallTime', 0.8, 5, 0.1).name('Fall Time (s)');
-fNuke.add(nuke, 'blastRadius', 15, 78, 1).name('Blast Radius');
+fNuke.add(nuke, 'blastScale', 0.5, 2.4, 0.05).name('Blast x Map');
+fNuke.add(nuke, 'capScale', 0.3, 1.4, 0.05).name('Cap x Map');
+fNuke.add(nuke, 'heightScale', 0.6, 2.4, 0.05).name('Height x Map');
 fNuke.add(nuke, 'shockTime', 0.3, 2, 0.05).name('Shock Time (s)');
 fNuke.add(nuke, 'knockback', 10, 90, 1).name('Player Knockback');
+fNuke.add(nuke, 'maxLaunchUp', 0, 20, 0.5).name('Max Launch Up');
 fNuke.add(nuke, 'shakeAmp', 0, 3, 0.05).name('Camera Shake');
-fNuke.add(nuke, 'cloudHeight', 25, 100, 1).name('Cloud Height');
-fNuke.add(nuke, 'capRadius', 8, 40, 1).name('Cap Radius');
-fNuke.add(nuke, 'riseTime', 1.5, 7, 0.1).name('Rise Time (s)');
-fNuke.add(nuke, 'holdTime', 1, 12, 0.5).name('Hold Time (s)');
+fNuke.add(nuke, 'riseTime', 1.5, 8, 0.1).name('Rise Time (s)');
+fNuke.add(nuke, 'holdTime', 1, 14, 0.5).name('Hold Time (s)');
 fNuke.add(nuke, 'fadeTime', 1, 10, 0.5).name('Fade Time (s)');
 
 // DEV-only debug hooks (DEV is false in the shipped itch/Steam build, so this
@@ -2966,6 +2967,7 @@ fNuke.add(nuke, 'fadeTime', 1, 10, 0.5).name('Fade Time (s)');
 // and detonate the nuke where pointer-lock isn't available.
 if (DEV) window.__wo = {
   get active() { return active; },
+  setActive: (v) => { active = !!v; },   // pause/resume the movement+camera loop for clean FX captures
   enterGame, resetMatch,
   nuke, camera, player, arena, bots,
   drop: (x, z) => nuke.trigger(new THREE.Vector3(

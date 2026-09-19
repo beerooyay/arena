@@ -36,6 +36,10 @@ export class PlayerController {
     this.minPolar = 0;
     this.maxPolar = Math.PI;
 
+    // external horizontal impulse (nuke shockwave, etc.). Decays fast and is
+    // applied through the normal collision path so you still slam into walls.
+    this.knockback = new THREE.Vector3();
+
     this.blockers = [];
     this.groundMeshes = [];
     this.ceilings = [];
@@ -120,6 +124,18 @@ export class PlayerController {
     return false;
   }
 
+  /**
+   * Fling the player: a horizontal shove (world x/z) plus an upward launch.
+   * Used by the nuke shockwave. Cancels any low stance so you get thrown clean.
+   */
+  applyImpulse(hx, hz, up = 0) {
+    this.standUp();
+    this.crouch = 0;
+    this.knockback.x += hx;
+    this.knockback.z += hz;
+    if (up > 0) { this.velocityY = Math.max(this.velocityY, up); this.onGround = false; }
+  }
+
   _moveForward(d) {
     const c = this.camera;
     _vector.setFromMatrixColumn(c.matrix, 0);
@@ -154,6 +170,7 @@ export class PlayerController {
     this.diveSpeed = 0;
     this.slideCooldown = 0; // free to slide again right away
     this._slidePress = false;
+    this.knockback.set(0, 0, 0); // no leftover blast fling on (re)spawn
   }
 
   stance() { return this.prone ? 'prone' : (this.crouching ? 'crouch' : 'stand'); }
@@ -285,6 +302,16 @@ export class PlayerController {
       const speed = mag * dt;
       if (input.forward) this._moveForward(input.forward * speed);
       if (input.strafe) this._moveRight(input.strafe * speed);
+    }
+
+    // external knockback (nuke blast): slide the body along x/z, decaying fast.
+    // Runs before the blocker push-out below so you still collide with walls.
+    if (this.knockback.x || this.knockback.z) {
+      pos.x += this.knockback.x * dt;
+      pos.z += this.knockback.z * dt;
+      const k = Math.max(0, 1 - dt * 3.2);
+      this.knockback.x *= k; this.knockback.z *= k;
+      if (Math.abs(this.knockback.x) < 0.05 && Math.abs(this.knockback.z) < 0.05) this.knockback.set(0, 0, 0);
     }
 
     // stance height: prone < diving < slide < crouch < standing

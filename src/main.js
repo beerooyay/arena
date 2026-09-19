@@ -22,6 +22,7 @@ import { TankFX } from './tankFX.js';
 import { TankBuster } from './tankBuster.js';
 import { createNightSky } from './nightSky.js';
 import { createDaySky } from './sky.js';
+import { Nuke } from './nuke.js';
 import { unlockAchievement } from './steamClient.js';
 
 // ---------------------------------------------------------------------------
@@ -718,6 +719,12 @@ bots.onPlayerPaintHit = (threshold) => {
 // set world after bots exists so dynamic bot collision works
 player.setWorld(arena.blockers, arena.groundMeshes, arena.ceilings, bots.bots);
 
+// Nuke easter egg (press N): a bomb falls, detonates in a blinding flash + a
+// towering mushroom cloud, and the shockwave flings the player, ragdolls nearby
+// bots, and blows destructible cover apart. Self-contained in nuke.js.
+const nuke = new Nuke(scene, audio);
+nuke.setRefs({ player, arena, bots });
+
 // `active` = game is being played (mouse locked OR gamepad session started)
 let active = false;
 let padSession = false;
@@ -897,6 +904,7 @@ function resetMatch() {
   player.velocityY = 0;
   player.resetStance();
   playerPaintHits = 0;
+  nuke.reset();                        // clear any live blast + restore blown-up cover
   startCountdown();                    // "get ready" freeze before the match
 }
 
@@ -1006,6 +1014,9 @@ function setMap(mapId) {
   player.setWorld(arena.blockers, arena.groundMeshes, arena.ceilings, bots.bots);
   bots.arena = arena;
   for (const t of tanks) t.arena = arena;
+  nuke.reset();                 // drop any live blast; new arena, nothing to restore
+  nuke._downed = null;          // the old arena's downed props are gone with it
+  nuke.setRefs({ arena });      // re-point the nuke at the freshly built arena
   spawnTanks();
   refreshMapPicker();
 }
@@ -2081,6 +2092,20 @@ window.addEventListener('keydown', (e) => {
   else if (!tankMode) enterJet();
 });
 
+// Nuke easter egg (press N): drop a bomb on the spot you're looking at (clamped
+// to the arena), then let nuke.js run the whole flash / mushroom / shockwave show.
+// Registered here (like the jet key) so a stale-cached input.js can't disable it.
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'KeyN' || e.repeat) return;
+  if (!active || nuke.active) return;
+  audio.resume();
+  const aim = crosshairAimPoint();               // world point under the crosshair
+  const lim = arena.size - 6;
+  const tx = Math.max(-lim, Math.min(lim, aim.x));
+  const tz = Math.max(-lim, Math.min(lim, aim.z));
+  nuke.trigger(new THREE.Vector3(tx, 0, tz));
+});
+
 function updateJet(dt, ready) {
   camera.getWorldDirection(_jetLook);
   jet.update(dt, _jetLook, ready ? input.move.forward : 0);
@@ -2921,6 +2946,32 @@ fJetGun.add(jet, 'fireInterval', 30, 300, 5).name('MG Interval (ms)');
 fJetGun.add(jet, 'bombInterval', 300, 3000, 50).name('Bomb Interval (ms)');
 fJet.open();
 
+// --- Nuke (press N in play) ---
+const fNuke = gui.addFolder('Nuke');
+fNuke.add({ drop: () => { if (active && !nuke.active) nuke.trigger(new THREE.Vector3(camera.position.x, 0, camera.position.z - 24)); } }, 'drop').name('Detonate (dev)');
+fNuke.add(nuke, 'dropHeight', 80, 400, 10).name('Drop Height');
+fNuke.add(nuke, 'fallTime', 0.8, 5, 0.1).name('Fall Time (s)');
+fNuke.add(nuke, 'blastRadius', 15, 78, 1).name('Blast Radius');
+fNuke.add(nuke, 'shockTime', 0.3, 2, 0.05).name('Shock Time (s)');
+fNuke.add(nuke, 'knockback', 10, 90, 1).name('Player Knockback');
+fNuke.add(nuke, 'shakeAmp', 0, 3, 0.05).name('Camera Shake');
+fNuke.add(nuke, 'cloudHeight', 25, 100, 1).name('Cloud Height');
+fNuke.add(nuke, 'capRadius', 8, 40, 1).name('Cap Radius');
+fNuke.add(nuke, 'riseTime', 1.5, 7, 0.1).name('Rise Time (s)');
+fNuke.add(nuke, 'holdTime', 1, 12, 0.5).name('Hold Time (s)');
+fNuke.add(nuke, 'fadeTime', 1, 10, 0.5).name('Fade Time (s)');
+
+// DEV-only debug hooks (DEV is false in the shipped itch/Steam build, so this
+// never exists for players). Lets a headless/browser-pane session drive play
+// and detonate the nuke where pointer-lock isn't available.
+if (DEV) window.__wo = {
+  get active() { return active; },
+  enterGame, resetMatch,
+  nuke, camera, player, arena, bots,
+  drop: (x, z) => nuke.trigger(new THREE.Vector3(
+    x != null ? x : camera.position.x, 0, z != null ? z : camera.position.z - 22)),
+};
+
 // keep dev panel from stealing pointer-lock clicks
 gui.domElement.addEventListener('mousedown', e => e.stopPropagation());
 
@@ -3062,6 +3113,7 @@ function animate() {
     }
     tankFX.update(dt);
     jet.updateDebris(dt); // tumbling wreckage after a jet breaks up (no-op when idle)
+    nuke.update(dt, camera); // falling bomb / flash / mushroom / shockwave (no-op when idle)
 
     // seamless critical-armor alarm on the tank you're driving
     const critTank = currentTank;
@@ -3226,7 +3278,16 @@ function animate() {
   }
 
   if (currentWeapon === 1 && tankBuster.root.visible) renderScope(); // live scope feed
-  outline.render();
+  // nuke camera shake — applied to the render only, then removed immediately so
+  // it never leaks into player physics (guards the "can't move" class of bug)
+  const shake = nuke.active ? nuke.renderShake(camera) : null;
+  if (shake && (shake.x || shake.y || shake.z)) {
+    camera.position.add(shake); camera.updateMatrixWorld();
+    outline.render();
+    camera.position.sub(shake); camera.updateMatrixWorld();
+  } else {
+    outline.render();
+  }
   drawScopeOverlay(); // full-screen scope view while zoomed
 }
 animate();

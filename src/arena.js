@@ -57,7 +57,7 @@ export function buildArena(scene, mapId = 1) {
   group.add(grid);
 
   // --- shared builders ---
-  function addBox(w, h, d, x, y, z, mat, { blocker = true, stand = true } = {}) {
+  function addBox(w, h, d, x, y, z, mat, { blocker = true, stand = true, destructible = true } = {}) {
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     mesh.position.set(x, y, z);
     mesh.castShadow = true;
@@ -69,7 +69,11 @@ export function buildArena(scene, mapId = 1) {
       const box = new THREE.Box3().setFromObject(mesh);
       blockers.push(box);
       tankBlockers.push(box);
+      mesh.userData.blocker = box; // let the nuke drop this piece's collision
     }
+    // cover/crates/barriers/interior walls can be blown apart by the nuke;
+    // the arena floor, perimeter walls and the big centre platform can't.
+    mesh.userData.destructible = destructible;
     return mesh;
   }
   function addPillar(x, z, r = 1.1, h = 7, baseY = 0) {
@@ -82,6 +86,8 @@ export function buildArena(scene, mapId = 1) {
     const box = new THREE.Box3().setFromObject(mesh);
     blockers.push(box);
     tankBlockers.push(box);
+    mesh.userData.blocker = box;
+    mesh.userData.destructible = true;
     return mesh;
   }
   // collision-only box (no mesh) — fills the wedge under a ramp
@@ -117,11 +123,11 @@ export function buildArena(scene, mapId = 1) {
     return mesh;
   }
 
-  // --- Perimeter walls (from SIZE) ---
-  addBox(SIZE * 2, WALL_H, WALL_T, 0, WALL_H / 2, -SIZE, wallMat, { stand: false });
-  addBox(SIZE * 2, WALL_H, WALL_T, 0, WALL_H / 2,  SIZE, wallMat, { stand: false });
-  addBox(WALL_T, WALL_H, SIZE * 2, -SIZE, WALL_H / 2, 0, wallMat, { stand: false });
-  addBox(WALL_T, WALL_H, SIZE * 2,  SIZE, WALL_H / 2, 0, wallMat, { stand: false });
+  // --- Perimeter walls (from SIZE) --- (arena boundary: never destructible)
+  addBox(SIZE * 2, WALL_H, WALL_T, 0, WALL_H / 2, -SIZE, wallMat, { stand: false, destructible: false });
+  addBox(SIZE * 2, WALL_H, WALL_T, 0, WALL_H / 2,  SIZE, wallMat, { stand: false, destructible: false });
+  addBox(WALL_T, WALL_H, SIZE * 2, -SIZE, WALL_H / 2, 0, wallMat, { stand: false, destructible: false });
+  addBox(WALL_T, WALL_H, SIZE * 2,  SIZE, WALL_H / 2, 0, wallMat, { stand: false, destructible: false });
 
   if (mapId === 2) buildMap2(); else buildMap1();
 
@@ -241,7 +247,7 @@ export function buildArena(scene, mapId = 1) {
     };
 
     // --- CENTRE: a raised control platform reached by 4 ramps ---
-    addBox(24, 3, 24, 0, 1.5, 0, wallMat);                 // platform (top at y=3)
+    addBox(24, 3, 24, 0, 1.5, 0, wallMat, { destructible: false }); // platform you stand on (top at y=3)
     pRamp(0, 17.5, Math.PI, 11, 8, 3);                     // +Z & -Z ramps up to it
     pRamp(17.5, 0, -Math.PI / 2, 11, 8, 3);                // +X & -X ramps up to it
     pBox(2.6, 2.2, 2.6, 7, 4.1, 7, coverMat);              // cover on the platform corners

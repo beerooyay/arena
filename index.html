@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WhiteOut Paintball — Prototype</title>
+  <title>WhiteOut Paintball</title>
+  <link rel="icon" type="image/png" href="./assets/favicon.png" />
+  <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
+  <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
   <link rel="stylesheet" href="./styles.css" />
   <script type="importmap">
   {
@@ -240,6 +243,10 @@
   <!-- Title / cover screen (first thing shown) -->
   <div id="title">
     <div id="title-splat"></div>
+    <div id="title-hero">
+      <img id="title-logo" src="./assets/logo.png" alt="WhiteOut Paintball" />
+      <div id="title-tag">A BLANK ARENA. PAINTED BY COMBAT.</div>
+    </div>
     <div id="title-actions">
       <button id="start-btn">START</button>
       <div id="dev-credit">by ceeboozwah</div>
@@ -325,7 +332,7 @@
         <!-- CENTER: brand + play -->
         <section class="lc-center">
           <div class="lc-brand">
-            <h1 class="lc-wordmark">WhiteOut<span>Paintball</span></h1>
+            <img class="lc-logo" src="./assets/logo.png" alt="WhiteOut Paintball" />
             <div class="lc-tag"><span class="lc-tag-mark"></span>A BLANK ARENA. PAINTED BY COMBAT.</div>
           </div>
           <button class="lc-play" id="play-btn">
@@ -422,7 +429,7 @@
       </footer>
 
       <div class="lc-footer">
-        <span class="lc-version">WhiteOut Paintball v1.2.0</span>
+        <span class="lc-version">whiteout paintball v1.2.0</span>
         <button class="lc-howto-link" id="lc-howto">HOW TO PLAY</button>
       </div>
 

@@ -137,7 +137,7 @@ export class DevRecorder {
         'gap:7px;padding:5px 10px;border-radius:6px;background:rgba(20,20,22,.72);' +
         'color:#fff;font:700 12px/1 system-ui,sans-serif;letter-spacing:.12em;pointer-events:none';
       const dot = document.createElement('span');
-      dot.style.cssText = 'width:9px;height:9px;border-radius:50%;background:#ff3b3b;' +
+      dot.style.cssText = 'width:9px;height:9px;border-radius:50%;background:#FF4848;' +
         'animation:wo-rec-blink 1s steps(1) infinite';
       const label = document.createElement('span');
       label.className = 'wo-rec-label';

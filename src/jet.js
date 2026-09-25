@@ -23,7 +23,7 @@ export class Jet {
   constructor(scene, teamId = 0) {
     this.scene = scene;
     this.teamId = teamId;
-    this.hex = teamId === 1 ? 0xff3b3b : 0x2f7bff;
+    this.hex = teamId === 1 ? 0xf4f6f8 : 0xff6000;
 
     // --- flight tunables (public for the dev panel) ---
     this.minSpeed = 18;

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { addPlayerGlow, disposeGlow } from './playerGlow.js';
+import { makeAvatar, disposeAvatar } from './playerGlow.js';
 import { teamSpawnXZ } from './spawns.js';
 
 /**
@@ -24,66 +24,9 @@ import { teamSpawnXZ } from './spawns.js';
  * Host relays joiner messages to the other peers with `from` stamped on.
  */
 
-const TEAM_HEX = [0x2f7bff, 0xff3b3b]; // BLUE, RED — matches the game palette
+const TEAM_HEX = [0xff6000, 0xf4f6f8]; // FIRE, WHITE
 const SEND_HZ = 12;
 const EYE_HEIGHT = 1.7;
-
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
-function makeNameSprite(text, hex) {
-  const fs = 44, padX = 16, padY = 8;
-  const meas = document.createElement('canvas').getContext('2d');
-  meas.font = `700 ${fs}px Inter, system-ui, sans-serif`;
-  const w = Math.ceil(meas.measureText(text).width) + padX * 2;
-  const h = fs + padY * 2;
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.font = `700 ${fs}px Inter, system-ui, sans-serif`;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(255,255,255,0.82)';
-  roundRect(ctx, 2, 2, w - 4, h - 4, 14); ctx.fill();
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = '#' + hex.toString(16).padStart(6, '0');
-  roundRect(ctx, 3, 3, w - 6, h - 6, 13); ctx.stroke();
-  ctx.fillStyle = '#1c1f24';
-  ctx.fillText(text, w / 2, h / 2 + 2);
-  const tex = new THREE.CanvasTexture(c);
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-  const sprite = new THREE.Sprite(mat);
-  const scale = 0.0045;
-  sprite.scale.set(w * scale, h * scale, 1);
-  sprite.position.y = 2.55;
-  return sprite;
-}
-
-function makeAvatar(name, teamHex) {
-  const group = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0 });
-  const teamMat = new THREE.MeshStandardMaterial({
-    color: teamHex, roughness: 0.5, metalness: 0,
-    emissive: new THREE.Color(teamHex), emissiveIntensity: 0.25,
-  });
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 0.9, 6, 12), bodyMat);
-  body.position.y = 1.0; body.castShadow = true;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 16), bodyMat);
-  head.position.y = 1.78; head.castShadow = true;
-  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.08, 10, 24), teamMat);
-  ring.position.y = 1.25; ring.rotation.x = Math.PI / 2;
-  const label = makeNameSprite(name, teamHex);
-  group.add(body, head, ring, label);
-  group.userData = { bodyMat, teamMat, label };
-  addPlayerGlow(group, teamHex); // team-colored rim glow for contrast
-  return group;
-}
 
 // nearest positive ray-sphere hit distance, or -1
 function raySphere(origin, dir, center, radius) {
@@ -150,8 +93,8 @@ export class NetPlay {
   get active() { return this.net.active && this.me !== null; }
   get isHost() { return this.net.role === 'host'; }
 
-  /** My team's spawn point (BLUE side z=26, RED side z=-26). */
-  mySpawnZ() { return this.me && this.me.team === 1 ? -26 : 26; }
+  /** My team's spawn point. */
+  mySpawnZ() { return this.mySpawn().z; }
 
   // --- spawn slots: humans take slots 0..(H-1) on their team, in a stable
   // roster order every peer agrees on; bots fill the rest (see host backfill).
@@ -367,7 +310,7 @@ export class NetPlay {
         this.deps.spawnProjectile(
           new THREE.Vector3(...msg.o), new THREE.Vector3(...msg.d),
           msg.hex, team, msg.sp || 70, false, { netGhost: true },
-          msg.r ? { radius: msg.r, splatScale: msg.ss } : undefined);
+          (msg.r || msg.k) ? { radius: msg.r, splatScale: msg.ss, kind: msg.k } : undefined);
         break;
       }
       case 'tag': {
@@ -430,8 +373,9 @@ export class NetPlay {
 
   _addRemote(p) {
     if (this.remotes.has(p.id)) return;
-    const group = makeAvatar(p.name, TEAM_HEX[p.team]);
-    group.position.set(0, 0, p.team === 0 ? 26 : -26);
+    const { group } = makeAvatar(p.name, TEAM_HEX[p.team]);
+    const s = teamSpawnXZ(p.team, 0);
+    group.position.set(s.x, 0, s.z);
     this.deps.scene.add(group);
     this.remotes.set(p.id, {
       group,
@@ -448,13 +392,8 @@ export class NetPlay {
   }
 
   _disposeAvatar(group) {
-    disposeGlow(group);
     this.deps.scene.remove(group);
-    group.userData.bodyMat.dispose();
-    group.userData.teamMat.dispose();
-    const label = group.userData.label;
-    label.material.map.dispose(); label.material.dispose();
-    group.traverse((o) => o.geometry && o.geometry.dispose());
+    disposeAvatar(group);
   }
 
   // Clients render the host's bots as interpolated "ghost" avatars driven by
@@ -463,8 +402,9 @@ export class NetPlay {
     if (this.isHost) return; // host shows its own real bots
     this._clearGhosts();
     for (const b of this.botRoster) {
-      const group = makeAvatar(b.name, TEAM_HEX[b.team]);
-      group.position.set(0, 0, b.team === 0 ? 26 : -26);
+      const { group } = makeAvatar(b.name, TEAM_HEX[b.team]);
+      const s = teamSpawnXZ(b.team, 0);
+      group.position.set(s.x, 0, s.z);
       this.deps.scene.add(group);
       this.ghostBots.push({
         group, alive: true,
@@ -587,7 +527,7 @@ export class NetPlay {
       hex,
       team: team ?? (this.me ? this.me.team : 0),
     };
-    if (opts) { m.r = opts.radius; m.sp = opts.speed; m.ss = opts.splatScale; }
+    if (opts) { m.r = opts.radius; m.sp = opts.speed; m.ss = opts.splatScale; m.k = opts.kind; }
     this.net.send(m);
   }
 
@@ -628,8 +568,8 @@ export class NetPlay {
       const p = this.roster.get(id);
       if (this.me && p && p.team === this.me.team) continue; // no friendly fire
       if (r.inTank) continue; // in a tank -> untargetable (shoot the tank instead)
-      _center.copy(r.group.position); _center.y += 1.2;
-      const t = raySphere(origin, dir, _center, 0.7);
+      _center.copy(r.group.position); _center.y += 1.3;
+      const t = raySphere(origin, dir, _center, 0.8);
       if (t >= 0 && t < bestT) {
         bestT = t;
         best = { kind: 'player', id, name: (p || { name: '?' }).name };
@@ -641,8 +581,8 @@ export class NetPlay {
       if (!g.alive) continue;
       const bteam = this.botRoster[i] ? this.botRoster[i].team : -1;
       if (this.me && bteam === this.me.team) continue;
-      _center.copy(g.group.position); _center.y += 1.2;
-      const t = raySphere(origin, dir, _center, 0.7);
+      _center.copy(g.group.position); _center.y += 1.3;
+      const t = raySphere(origin, dir, _center, 0.8);
       if (t >= 0 && t < bestT) {
         bestT = t;
         best = { kind: 'bot', index: i, name: (this.botRoster[i] || { name: 'Bot' }).name };
@@ -694,8 +634,8 @@ export class NetPlay {
       const p = this.roster.get(id);
       if (!p || p.team === shooterTeam) continue;
       if (r.inTank) continue; // in a tank -> untargetable by bots too
-      _center.copy(r.group.position); _center.y += 1.2;
-      const t = raySphere(origin, dir, _center, 0.7);
+      _center.copy(r.group.position); _center.y += 1.3;
+      const t = raySphere(origin, dir, _center, 0.8);
       if (t >= 0 && t < bestT) { bestT = t; best = { id }; }
     }
     return best;

@@ -1,96 +1,30 @@
 import * as THREE from 'three';
-import { addPlayerGlow, disposeGlow } from './playerGlow.js';
+import { makeAvatar, disposeAvatar } from './playerGlow.js';
 import { teamSpawnXZ } from './spawns.js';
 
 /**
- * BotSystem — simple 5v5 paintball AI.
+ * BotSystem — compact team deathmatch AI.
  *
- * Two teams (BLUE = player's team, RED = enemy). The player fills one BLUE slot,
- * so BLUE spawns perTeam-1 bots and RED spawns perTeam bots.
+ * Two teams (FIRE = player's team, WHITE = enemy). The player fills one FIRE
+ * slot, so FIRE spawns perTeam-1 bots and WHITE spawns perTeam bots.
  *
- * Bots roam the open floor, pick the nearest visible enemy, keep a fighting
- * distance, and fire paintballs at the SAME rate of fire as the player
- * (fireInterval, in ms) using the shared projectile pipeline via `spawnProjectile`.
- * Getting tagged by an enemy paintball drops a bot for a few seconds, then it
- * respawns. Tagging the player triggers `onPlayerTagged`.
+ * Bots roam the arena, pick the nearest visible enemy, keep a fighting distance,
+ * and fire through the shared projectile pipeline. Tagging the player triggers
+ * `onPlayerTagged`.
  */
 
 // Bot display names, kept per-team so they stay stable across respawns.
-export const BLUE_NAMES = ['Frost', 'Cobalt', 'Echo', 'Drift', 'Zephyr', 'Nova'];
-export const RED_NAMES  = ['Blaze', 'Crimson', 'Havoc', 'Ember', 'Rogue', 'Viper'];
+export const FIRE_NAMES = ['Flare', 'Ember', 'Bolt', 'Drift', 'Nova', 'Rook'];
+export const WHITE_NAMES = ['Ghost', 'Ivory', 'Ash', 'Frost', 'Pearl', 'Snow'];
 
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
-// A camera-facing name label (canvas texture on a Sprite) with a team-colored
-// outline, so you can read who's who from any angle.
-function makeNameSprite(text, hex) {
-  const fs = 44, padX = 16, padY = 8;
-  const meas = document.createElement('canvas').getContext('2d');
-  meas.font = `700 ${fs}px Inter, system-ui, sans-serif`;
-  const w = Math.ceil(meas.measureText(text).width) + padX * 2;
-  const h = fs + padY * 2;
-
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.font = `700 ${fs}px Inter, system-ui, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(255,255,255,0.82)';
-  roundRect(ctx, 2, 2, w - 4, h - 4, 14); ctx.fill();
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = '#' + hex.toString(16).padStart(6, '0');
-  roundRect(ctx, 3, 3, w - 6, h - 6, 13); ctx.stroke();
-  ctx.fillStyle = '#1c1f24';
-  ctx.fillText(text, w / 2, h / 2 + 2);
-
-  const tex = new THREE.CanvasTexture(c);
-  tex.anisotropy = 4;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-  const sprite = new THREE.Sprite(mat);
-  const scale = 0.0045; // world units per canvas pixel
-  sprite.scale.set(w * scale, h * scale, 1);
-  sprite.position.y = 2.55;
-  return sprite;
-}
-
-/**
- * A simplified paintball marker for a bot to carry — same silhouette as the
- * player's viewmodel (barrel, body, grip, loader, tank) but far cheaper.
- * Geometries are per-bot so _despawnAll() can dispose them safely.
- * Metalness stays 0: there's no env map, and metal would render near-black.
- */
-function makeBotMarker(hopperMat) {
-  const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: 0xc2c8ce, roughness: 0.6, metalness: 0,
-  });
-  const add = (geo, mat, x, y, z, rx = 0) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z);
-    m.rotation.x = rx;
-    m.castShadow = true;
-    g.add(m);
-  };
-  // barrel runs along +Z, which is a bot's forward axis
-  add(new THREE.CylinderGeometry(0.026, 0.026, 0.44, 10), bodyMat, 0, 0, 0.30, Math.PI / 2);
-  add(new THREE.BoxGeometry(0.085, 0.115, 0.28), bodyMat, 0, -0.045, 0.02);
-  add(new THREE.BoxGeometry(0.065, 0.17, 0.08), bodyMat, 0, -0.165, -0.05);
-  add(new THREE.CylinderGeometry(0.045, 0.045, 0.22, 10), bodyMat, 0, -0.085, -0.22, Math.PI / 2);
-  // loader, filled with a mass in the team's paint colour
-  add(new THREE.CylinderGeometry(0.082, 0.082, 0.13, 12), bodyMat, 0, 0.10, 0.01);
-  add(new THREE.CylinderGeometry(0.068, 0.068, 0.10, 12), hopperMat, 0, 0.10, 0.01);
-  g.userData.bodyMat = bodyMat;
-  return g;
-}
+// Skill presets, indexed by the Bot Difficulty setting (0=chill, 1=pro, 2=sweat).
+// err: aim jitter in radians. fire: multiplier on the player's fireInterval.
+// react: ms of held line-of-sight before the first shot. engage: firing range.
+const SKILL = [
+  { err: 0.14,  fire: 2.2, react: 800, engage: 32 },
+  { err: 0.07,  fire: 1.5, react: 400, engage: 45 },
+  { err: 0.035, fire: 1.0, react: 150, engage: 55 },
+];
 
 // nearest positive ray-sphere hit distance, or -1 if none
 function raySphere(origin, dir, center, radius) {
@@ -117,15 +51,18 @@ export class BotSystem {
 
     this.perTeam = 5;
     this.fireInterval = opts.fireInterval ?? 90; // ms — matches the player
+    this.skill = SKILL[1];
+    this.hitsToTag = 3; // hits needed to drop a bot in standard play
+    this.onPlayerHit = opts.onPlayerHit || null; // (teamId, hex, shooter) => lethal?
 
     // First spawn slot bots take per team; human players occupy the slots below
-    // it. Free play: the player holds BLUE slot 0, so blue bots start at slot 1.
+    // it. Free play: the player holds FIRE slot 0, so FIRE bots start at slot 1.
     // Online: the host sets this to the number of humans on each team.
     this._slotBase = [1, 0];
 
     this.teams = [
-      { id: 0, name: 'BLUE', hex: 0x2f7bff },
-      { id: 1, name: 'RED',  hex: 0xff3b3b },
+      { id: 0, name: 'FIRE',    hex: 0xff6000 },
+      { id: 1, name: 'WHITE', hex: 0xf4f6f8 },
     ];
     this.scores = [0, 0];
     this.bots = [];
@@ -143,6 +80,10 @@ export class BotSystem {
     this._to = new THREE.Vector3();
   }
 
+  setDifficulty(i) {
+    this.skill = SKILL[Math.max(0, Math.min(SKILL.length - 1, i | 0))];
+  }
+
   setEnabled(on) {
     if (on === this.enabled) return;
     this.enabled = on;
@@ -157,12 +98,12 @@ export class BotSystem {
     }
   }
 
-  addPaintHit(bot, threshold) {
+  addPaintHit(bot, threshold, shooter) {
     if (!bot.alive) return false;
     bot.paintHits++;
     if (bot.paintHits >= threshold) {
       const now = performance.now();
-      this._tagBot(bot, bot.team.id === 0 ? 1 : 0, now);
+      this._tagBot(bot, bot.team.id === 0 ? 1 : 0, now, shooter || null);
       return true;
     }
     return false;
@@ -206,7 +147,7 @@ export class BotSystem {
     bot.alive = false;
     bot.respawnAt = performance.now() + 3000;
     bot.deaths++;
-    bot.group.visible = false;
+    this._startRagdoll(bot);
     if (this.paint) { for (const d of bot.bodyDecals) this.paint.removeDecal(d); bot.bodyDecals = []; }
     return true;
   }
@@ -214,13 +155,8 @@ export class BotSystem {
   _despawnAll() {
     for (const b of this.bots) {
       if (this.paint) for (const d of b.bodyDecals) this.paint.removeDecal(d);
-      disposeGlow(b.group);
       this.scene.remove(b.group);
-      b.bodyMat.dispose();
-      b.ringMat.dispose();
-      if (b.label) { b.label.material.map.dispose(); b.label.material.dispose(); }
-      if (b.marker && b.marker.userData.bodyMat) b.marker.userData.bodyMat.dispose();
-      b.group.traverse((o) => o.geometry && o.geometry.dispose());
+      disposeAvatar(b.group);
     }
     this.bots.length = 0;
   }
@@ -234,49 +170,24 @@ export class BotSystem {
   }
 
   _spawnBot(team, idx) {
-    const group = new THREE.Group();
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8, metalness: 0 });
-    const ringMat = new THREE.MeshStandardMaterial({
-      color: team.hex, roughness: 0.5, metalness: 0,
-      emissive: new THREE.Color(team.hex), emissiveIntensity: 0.25,
-    });
-
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 0.9, 6, 12), bodyMat);
-    body.position.y = 1.0; body.castShadow = true; body.receiveShadow = true;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 16), bodyMat);
-    head.position.y = 1.78; head.castShadow = true;
-
-    // team-colored chest ring (visible from any angle) + head marker
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.08, 10, 24), ringMat);
-    ring.position.y = 1.15; ring.rotation.x = Math.PI / 2; ring.castShadow = true;
-    const crown = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 12), ringMat);
-    crown.position.y = 2.06;
-
-    const namePool = team.id === 0 ? BLUE_NAMES : RED_NAMES;
+    const namePool = team.id === 0 ? FIRE_NAMES : WHITE_NAMES;
     const name = namePool[idx % namePool.length];
-    const label = makeNameSprite(name, team.hex);
-
-    // every bot visibly carries a marker, held out clear of the body capsule
-    // (radius 0.35) so it reads from any angle instead of clipping inside
-    const marker = makeBotMarker(ringMat);
-    marker.position.set(0.47, 1.16, 0.34);
-    marker.rotation.y = -0.10; // angled slightly inward, like a held gun
-
-    group.add(body, head, ring, crown, label, marker);
-    addPlayerGlow(group, team.hex); // team-colored rim glow for contrast
+    const { group, body, head, bodyMat, teamMat, label, marker, armL, armR, legL, legR } = makeAvatar(name, team.hex);
 
     const bot = {
-      team, hex: team.hex, group, body, head, bodyMat, ringMat,
-      name, label, marker,
+      team, hex: team.hex, group, body, head, bodyMat, ringMat: teamMat,
+      name, label, marker, armL, armR, legL, legR,
       kills: 0, deaths: 0, shots: 0,
       pos: this._spawnPoint(team, idx),
       spawn: null,
       alive: true, respawnAt: 0,
-      lastShot: 0, burst: 0, reloadUntil: 0,
+      hp: 100,
+      lastShot: 0, burst: 0, reloadUntil: 0, lockAt: 0,
       wanderT: 0, strafeSign: Math.random() < 0.5 ? -1 : 1,
       rockPhase: Math.random() * Math.PI * 2,
       paintHits: 0,
       bodyDecals: [],
+      ragdoll: null,
     };
     bot.spawn = bot.pos.clone();
     group.position.copy(bot.pos);
@@ -286,15 +197,40 @@ export class BotSystem {
 
   _respawn(bot) {
     bot.alive = true;
+    bot.hp = 100;
     bot.pos.copy(bot.spawn);
     bot.group.position.copy(bot.pos);
-    bot.group.scale.set(1, 1, 1);
+    bot.group.rotation.set(0, bot.group.rotation.y, 0);
+    bot.group.scale.set(1.06, 1.1, 1.06); // matches makeAvatar's build scale
     bot.group.visible = true;
-    bot.bodyMat.color.setHex(0xffffff);
-    bot.ringMat.emissiveIntensity = 0.25;
-    bot.burst = 0; bot.reloadUntil = 0;
+    bot.label.visible = true;
+    bot.armL.rotation.x = 0; bot.armR.rotation.x = 0;
+    bot.legL.rotation.x = 0; bot.legR.rotation.x = 0;
+    bot.ragdoll = null;
+    bot.bodyMat.color.copy(bot.bodyMat.userData.baseColor || bot.bodyMat.color);
+    bot.ringMat.emissiveIntensity = 0.32;
+    bot.burst = 0; bot.reloadUntil = 0; bot.lockAt = 0;
     bot.paintHits = 0;
     bot.bodyDecals = [];
+  }
+
+  // Topples the avatar over so it comes to rest LYING on the floor — a cheap
+  // ragdoll-style drop. The corpse stays until the respawn timer brings it back.
+  _startRagdoll(bot) {
+    bot.ragdoll = { t: 0, dur: 0.5, dir: Math.random() < 0.5 ? -1 : 1 };
+    bot.label.visible = false;
+  }
+
+  _updateRagdoll(bot, dt) {
+    const r = bot.ragdoll;
+    r.t = Math.min(r.dur, r.t + dt);
+    const e = 1 - (1 - r.t / r.dur) * (1 - r.t / r.dur); // ease-out
+    // rotate around the feet onto the side, plus a little forward slump — the
+    // group origin is at the feet, so ~90deg lays the whole body on the floor
+    bot.group.rotation.z = r.dir * e * (Math.PI / 2 - 0.12);
+    bot.group.rotation.x = e * 0.25;
+    bot.group.position.y = bot.pos.y; // stays ON the floor, never through it
+    if (r.t >= r.dur) bot.ragdoll = null; // corpse lies there until respawn
   }
 
   _tagBot(bot, byTeamId, now, shooter) {
@@ -304,7 +240,7 @@ export class BotSystem {
     bot.deaths++;
     if (shooter && typeof shooter.kills === 'number') shooter.kills++;
     if (this.onBotDown) this.onBotDown(this.bots.indexOf(bot), byTeamId);
-    bot.group.visible = false;
+    this._startRagdoll(bot);
     // remove paint splatters that hit this bot's body
     if (this.paint) {
       for (const d of bot.bodyDecals) this.paint.removeDecal(d);
@@ -380,7 +316,11 @@ export class BotSystem {
 
     const now = ctx.now;
     for (const bot of this.bots) {
-      if (!bot.alive) { if (now >= bot.respawnAt) this._respawn(bot); continue; }
+      if (!bot.alive) {
+        if (bot.ragdoll) this._updateRagdoll(bot, dt);
+        if (now >= bot.respawnAt) this._respawn(bot);
+        continue;
+      }
 
       const tgt = this._nearestEnemy(bot);
       if (!tgt) continue;
@@ -407,8 +347,15 @@ export class BotSystem {
         bot.pos.z += move.z * spd * dt;
       }
       this._collide(bot);
-      bot.pos.x = THREE.MathUtils.clamp(bot.pos.x, -57, 57);
-      bot.pos.z = THREE.MathUtils.clamp(bot.pos.z, -57, 57);
+      const bnd = this.arena.size - 0.8, diagBnd = bnd * Math.SQRT2;
+      bot.pos.x = THREE.MathUtils.clamp(bot.pos.x, -bnd, bnd);
+      bot.pos.z = THREE.MathUtils.clamp(bot.pos.z, -bnd, bnd);
+      const bSum = bot.pos.x + bot.pos.z;
+      if (bSum > diagBnd) { const d = (bSum - diagBnd) * 0.5; bot.pos.x -= d; bot.pos.z -= d; }
+      else if (bSum < -diagBnd) { const d = (-bSum - diagBnd) * 0.5; bot.pos.x += d; bot.pos.z += d; }
+      const bSub = bot.pos.x - bot.pos.z;
+      if (bSub > diagBnd) { const d = (bSub - diagBnd) * 0.5; bot.pos.x -= d; bot.pos.z += d; }
+      else if (bSub < -diagBnd) { const d = (-bSub - diagBnd) * 0.5; bot.pos.x += d; bot.pos.z += d; }
       bot.group.position.copy(bot.pos);
       bot.group.rotation.y = Math.atan2(to.x, to.z);
 
@@ -418,21 +365,39 @@ export class BotSystem {
       bot.group.rotation.z = moving ? Math.sin(bot.rockPhase) * 0.11 : 0;
       bot.group.position.y = bot.pos.y + (moving ? Math.abs(Math.sin(bot.rockPhase)) * 0.09 : 0);
 
+      // walk cycle: legs swing from the hip, arms counter-swing from the
+      // opposite leg — eased toward zero when the bot stops moving.
+      const ease = Math.min(1, dt * 10);
+      const legTarget = moving ? Math.sin(bot.rockPhase) * 0.55 : 0;
+      const armTarget = moving ? Math.sin(bot.rockPhase) * 0.3 : 0;
+      bot.legL.rotation.x += (legTarget - bot.legL.rotation.x) * ease;
+      bot.legR.rotation.x += (-legTarget - bot.legR.rotation.x) * ease;
+      bot.armL.rotation.x += (-armTarget - bot.armL.rotation.x) * ease;
+      bot.armR.rotation.x += (armTarget - bot.armR.rotation.x) * ease;
+
       // firing
       const chest = this._chest.copy(bot.pos); chest.y += 1.45;
       const tChest = this._tChest.copy(tgt.pos);
-      if (tgt.kind !== 'player') tChest.y += 1.2;
+      if (tgt.kind === 'player') tChest.y -= 0.45;
+      else tChest.y += 1.2;
 
-      if (dist < 45 && now >= bot.reloadUntil &&
-          (now - bot.lastShot) >= this.fireInterval && this._hasLOS(chest, tChest)) {
+      // reaction time: the bot must hold sight on a target for `skill.react`
+      // ms before its first shot — breaking line-of-sight resets the lock
+      const seen = dist < this.skill.engage && this._hasLOS(chest, tChest);
+      if (!seen) bot.lockAt = 0;
+      else if (!bot.lockAt) bot.lockAt = now;
+
+      if (seen && now - bot.lockAt >= this.skill.react &&
+          now >= bot.reloadUntil &&
+          (now - bot.lastShot) >= this.fireInterval * this.skill.fire) {
         bot.lastShot = now;
         const aim = new THREE.Vector3().subVectors(tChest, chest).normalize();
-        aim.x += (Math.random() * 2 - 1) * 0.04;
-        aim.y += (Math.random() * 2 - 1) * 0.03;
-        aim.z += (Math.random() * 2 - 1) * 0.04;
+        aim.x += (Math.random() * 2 - 1) * this.skill.err;
+        aim.y += (Math.random() * 2 - 1) * this.skill.err * 0.75;
+        aim.z += (Math.random() * 2 - 1) * this.skill.err;
         aim.normalize();
         const origin = chest.clone().addScaledVector(aim, 0.6);
-        this.spawnProjectile(origin, aim, bot.hex, bot.team.id, 70, false, bot);
+        this.spawnProjectile(origin, aim, bot.hex, bot.team.id, 190, false, bot);
         bot.shots++;
         if (this.onFire) this.onFire(origin, bot.hex, aim, bot.team.id);
         bot.burst++;
@@ -455,33 +420,80 @@ export class BotSystem {
 
     for (const b of this.bots) {
       if (!b.alive || b.team.id === shooterTeamId) continue;
-      this._tmp.copy(b.pos); this._tmp.y += 1.2;
-      const t = raySphere(origin, dir, this._tmp, 0.7);
+      this._tmp.copy(b.pos); this._tmp.y += 1.3;
+      const t = raySphere(origin, dir, this._tmp, 0.8);
       if (t >= 0 && t < bestT) { bestT = t; best = { kind: 'bot', bot: b, t }; }
     }
     if (this._player.alive && this._player.team !== shooterTeamId && now >= this._playerInvulnUntil) {
-      const t = raySphere(origin, dir, this._player.pos, 0.6);
+      this._tmp.copy(this._player.pos); this._tmp.y -= 0.55;
+      const t = raySphere(origin, dir, this._tmp, 0.85);
       if (t >= 0 && t < bestT) { bestT = t; best = { kind: 'player', t }; }
     }
 
     if (!best) return false;
     this._tmp.copy(origin).addScaledVector(dir, best.t); // impact point
+
     if (best.kind === 'bot') {
-      this._splatBot(best.bot, origin, dir, best.t, hex);
-      this._tagBot(best.bot, shooterTeamId, now, shooter);
+      const bot = best.bot;
+      const headshot = this._tmp.y >= bot.pos.y + 1.72;
+      const dmg = headshot ? 100 : 50;
+      bot.hp -= dmg;
+      const killed = bot.hp <= 0;
+      if (killed) this._tagBot(bot, shooterTeamId, now, shooter);
       if (this.onTag) {
-        this.onTag({ shooter, victimName: best.bot.name, victimIsPlayer: false, pos: this._tmp });
+        this.onTag({ shooter, victimName: bot.name, victimIsPlayer: false, pos: this._tmp, wounded: !killed, headshot });
       }
     } else {
-      this._playerInvulnUntil = now + 1500;
-      this.scores[shooterTeamId]++;
-      if (shooter && typeof shooter.kills === 'number') shooter.kills++;
+      const headshot = this._tmp.y >= this._player.pos.y - 0.25;
+      const dmg = headshot ? 100 : 50;
+      const lethal = this.onPlayerHit ? this.onPlayerHit(shooterTeamId, hex, shooter, dmg, headshot) : true;
       if (this.onTag) {
-        this.onTag({ shooter, victimName: 'YOU', victimIsPlayer: true, pos: this._tmp });
+        this.onTag({ shooter, victimName: 'YOU', victimIsPlayer: true, pos: this._tmp, wounded: !lethal, headshot });
       }
-      this.onPlayerTagged(shooterTeamId, hex, shooter ? shooter.name : '');
+      if (lethal) {
+        this._playerInvulnUntil = now + 1500;
+        this.scores[shooterTeamId]++;
+        if (shooter && typeof shooter.kills === 'number') shooter.kills++;
+        this.onPlayerTagged(shooterTeamId, hex, shooter ? shooter.name : '');
+      }
     }
     return true;
+  }
+
+  applyBlast(center, radius, maxDmg, shooterTeamId, shooter) {
+    if (!this.enabled) return;
+    const now = performance.now();
+    for (const b of this.bots) {
+      if (!b.alive || b.team.id === shooterTeamId) continue;
+      const d = b.pos.distanceTo(center);
+      if (d <= radius) {
+        const falloff = 1 - d / radius;
+        const dmg = Math.round(maxDmg * Math.max(0.3, falloff));
+        b.hp -= dmg;
+        const killed = b.hp <= 0;
+        if (killed) this._tagBot(b, shooterTeamId, now, shooter);
+        if (this.onTag) {
+          this.onTag({ shooter, victimName: b.name, victimIsPlayer: false, pos: b.pos, wounded: !killed, blast: true });
+        }
+      }
+    }
+    if (this._player.alive && this._player.team !== shooterTeamId && now >= this._playerInvulnUntil) {
+      const d = this._player.pos.distanceTo(center);
+      if (d <= radius) {
+        const falloff = 1 - d / radius;
+        const dmg = Math.round(maxDmg * Math.max(0.3, falloff));
+        const lethal = this.onPlayerHit ? this.onPlayerHit(shooterTeamId, 0xff6000, shooter, dmg, false) : true;
+        if (this.onTag) {
+          this.onTag({ shooter, victimName: 'YOU', victimIsPlayer: true, pos: this._player.pos, wounded: !lethal, blast: true });
+        }
+        if (lethal) {
+          this._playerInvulnUntil = now + 1500;
+          this.scores[shooterTeamId]++;
+          if (shooter && typeof shooter.kills === 'number') shooter.kills++;
+          this.onPlayerTagged(shooterTeamId, 0xff6000, shooter ? shooter.name : '');
+        }
+      }
+    }
   }
 
   /**
@@ -496,12 +508,13 @@ export class BotSystem {
 
     for (const b of this.bots) {
       if (!b.alive || b.team.id === shooterTeamId) continue;
-      this._tmp.copy(b.pos); this._tmp.y += 1.2;
-      const t = raySphere(origin, dir, this._tmp, 0.7);
+      this._tmp.copy(b.pos); this._tmp.y += 1.3;
+      const t = raySphere(origin, dir, this._tmp, 0.8);
       if (t >= 0 && t < bestT) { bestT = t; best = { kind: 'bot', bot: b, t }; }
     }
     if (this._player.alive && this._player.team !== shooterTeamId && now >= this._playerInvulnUntil) {
-      const t = raySphere(origin, dir, this._player.pos, 0.6);
+      this._tmp.copy(this._player.pos); this._tmp.y -= 0.55;
+      const t = raySphere(origin, dir, this._tmp, 0.85);
       if (t >= 0 && t < bestT) { bestT = t; best = { kind: 'player', t }; }
     }
 

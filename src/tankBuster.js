@@ -14,7 +14,7 @@ const _q = new THREE.Quaternion();
 const _muzzleWorld = new THREE.Vector3();
 
 export class TankBuster {
-  constructor(paintHex = 0x2f7bff) {
+  constructor(paintHex = 0xff6000) {
     this.root = new THREE.Group();
     this.root.matrixAutoUpdate = true;
 
@@ -80,8 +80,8 @@ export class TankBuster {
     });
     // targeting-optic lock indicator: glows cyan, pulses when locked (see update)
     this.lensMat = new THREE.MeshStandardMaterial({
-      color: 0x39d0ff, roughness: 0.3, metalness: 0,
-      emissive: new THREE.Color(0x39d0ff), emissiveIntensity: 0.9,
+      color: 0xff4848, roughness: 0.3, metalness: 0,
+      emissive: new THREE.Color(0xff4848), emissiveIntensity: 0.9,
     });
     this.materials = [body, panel, dark, black, steel, this.accentMat, this.lensMat];
 

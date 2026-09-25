@@ -46,6 +46,11 @@ const SCHEMA = [
     min: 5, max: 50, step: 5, default: 25,
     apply: (v, t) => { t.match.target = v; },
   },
+  {
+    key: 'botSkill', label: 'Bot Difficulty',
+    min: 0, max: 2, step: 1, default: 1, labels: ['Chill', 'Pro', 'Sweat'],
+    apply: (v, t) => { t.bots.setDifficulty(v); },
+  },
 ];
 
 export class Settings {
@@ -97,6 +102,7 @@ export class Settings {
   }
 
   _fmt(s, v) {
+    if (s.labels) return s.labels[v];
     if (s.percent) return Math.round(v * 100) + '%';
     const txt = Number.isInteger(s.step) ? v.toFixed(0) : v.toFixed(2);
     return txt + (s.unit || '');

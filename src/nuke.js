@@ -706,5 +706,5 @@ export class Nuke {
   }
 }
 
-const PAINT = [0xff3b3b, 0x2f7bff, 0xffd21f, 0x27c93f, 0x9b3bff, 0xff7a1a];
-const p_fireHot = 0xffd27a;
+const PAINT = [0xff4848, 0xf4f6f8, 0xff6000];
+const p_fireHot = 0xff6000;

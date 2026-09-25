@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { NO_OUTLINE_LAYER } from './outline.js';
 
 /**
- * Daytime sky: a blue gradient dome, a glowing sun and a scatter of drifting
+ * Daytime sky: a neutral gradient dome, a glowing sun and a scatter of drifting
  * clouds. Mirrors nightSky.js — everything is fog-free, sits on the
  * NO_OUTLINE_LAYER so the contour pass ignores it, writes NO depth (so world
  * geometry always draws over it), and the whole group is re-centred on the
@@ -45,12 +45,12 @@ export function createDaySky(scene, sunDir) {
   const group = new THREE.Group();
   scene.add(group);
 
-  // --- gradient sky dome (blue zenith -> pale horizon) ---
+  // --- gradient sky dome (grey zenith -> pale horizon) ---
   const skyMat = new THREE.ShaderMaterial({
     side: THREE.BackSide, depthWrite: false, fog: false,
     uniforms: {
-      top: { value: new THREE.Color(0x2f7ad4) },     // deep sky blue overhead
-      bottom: { value: new THREE.Color(0xe6eef7) },  // pale haze at the horizon
+      top: { value: new THREE.Color(0xaeb6c0) },     // neutral grey overhead
+      bottom: { value: new THREE.Color(0xf2f4f6) },  // pale haze at the horizon
       offset: { value: 40 },
       exponent: { value: 0.9 },
     },
@@ -90,7 +90,7 @@ export function createDaySky(scene, sunDir) {
   })();
 
   const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTex, color: 0xfff3c8, transparent: true, opacity: 0.9,
+    map: glowTex, color: 0xff6000, transparent: true, opacity: 0.75,
     depthWrite: false, fog: false, blending: THREE.AdditiveBlending,
   }));
   glow.scale.setScalar(90);

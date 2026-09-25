@@ -3,10 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WhiteOut Paintball</title>
-  <link rel="icon" type="image/png" href="./assets/favicon.png" />
-  <link rel="icon" type="image/png" sizes="32x32" href="./assets/favicon-32.png" />
-  <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png" />
+  <title>Free Fire Arena</title>
+  <link rel="icon" type="image/png" href="./assets/ffa-icon.png" />
   <link rel="stylesheet" href="./styles.css" />
   <script type="importmap">
   {
@@ -21,24 +19,17 @@
 <body>
   <div id="app"></div>
 
-  <!-- Crosshair -->
+  <!-- Minimalist Precision Crosshair -->
   <div id="crosshair" class="hidden">
     <span class="ch-line ch-h"></span>
     <span class="ch-line ch-v"></span>
     <span class="ch-dot"></span>
   </div>
 
-  <!-- Hitmarker: flashes on the crosshair whenever you tag an enemy or hit a tank -->
+  <!-- Hitmarker -->
   <div id="hitmarker"><i></i><i></i></div>
 
-  <!-- Tank-buster lock-on brackets (track the target tank on screen, at the hip) -->
-  <div id="buster-hud" class="hidden">
-    <span class="bh-c bh-tl"></span><span class="bh-c bh-tr"></span>
-    <span class="bh-c bh-bl"></span><span class="bh-c bh-br"></span>
-    <span class="bh-label" id="buster-lock-pct">0%</span>
-  </div>
-
-  <!-- Tank-buster scope overlay: the "screen" HUD when zoomed down the sight -->
+  <!-- Tactical Sniper Scope Overlay (Active when aiming with Battle Rifle) -->
   <div id="buster-scope">
     <div class="bs-vignette"></div>
     <div class="bs-grid"></div>
@@ -46,227 +37,127 @@
     <span class="bs-frame bs-tl"></span><span class="bs-frame bs-tr"></span>
     <span class="bs-frame bs-bl"></span><span class="bs-frame bs-br"></span>
 
-    <!-- range ladder down the left edge -->
     <div class="bs-ladder">
-      <span style="top:12%"><i></i>150</span>
-      <span style="top:31%"><i></i>100</span>
-      <span style="top:50%"><i></i>075</span>
-      <span style="top:69%"><i></i>050</span>
-      <span style="top:88%"><i></i>025</span>
+      <span style="top:15%"><i></i>100</span>
+      <span style="top:35%"><i></i>075</span>
+      <span style="top:55%"><i></i>050</span>
+      <span style="top:75%"><i></i>025</span>
     </div>
 
-    <!-- top-left: target designation + solution -->
     <div class="bs-data bs-left">
-      <div class="bs-row"><b>TGT</b><span id="bs-tgt">NO CONTACT</span></div>
-      <div class="bs-row"><b>RNG</b><span id="bs-rng">----</span><em>M</em></div>
-      <div class="bs-row"><b>BRG</b><span id="bs-brg">---</span><em>&deg;</em></div>
+      <div class="bs-row"><b>OPTIC</b><span>4X TACTICAL</span></div>
+      <div class="bs-row"><b>CAL</b><span>PRECISION BR</span></div>
+      <div class="bs-row"><b>KILL</b><span>1-SHOT HEAD</span></div>
     </div>
 
-    <!-- top-right: weapon + system state -->
     <div class="bs-data bs-right">
-      <div class="bs-row"><b>MODE</b><span>TOP-ATTACK</span></div>
-      <div class="bs-row"><b>WHD</b><span>PAINT / HE</span></div>
-      <div class="bs-row"><b>SYS</b><span id="bs-sys">ARMED</span></div>
+      <div class="bs-row"><b>MODE</b><span id="bs-tgt">SEMI-AUTO</span></div>
+      <div class="bs-row"><b>RANGE</b><span id="bs-rng">OPTIMAL</span></div>
+      <div class="bs-row"><b>SYS</b><span id="bs-sys">READY</span></div>
     </div>
 
     <div class="bs-reticle">
+      <div class="bs-lens-ring"></div>
       <span class="bs-h"></span><span class="bs-v"></span>
       <span class="bs-tick bs-up"></span><span class="bs-tick bs-dn"></span>
       <span class="bs-tick bs-lf"></span><span class="bs-tick bs-rt"></span>
       <span class="bs-mil bs-mil1"></span><span class="bs-mil bs-mil2"></span>
       <span class="bs-mil bs-mil3"></span><span class="bs-mil bs-mil4"></span>
-      <span class="bs-box" id="buster-scope-box"></span>
-      <span class="bs-diamond"></span>
+      <span class="bs-center-dot"></span>
     </div>
 
-    <div class="bs-top">// PAINT WARHEAD &middot; VERTICAL LAUNCH &middot; TOP-ATTACK //</div>
+    <div class="bs-top">// FREE FIRE ARENA &middot; PRECISION OPTICS &middot; 1-HIT HEADSHOT //</div>
 
-    <!-- lock solution bar + status -->
     <div class="bs-solution">
-      <div class="bs-lockbar"><i id="bs-lockfill"></i></div>
-      <div class="bs-status" id="buster-scope-status">SEEKING</div>
+      <div class="bs-status" id="buster-scope-status">ACTIVE SIGHT</div>
     </div>
   </div>
 
-  <!-- Paint hit: vignette + drips in the shooter's color -->
+  <!-- Paint / Impact Vignette -->
   <div id="paint-hit">
     <div class="ph-vignette"></div>
     <div class="ph-drips"></div>
   </div>
 
-  <!-- Kill confirmation, sits just under the crosshair -->
-  <div id="killfeed" class="hidden"><span class="kf-verb">KILLED</span> <span id="kf-name"></span></div>
+  <!-- Kill confirmation -->
+  <div id="killfeed" class="hidden"><span class="kf-verb">ELIMINATED</span> <span id="kf-name"></span></div>
 
-  <!-- Killed-by banner, shown on your death -->
-  <div id="killedby" class="hidden"><span class="kb-verb">KILLED BY</span> <span id="kb-name"></span></div>
+  <!-- Killed-by banner -->
+  <div id="killedby" class="hidden"><span class="kb-verb">ELIMINATED BY</span> <span id="kb-name"></span></div>
 
   <!-- Respawn countdown -->
   <div id="respawn" class="hidden">
-    <div class="respawn-label">TAGGED</div>
+    <div class="respawn-label">ELIMINATED</div>
     <div class="respawn-count">3</div>
-    <div class="respawn-sub">Respawning</div>
+    <div class="respawn-sub">RESPAWNING IN THE OCTAGON</div>
   </div>
 
-  <!-- Match-start countdown: everyone is frozen until it hits GO -->
+  <!-- Match countdown -->
   <div id="countdown" class="hidden">5</div>
 
-  <!-- Tank HUD: status (armor/boost/speed) shows while driving; the gunsight
-       (compass/reticle/range) fades in only while zoomed -->
-  <div id="tank-sight" class="hidden">
-    <!-- zoom-only gunsight -->
-    <div class="ts-zoom" id="ts-zoom">
-      <div class="ts-vignette"></div>
-      <div class="ts-corner tl"></div><div class="ts-corner tr"></div>
-      <div class="ts-corner bl"></div><div class="ts-corner br"></div>
-      <div class="ts-compass">
-        <div class="ts-compass-ticks" id="ts-compass"></div>
-        <div class="ts-heading" id="ts-heading">000</div>
-      </div>
-      <svg class="ts-reticle" viewBox="-120 -120 240 240" aria-hidden="true">
-        <path d="M-70,-42 L-70,-70 L-42,-70" /><path d="M42,-70 L70,-70 L70,-42" />
-        <path d="M-70,42 L-70,70 L-42,70" /><path d="M42,70 L70,70 L70,42" />
-        <line x1="-28" y1="0" x2="-12" y2="0" /><line x1="12" y1="0" x2="28" y2="0" />
-        <line x1="0" y1="-28" x2="0" y2="-12" />
-        <circle cx="0" cy="0" r="11" />
-        <circle cx="0" cy="0" r="1.8" class="ts-dot" />
-        <line x1="-9" y1="28" x2="9" y2="28" /><line x1="-6" y1="42" x2="6" y2="42" /><line x1="-4" y1="56" x2="4" y2="56" />
-      </svg>
-      <div class="ts-range"><span id="ts-rng">---</span> m</div>
-      <div class="ts-gun">
-        <div class="ts-gun-cal">120MM SMOOTHBORE</div>
-        <div class="ts-gun-status" id="ts-gun-status">READY</div>
-      </div>
-    </div>
-
-    <!-- always-on status while driving -->
-    <div class="ts-armor">
-      <div class="ts-armor-lbl">ARMOR <span id="ts-armor">100</span>%</div>
-      <div class="ts-armor-bar"><div class="ts-armor-fill" id="ts-armor-fill"></div></div>
-    </div>
-    <div class="ts-boost" id="ts-boost">
-      <div class="ts-armor-lbl">BOOST</div>
-      <div class="ts-boost-bar"><div class="ts-boost-fill" id="ts-boost-fill"></div></div>
-    </div>
-    <div class="ts-speed"><span class="ts-speed-num" id="ts-speed">0</span><span class="ts-speed-unit">KM/H</span></div>
-    <div class="ts-exit">[<span id="ts-exit-key">E</span>] EXIT</div>
-  </div>
-
-  <!-- "Enter tank" prompt (proximity) -->
-  <div id="tank-prompt" class="hidden">[<span id="tank-prompt-key">E</span>] ENTER TANK</div>
-
-  <!-- Fighter jet HUD (3rd-person air support) -->
-  <div id="jet-hud" class="hidden">
-    <div class="jh-reticle">
-      <span class="jh-h"></span><span class="jh-v"></span>
-      <span class="jh-ring"></span>
-    </div>
-    <div class="jh-panel">
-      <div class="jh-gauge"><b>SPD</b><span id="jet-speed">0</span><em>m/s</em></div>
-      <div class="jh-throttle"><i id="jet-throttle-fill"></i></div>
-      <div class="jh-gauge"><b>ALT</b><span id="jet-alt">0</span><em>m</em></div>
-    </div>
-    <div class="jh-keys">MOUSE steer &nbsp;·&nbsp; W/S throttle &nbsp;·&nbsp; LMB guns &nbsp;·&nbsp; SPACE cluster bomb &nbsp;·&nbsp; G eject</div>
-    <div id="jet-warn" class="hidden">
-      <div class="jw-title">RETURN TO THE BATTLEFIELD</div>
-      <div class="jw-sub">AUTO-DESTRUCT IN <span id="jet-warn-count">8</span>s</div>
-    </div>
-  </div>
-
-  <!-- Online session HUD (room code + player count) -->
-  <div id="net-hud" class="hidden">
-    <span class="hud-label">ROOM</span> <span id="net-code">—</span>
-    <span id="net-count">1 player</span>
-    <span id="net-status" class="hidden"></span>
-  </div>
-
-  <!-- 5v5 scoreboard — glossy angled panels -->
-  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
-    <symbol id="sb-person" viewBox="0 0 24 24">
-      <circle cx="12" cy="7.5" r="4"/>
-      <path d="M3.5 21.5c0-4.7 3.8-8.5 8.5-8.5s8.5 3.8 8.5 8.5z"/>
-    </symbol>
-    <!-- paint-splat mark for the kill feed -->
-    <symbol id="kf-splat-ico" viewBox="0 0 24 24">
-      <circle cx="11.5" cy="12" r="5.6"/>
-      <circle cx="18.6" cy="7.6" r="2.1"/>
-      <circle cx="5.6" cy="17.4" r="1.8"/>
-      <circle cx="19" cy="17" r="1.3"/>
-      <circle cx="6.4" cy="6.2" r="1.4"/>
-    </symbol>
-    <!-- paintball-marker silhouette for the kill feed -->
-    <symbol id="kf-gun-ico" viewBox="0 0 30 20">
-      <rect x="1" y="9" width="16" height="3.2" rx="1"/>
-      <rect x="12.5" y="6.6" width="9.5" height="6.4" rx="1.6"/>
-      <circle cx="18.6" cy="4.2" r="3.3"/>
-      <path d="M15.5 13 L14 18.5 L17 18.5 L18 13 Z"/>
-    </symbol>
-  </svg>
-
-  <!-- global multi-row kill feed (top-right) -->
-  <div id="killfeed-rows"></div>
+  <!-- Scoreboard -->
   <div id="scoreboard" class="hidden">
     <div class="sb-main">
-      <div class="sb-team sb-blue">
-        <span class="sb-name">BLUE</span>
-        <span class="sb-score" id="score-blue">0</span>
-      </div>
+      <div class="sb-team sb-blue"><span class="sb-name">FIRE</span><span class="sb-score" id="score-blue">0</span></div>
       <div class="sb-center"><span class="sb-timer" id="sb-timer">0:00</span></div>
-      <div class="sb-team sb-red">
-        <span class="sb-score" id="score-red">0</span>
-        <span class="sb-name">RED</span>
-      </div>
+      <div class="sb-team sb-red"><span class="sb-score" id="score-red">0</span><span class="sb-name">WHITE</span></div>
     </div>
-    <div class="sb-sub">
-      <span class="sb-dots sb-dots-blue">
-        <svg class="sb-ico"><use href="#sb-person"/></svg>
-        <svg class="sb-ico"><use href="#sb-person"/></svg>
-        <svg class="sb-ico"><use href="#sb-person"/></svg>
-      </span>
-      <span class="sb-vs">5 vs 5</span>
-      <span class="sb-dots sb-dots-red">
-        <svg class="sb-ico"><use href="#sb-person"/></svg>
-        <svg class="sb-ico"><use href="#sb-person"/></svg>
-        <svg class="sb-ico"><use href="#sb-person"/></svg>
-      </span>
-    </div>
+    <div class="sb-sub"><span class="sb-vs" id="sb-mode-title">TEAM DEATHMATCH</span></div>
   </div>
 
-  <!-- HUD -->
+  <!-- Global Kill Feed -->
+  <div id="killfeed-rows"></div>
+
+  <!-- In-Game HUD: Liquid Glass Capsule Elements -->
   <div id="hud" class="hidden">
-    <div id="color-hud">
-      <span class="hud-label">PAINT</span>
+    <!-- Health Capsule -->
+    <div id="hp-hud" class="liquid-hud">
+      <span class="hud-label">HEALTH</span>
+      <div id="hp-bar"><i id="hp-fill"></i></div>
+      <span id="hp-num">100</span>
+    </div>
+
+    <!-- Modular Weapon Capsule -->
+    <div id="weap-hud" class="liquid-hud">
+      <div class="weap-info">
+        <span class="hud-label" id="weap-mode-label">BATTLE RIFLE</span>
+        <span id="weap-ammo">SEMI-AUTO</span>
+      </div>
+      <div id="weap-reload-bar" class="hidden"><i id="weap-reload-fill"></i></div>
+      <span class="weap-key-hint">[Q] SWAP</span>
+    </div>
+
+    <!-- Hidden legacy element for script hooks -->
+    <div id="color-hud" style="display:none;">
       <span id="color-swatch"></span>
-      <span id="color-name">RED</span>
+      <span id="color-name">FIRE</span>
     </div>
   </div>
 
-  <!-- Title / cover screen (first thing shown) -->
+  <!-- Title Screen -->
   <div id="title">
-    <div id="title-splat"></div>
     <div id="title-hero">
-      <img id="title-logo" src="./assets/logo.png" alt="WhiteOut Paintball" />
-      <div id="title-tag">A BLANK ARENA. PAINTED BY COMBAT.</div>
+      <img id="title-logo" src="./assets/ffa.png" alt="Free Fire Arena" />
+      <div id="title-tag">COMPACT OCTAGON VAULT // TEAM DEATHMATCH</div>
     </div>
     <div id="title-actions">
-      <button id="start-btn">START</button>
-      <div id="dev-credit">by ceeboozwah</div>
+      <button id="start-btn">ENTER ARENA</button>
+      <div id="dev-credit">CEEBOOZWAH &middot; BLAIZE</div>
     </div>
   </div>
 
-  <!-- Main menu / home screen (shown after Start) -->
+  <!-- Main Menu / Home Screen (Liquid Glass Redesign) -->
   <div id="overlay" class="hidden">
     <div class="launcher">
-      <div class="lc-splat lc-splat-a"></div>
-      <div class="lc-splat lc-splat-b"></div>
+      <!-- Background Ambient Glows -->
+      <div class="glow glow-1"></div>
+      <div class="glow glow-2"></div>
 
-      <!-- ===== TOP BAR ===== -->
+      <!-- Top Bar: Liquid Glass Profile -->
       <header class="lc-top">
-        <div class="lc-profile">
+        <div class="lc-profile glass-card">
           <div class="lc-avatar">
-            <svg viewBox="0 0 48 48" aria-hidden="true">
-              <path d="M24 6c-9 0-15 6-15 15v6c0 3 2 5 5 6l2 5h16l2-5c3-1 5-3 5-6v-6c0-9-6-15-15-15z"/>
-              <rect x="13" y="19" width="22" height="8" rx="4" class="lc-visor"/>
-            </svg>
+            <img src="./assets/ffa-icon.png" alt="Avatar" class="avatar-img" />
           </div>
           <div class="lc-profile-info">
             <div class="lc-pname" id="lc-pname">Recruit</div>
@@ -276,320 +167,232 @@
             </div>
             <div class="lc-xp-bar"><i style="width:62%"></i></div>
           </div>
-          <div class="lc-rank" title="Rank">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2l2.5 5 5.5.8-4 3.9.9 5.5L12 20l-4.9 2.6.9-5.5-4-3.9 5.5-.8z"/></svg>
-          </div>
         </div>
 
         <div class="lc-top-right">
-          <div class="lc-currency">
-            <span class="lc-coin lc-coin-cash">S</span>
-            <span class="lc-cur-val">12,450</span>
-            <button class="lc-plus" data-soon="Store">+</button>
+          <div class="glass-pill match-pill">
+            <span class="fire-dot"></span>
+            <span class="match-text">ENCLOSED OCTAGON TDM</span>
           </div>
-          <div class="lc-currency">
-            <span class="lc-coin lc-coin-star">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.5 5.5 6 .6-4.5 4 1.3 5.9L12 21l-5.3 3 1.3-5.9-4.5-4 6-.6z"/></svg>
-            </span>
-            <span class="lc-cur-val">2,860</span>
-            <button class="lc-plus lc-plus-star" data-soon="Store">+</button>
-          </div>
-          <button class="lc-icon-btn" data-soon="Friends" title="Friends" aria-label="Friends">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#sb-person"/></svg>
-          </button>
-          <button class="lc-icon-btn" data-soon="Inbox" title="Inbox" aria-label="Inbox">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M4 7l8 6 8-6"/></svg>
-            <span class="lc-badge">2</span>
-          </button>
-          <button class="lc-icon-btn" id="lc-top-settings" title="Settings" aria-label="Settings">
+          <button class="lc-icon-btn glass-btn" id="lc-top-settings" title="Settings" aria-label="Settings">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg>
           </button>
         </div>
       </header>
 
-      <!-- ===== MAIN ===== -->
+      <!-- Main 3-Column Interface -->
       <div class="lc-main">
-        <!-- LEFT RAIL: modes -->
+        <!-- Left Column: Combat Setup (Liquid Glass) -->
         <nav class="lc-rail lc-left">
-          <button class="lc-mode is-active" id="mode-quick">
-            <span class="lc-mode-ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/><circle cx="12" cy="12" r="2.4" class="lc-fill"/></svg></span>
-            <span class="lc-mode-txt"><b>QUICK MATCH</b><em>Jump into the action</em></span>
-          </button>
-          <button class="lc-mode" id="mode-private">
-            <span class="lc-mode-ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8.5" cy="9" r="3"/><circle cx="16" cy="10" r="2.4"/><path d="M2.5 20c0-3.4 2.7-6 6-6s6 2.6 6 6M14 19.5c.3-2.7 2-4.5 4.5-4.5 2.2 0 3 1.2 3 3.5"/></svg></span>
-            <span class="lc-mode-txt"><b>PRIVATE MATCH</b><em>Play with friends</em></span>
-          </button>
-          <button class="lc-mode" id="mode-practice">
-            <span class="lc-mode-ico"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.6" class="lc-fill"/></svg></span>
-            <span class="lc-mode-txt"><b>PRACTICE</b><em>Sharpen your skills</em></span>
-          </button>
-          <button class="lc-mode" id="mode-custom">
-            <span class="lc-mode-ico"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 12h4M12 12h8M4 17h9M17 17h3"/><circle cx="16" cy="7" r="2" class="lc-fill"/><circle cx="10" cy="12" r="2" class="lc-fill"/><circle cx="15" cy="17" r="2" class="lc-fill"/></svg></span>
-            <span class="lc-mode-txt"><b>CUSTOM GAME</b><em>Create your rules</em></span>
-          </button>
+          <div class="glass-card rail-card">
+            <div class="card-head">
+              <span class="card-accent"></span>
+              <h3>COMBAT SETUP</h3>
+            </div>
+            <p class="rail-desc">Compact enclosed octagon. One central pillar, sparse cover, and clean rifle and rocket sightlines.</p>
+
+            <div class="config-group">
+              <label class="config-label">SQUAD SIZE</label>
+              <div class="seg-ctrl" id="seg-size">
+                <button class="seg-btn is-active" id="btn-size-4">4v4</button>
+                <button class="seg-btn" id="btn-size-3">3v3</button>
+                <button class="seg-btn" id="btn-size-2">2v2</button>
+              </div>
+            </div>
+
+            <div class="config-group">
+              <label class="config-label">LOADOUT RULE</label>
+              <div class="seg-ctrl" id="seg-rule">
+                <button class="seg-btn is-active" id="btn-rule-free">FREE FIRE</button>
+                <button class="seg-btn" id="btn-rule-rifle">RIFLE ONLY</button>
+                <button class="seg-btn" id="btn-rule-rocket">ROCKET ONLY</button>
+              </div>
+            </div>
+
+            <div class="config-group">
+              <label class="config-label">TARGET SCORE</label>
+              <div class="seg-ctrl" id="seg-target">
+                <button class="seg-btn" id="btn-score-15">15</button>
+                <button class="seg-btn is-active" id="btn-score-25">25</button>
+                <button class="seg-btn" id="btn-score-40">40</button>
+              </div>
+            </div>
+          </div>
         </nav>
 
-        <!-- CENTER: brand + play -->
+        <!-- Center Column: Brand & Play -->
         <section class="lc-center">
           <div class="lc-brand">
-            <img class="lc-logo" src="./assets/logo.png" alt="WhiteOut Paintball" />
-            <div class="lc-tag"><span class="lc-tag-mark"></span>A BLANK ARENA. PAINTED BY COMBAT.</div>
+            <img class="lc-logo" src="./assets/ffa-text.png" alt="Free Fire Arena" />
+            <div class="lc-tag">OCTAGON COMBAT // TEAM DEATHMATCH</div>
           </div>
+
           <button class="lc-play" id="play-btn">
             <span>PLAY NOW</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5l9 7-9 7"/></svg>
           </button>
+
           <div class="lc-center-controls">
-            <div class="lc-namebox">
-              <label for="player-name">NAME</label>
-              <input id="player-name" type="text" maxlength="14" placeholder="Recruit"
-                     autocomplete="off" spellcheck="false" />
+            <div class="lc-namebox glass-input-wrap">
+              <label for="player-name">CALLSIGN</label>
+              <input id="player-name" type="text" maxlength="14" placeholder="Recruit" autocomplete="off" spellcheck="false" />
             </div>
-            <button id="lights-out-toggle" class="mode-toggle" aria-pressed="false">
-              <span class="mode-dot"></span><span>LIGHTS OUT</span>
+            <button id="lights-out-toggle" class="mode-toggle glass-toggle" aria-pressed="false">
+              <span class="mode-dot"></span><span>NIGHT ARENA</span>
             </button>
           </div>
         </section>
 
-        <!-- RIGHT RAIL: cards -->
+        <!-- Right Column: Intel & Weapon Info (Liquid Glass) -->
         <aside class="lc-rail lc-right">
-          <div class="lc-card lc-arena">
-            <span class="lc-card-tag">FEATURED ARENA</span>
-            <button class="lc-arena-expand" data-soon="Arena preview" aria-label="Expand">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
-            </button>
-            <div class="lc-arena-preview" aria-hidden="true">
-              <span class="lc-ar-dome"></span>
-              <span class="lc-ar-b lc-ar-b1"></span><span class="lc-ar-b lc-ar-b2"></span>
-              <span class="lc-ar-b lc-ar-b3"></span><span class="lc-ar-b lc-ar-b4"></span>
-              <span class="lc-ar-dot lc-ar-d1"></span><span class="lc-ar-dot lc-ar-d2"></span>
-              <span class="lc-ar-dot lc-ar-d3"></span><span class="lc-ar-dot lc-ar-d4"></span>
+          <!-- Arena Intel Card -->
+          <div class="glass-card rail-card">
+            <div class="card-head">
+              <span class="card-accent"></span>
+              <h3>OCTAGON ARENA</h3>
             </div>
-            <div class="lc-arena-info">
-              <div class="lc-arena-name" id="lc-arena-name">Backlot</div>
-              <div class="lc-arena-sub" id="lc-arena-sub">SYMMETRIC ARENA</div>
+            <div class="arena-visual">
+              <div class="oct-shape">
+                <div class="oct-inner"></div>
+              </div>
             </div>
-            <div id="map-picker" class="map-picker"></div>
+            <div class="arena-meta">
+              <div class="meta-row"><b>ARENA</b><span id="lc-arena-name">OCTAGON CAGE</span></div>
+              <div class="meta-row"><b>SPAN</b><span id="lc-arena-sub">50M SEALED OCTAGON</span></div>
+              <div class="meta-row"><b>EDGE</b><span>SEALED VAULT</span></div>
+            </div>
           </div>
 
-          <div class="lc-card lc-challenge">
-            <div class="lc-card-head">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.4"/></svg>
-              <span>DAILY CHALLENGE</span><span class="lc-xp-chip">XP</span>
+          <!-- Hybrid Weapon Card -->
+          <div class="glass-card rail-card">
+            <div class="card-head">
+              <span class="card-accent"></span>
+              <h3>HYBRID FIREARM</h3>
             </div>
-            <div class="lc-ch-row"><span>GET 25 ELIMINATIONS</span><b>18 / 25</b></div>
-            <div class="lc-ch-bar"><i style="width:72%"></i></div>
-            <div class="lc-ch-reward">2,500 XP</div>
-          </div>
-
-          <div class="lc-card-row">
-            <div class="lc-card lc-stats">
-              <div class="lc-card-head">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="12" width="4" height="8"/><rect x="10" y="7" width="4" height="13"/><rect x="17" y="3" width="4" height="17"/></svg>
-                <span>PLAYER STATS</span>
+            <div class="weapon-specs">
+              <div class="w-spec-row">
+                <b>BATTLE RIFLE</b>
+                <span>1-SHOT HEADSHOT / 2-SHOT BODY</span>
               </div>
-              <div class="lc-stat"><span>K/D</span><b>1.53</b></div>
-              <div class="lc-stat"><span>WINS</span><b>124</b></div>
-              <div class="lc-stat"><span>ACCURACY</span><b>32%</b></div>
-              <button class="lc-card-btn" data-soon="Detailed stats">VIEW STATS <em>&rsaquo;</em></button>
-            </div>
-            <div class="lc-card lc-loadout">
-              <div class="lc-card-head">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="12" width="4" height="8"/><rect x="10" y="7" width="4" height="13"/><rect x="17" y="3" width="4" height="17"/></svg>
-                <span>FEATURED LOADOUT</span>
+              <div class="w-spec-row">
+                <b>ROCKET LAUNCHER</b>
+                <span>TWIN BARREL / BLAST SPLASH</span>
               </div>
-              <div class="lc-loadout-gun"><svg viewBox="0 0 30 20" aria-hidden="true"><use href="#kf-gun-ico"/></svg></div>
-              <div class="lc-loadout-name">COMPETITOR</div>
-              <div class="lc-loadout-lvl">LVL 18</div>
-              <button class="lc-card-btn" data-soon="Loadout editor">CUSTOMIZE <em>&rsaquo;</em></button>
+              <div class="w-spec-hint">
+                <span class="hotkey">Q</span> OR <span class="hotkey">1 / 2</span> TO SWITCH MODES
+              </div>
             </div>
           </div>
         </aside>
       </div>
 
-      <!-- ===== BOTTOM BAR ===== -->
+      <!-- Bottom Bar: Glass Navigation -->
       <footer class="lc-bottom">
         <div class="lc-bottom-nav">
-          <button class="lc-nav" data-soon="Loadout">
-            <svg viewBox="0 0 30 20" aria-hidden="true"><use href="#kf-gun-ico"/></svg><span>LOADOUT</span>
+          <button class="lc-nav glass-nav" id="nav-settings">
+            <span>SETTINGS</span>
           </button>
-          <button class="lc-nav" id="nav-splats">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#kf-splat-ico"/></svg><span>SPLATS</span>
+          <button class="lc-nav glass-nav" id="lc-howto">
+            <span>CONTROLS</span>
           </button>
-          <button class="lc-nav" data-soon="Locker">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0v2l1.5 9h-15L6 10z"/><path d="M9 10h6"/></svg><span>LOCKER</span>
-          </button>
-          <button class="lc-nav" id="nav-settings">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4L5.3 5.3"/></svg><span>SETTINGS</span>
-          </button>
-          <button class="lc-nav lc-nav-exit" id="nav-exit">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4M10 8l-4 4 4 4M6 12h9"/></svg><span>EXIT</span>
+          <button class="lc-nav glass-nav lc-nav-exit" id="nav-exit">
+            <span>EXIT</span>
           </button>
         </div>
       </footer>
 
       <div class="lc-footer">
-        <span class="lc-version">whiteout paintball v1.2.0</span>
-        <button class="lc-howto-link" id="lc-howto">HOW TO PLAY</button>
+        <span class="lc-version">FREE FIRE ARENA // v2.0 // HIGH-STAKES COMBAT</span>
       </div>
 
-      <!-- hidden legacy hooks: existing handlers bind to these IDs -->
-      <div class="lc-hooks" aria-hidden="true">
+      <!-- Hidden legacy hooks for seamless compatibility -->
+      <div class="lc-hooks" aria-hidden="true" style="display:none;">
+        <button id="mode-quick"></button>
+        <button id="mode-private"></button>
+        <button id="mode-practice"></button>
+        <button id="mode-custom"></button>
+        <button id="nav-splats"></button>
         <button id="open-public-btn"></button>
         <button id="open-private-btn"></button>
         <button id="open-settings-btn"></button>
         <button id="open-howto-btn"></button>
         <button id="open-splat-btn"></button>
+        <div id="map-picker"></div>
+        <div id="buster-hud">
+          <span id="buster-lock-pct">0%</span>
+        </div>
       </div>
     </div>
   </div>
 
-  <!-- How to Play -->
+  <!-- How to Play / Controls Modal -->
   <div id="howto-overlay" class="menu-overlay hidden">
-    <div class="menu-card">
-      <h2>How to Play</h2>
+    <div class="menu-card glass-modal">
+      <h2>CONTROLS &amp; COMBAT</h2>
       <div class="controls">
         <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> Move</div>
-        <div><kbd>Mouse</kbd> Look</div>
-        <div><kbd>Left Click</kbd> Shoot</div>
-        <div><kbd>Right Click</kbd> Aim / zoom</div>
+        <div><kbd>Mouse</kbd> Aim &amp; Look</div>
+        <div><kbd>Left Click</kbd> Fire Weapon</div>
+        <div><kbd>Right Click</kbd> Tactical Zoom / Sniper Scope</div>
+        <div><kbd>Q</kbd> or <kbd>1</kbd>/<kbd>2</kbd> Swap Rifle / Rocket</div>
         <div><kbd>Space</kbd> Jump</div>
         <div><kbd>Shift</kbd> Sprint</div>
-        <div><kbd>Ctrl</kbd> Crouch</div>
-        <div><kbd>1</kbd>–<kbd>6</kbd> Paint color</div>
-        <div><kbd>Esc</kbd> Release mouse</div>
-        <div>sprint+tap Slide · hold Dive</div>
+        <div><kbd>Ctrl / C</kbd> Crouch / Slide / Dive</div>
+        <div><kbd>Esc</kbd> Release Mouse / Menu</div>
       </div>
-      <p class="gamepad-note"><strong>Xbox controller:</strong> Left stick move · Right stick look · <kbd>RT</kbd> shoot · <kbd>LT</kbd> aim · <kbd>A</kbd> jump · <kbd>B</kbd> crouch/slide/dive · <kbd>LB</kbd>/<kbd>RB</kbd> color · <kbd>Start</kbd> begin / pause</p>
       <div class="menu-actions">
-        <button id="howto-back-btn">Back</button>
+        <button id="howto-back-btn">RETURN</button>
       </div>
     </div>
   </div>
 
-  <!-- Find Public Server -->
-  <div id="public-overlay" class="menu-overlay hidden">
-    <div class="menu-card mp-card">
-      <h2>Public Servers</h2>
-      <p id="public-note" class="mp-note">Public games anyone can drop into.</p>
-      <div class="server-list">
-        <div class="server-row server-head">
-          <span class="sv-name">Server</span>
-          <span class="sv-players">Players</span>
-          <span class="sv-join"></span>
-        </div>
-        <div id="server-rows"></div>
-        <div id="server-empty" class="server-empty">No public servers online right now.</div>
-      </div>
-      <div id="public-status" class="join-status"></div>
-      <div class="menu-actions">
-        <button id="public-host-btn">Host Public Game</button>
-        <button id="public-enter-btn" class="hidden">Enter Arena</button>
-        <button id="public-refresh-btn" class="secondary-btn">Refresh</button>
-        <button id="public-back-btn" class="secondary-btn">Back</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Find Private Server -->
-  <div id="private-overlay" class="menu-overlay hidden">
-    <div class="menu-card mp-card">
-      <h2>Private Match</h2>
-      <p id="private-note" class="mp-note">Share a room code to play with friends.</p>
-
-      <div class="mp-section">
-        <div class="mp-section-title">Host a private game</div>
-        <button id="private-host-btn" class="secondary-btn wide">Create Room</button>
-        <div id="room-code-box" class="room-code hidden">
-          <span class="room-code-label">ROOM CODE</span>
-          <span id="room-code-value">—</span>
-          <span class="room-code-hint">Share this with your friends</span>
-        </div>
-        <button id="private-enter-btn" class="hidden" style="margin-top:12px; width:100%;">Enter Arena</button>
-      </div>
-
-      <div class="mp-section">
-        <div class="mp-section-title">Join with a code</div>
-        <div class="join-row">
-          <input id="join-code-input" type="text" maxlength="5" placeholder="e.g. P4XK9" autocomplete="off" spellcheck="false" />
-          <button id="private-join-btn">Join</button>
-        </div>
-        <div id="join-status" class="join-status"></div>
-      </div>
-
-      <div class="menu-actions">
-        <button id="private-back-btn" class="secondary-btn">Back</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Lobby (waiting room before an online match starts) -->
-  <div id="lobby-overlay" class="menu-overlay hidden">
-    <div class="menu-card mp-card">
-      <h2>Lobby</h2>
-      <div id="lobby-code" class="room-code">
-        <span class="room-code-label">ROOM CODE</span>
-        <span id="lobby-code-value">—</span>
-        <span class="room-code-hint">Share this to invite players</span>
-      </div>
-      <div class="mp-section">
-        <div class="mp-section-title">Players <span id="lobby-count"></span></div>
-        <div id="lobby-roster" class="lobby-roster"></div>
-      </div>
-      <div id="lobby-winconfig" class="mp-section hidden">
-        <div class="mp-section-title">Win condition</div>
-        <div class="wc-modes">
-          <button id="wc-score" class="wc-mode active">Score limit</button>
-          <button id="wc-time" class="wc-mode">Time limit</button>
-        </div>
-        <div class="wc-stepper">
-          <button id="wc-minus" class="wc-step">–</button>
-          <span id="wc-value">25</span>
-          <span id="wc-unit">tags to win</span>
-          <button id="wc-plus" class="wc-step">+</button>
-        </div>
-      </div>
-      <p id="lobby-hint" class="mp-note"></p>
-      <div class="menu-actions">
-        <button id="lobby-resume-btn" class="hidden">Resume</button>
-        <button id="lobby-start-btn" class="hidden">Start Game</button>
-        <button id="lobby-leave-btn" class="secondary-btn">Leave</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Settings menu -->
+  <!-- Settings Modal -->
   <div id="settings-overlay" class="menu-overlay hidden">
-    <div class="menu-card">
-      <h2>Settings</h2>
+    <div class="menu-card glass-modal">
+      <h2>SETTINGS</h2>
       <div id="settings-body"></div>
       <div class="menu-actions">
-        <button id="settings-back-btn">Back</button>
+        <button id="settings-back-btn">RETURN</button>
       </div>
     </div>
   </div>
 
-  <!-- Match over -->
+  <!-- Game Over Screen -->
   <div id="gameover-overlay" class="menu-overlay hidden">
-    <div class="menu-card gameover-card">
-      <h2 id="gameover-result">BLUE WINS</h2>
-      <p id="gameover-score" class="tagline">25 – 18</p>
+    <div class="menu-card glass-modal gameover-card">
+      <h2 id="gameover-result">FIRE WINS</h2>
+      <p id="gameover-score" class="tagline">25 &ndash; 18</p>
       <div id="combat-report">
-        <div class="cr-title">Combat Report</div>
+        <div class="cr-title">MATCH REPORT</div>
         <table class="cr-table">
           <thead>
-            <tr><th>Player</th><th>K</th><th>D</th><th>Shots</th></tr>
+            <tr><th>OPERATIVE</th><th>K</th><th>D</th><th>SHOTS</th></tr>
           </thead>
           <tbody id="cr-body"></tbody>
         </table>
       </div>
       <div class="menu-actions">
-        <button id="play-again-btn">Play Again</button>
-        <button id="gameover-settings-btn" class="secondary-btn">Settings</button>
+        <button id="play-again-btn">PLAY AGAIN</button>
+        <button id="gameover-settings-btn" class="secondary-btn">SETTINGS</button>
       </div>
     </div>
   </div>
 
+  <!-- Legacy engine hooks kept hidden while vehicle and network systems remain loaded -->
+  <div id="compat" class="hidden" aria-hidden="true">
+    <div id="title-splat"></div>
+    <div id="jet-hud"><span id="jet-speed">0</span><span id="jet-alt">0</span><i id="jet-throttle-fill"></i><div id="jet-warn" class="hidden"><span id="jet-warn-count">8</span></div></div>
+    <div id="tank-sight" class="hidden"><div id="ts-zoom"></div><span id="ts-exit-key">E</span><span id="ts-rng">---</span><div id="ts-compass"></div><span id="ts-heading">000</span><span id="ts-speed">0</span><span id="ts-gun-status">READY</span><span id="ts-armor">100</span><i id="ts-armor-fill"></i><div id="ts-boost"><i id="ts-boost-fill"></i></div></div>
+    <div id="tank-prompt" class="hidden"><span id="tank-prompt-key">E</span></div>
+    <div id="net-hud" class="hidden"><span id="net-code"></span><span id="net-count"></span><span id="net-status" class="hidden"></span></div>
+    <span id="bs-brg">---</span><i id="bs-lockfill"></i>
+
+    <div id="public-overlay" class="menu-overlay hidden"><span id="public-note"></span><div id="server-rows"></div><div id="server-empty"></div><div id="public-status"></div><button id="public-host-btn"></button><button id="public-enter-btn" class="hidden"></button><button id="public-refresh-btn"></button><button id="public-back-btn"></button></div>
+    <div id="private-overlay" class="menu-overlay hidden"><span id="private-note"></span><div id="room-code-box" class="hidden"><span id="room-code-value"></span></div><input id="join-code-input" /><div id="join-status"></div><button id="private-host-btn"></button><button id="private-enter-btn" class="hidden"></button><button id="private-join-btn"></button><button id="private-back-btn"></button></div>
+    <div id="lobby-overlay" class="menu-overlay hidden"><span id="lobby-code-value"></span><span id="lobby-count"></span><div id="lobby-roster"></div><p id="lobby-hint"></p><div id="lobby-winconfig" class="hidden"><button id="wc-score"></button><button id="wc-time"></button><button id="wc-minus"></button><span id="wc-value">25</span><span id="wc-unit"></span><button id="wc-plus"></button></div><button id="lobby-resume-btn" class="hidden"></button><button id="lobby-start-btn" class="hidden"></button><button id="lobby-leave-btn"></button></div>
+  </div>
+
+  <!-- Scripts -->
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

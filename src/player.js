@@ -41,6 +41,7 @@ export class PlayerController {
     this.knockback = new THREE.Vector3();
 
     this.blockers = [];
+    this.arenaSize = 25;
     this.groundMeshes = [];
     this.ceilings = [];
     this.extraSolids = []; // per-frame {x,z,alive} for online bodies (humans/ghosts)
@@ -101,11 +102,12 @@ export class PlayerController {
     return out;
   }
 
-  setWorld(blockers, groundMeshes, ceilings = [], bots = []) {
+  setWorld(blockers, groundMeshes, ceilings = [], bots = [], arenaSize = 25) {
     this.blockers = blockers;
     this.groundMeshes = groundMeshes;
     this.ceilings = ceilings;
     this.bots = bots;
+    this.arenaSize = arenaSize;
   }
 
   /** Apply a look delta in radians (yaw, pitch). Used by mouse + gamepad. */
@@ -420,6 +422,17 @@ export class PlayerController {
         }
       }
     }
+
+    // octagon boundary clamping uses the current arena half-extent
+    const bound = this.arenaSize - 0.8, diagBound = bound * Math.SQRT2;
+    pos.x = THREE.MathUtils.clamp(pos.x, -bound, bound);
+    pos.z = THREE.MathUtils.clamp(pos.z, -bound, bound);
+    const sum = pos.x + pos.z;
+    if (sum > diagBound) { const d = (sum - diagBound) * 0.5; pos.x -= d; pos.z -= d; }
+    else if (sum < -diagBound) { const d = (-sum - diagBound) * 0.5; pos.x += d; pos.z += d; }
+    const sub = pos.x - pos.z;
+    if (sub > diagBound) { const d = (sub - diagBound) * 0.5; pos.x -= d; pos.z -= d; }
+    else if (sub < -diagBound) { const d = (-sub - diagBound) * 0.5; pos.x += d; pos.z += d; }
 
     // head-bob / sway while running on the ground (eased out otherwise)
     if (this.onGround && movingInput && !this.sliding && !this.prone && !this.diving) {

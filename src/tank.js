@@ -124,7 +124,7 @@ export class Tank {
     this.scene = scene;
     this.arena = arena;
     this.teamId = teamId;
-    this.hex = teamId === 1 ? 0xff3b3b : 0x2f7bff;
+    this.hex = teamId === 1 ? 0xf4f6f8 : 0xff6000;
 
     // armor / life
     this.maxHp = 40;

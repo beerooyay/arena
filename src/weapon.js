@@ -1,14 +1,20 @@
 import * as THREE from 'three';
+import { buildGun } from './gunModel.js';
 
 export class Weapon {
   constructor() {
+    // root = FOV rig parented to the camera. Scaling it by (k, k, 1) in camera
+    // space makes the viewmodel project exactly as it would at refFov, whatever
+    // the player's FOV — without pushing the stock through the near plane.
+    // pose = the actual hip/aim/sprint transform inside it.
     this.root = new THREE.Group();
-    this.root.matrixAutoUpdate = true;
+    this.pose = new THREE.Group();
+    this.root.add(this.pose);
 
     this.mode = 0; // 0 = rifle, 1 = rocket
 
-    this.hipX = 0.20; this.hipY = -0.14; this.hipZ = -0.38;
-    this.aimX = 0.00; this.aimY = -0.11; this.aimZ = -0.28;
+    this.hipX = 0.29; this.hipY = -0.29; this.hipZ = -0.68;
+    this.aimX = 0.00; this.aimY = -0.195; this.aimZ = -0.36;
     this.wallPull = 0;
     this.cant = 0;
     this.wallPullZ = 0.32;
@@ -40,115 +46,68 @@ export class Weapon {
     this._swayPhase = 0;
     this._kick = 0;
 
+    this.hipPitch = 0.05;
+    this.hipYaw = 0.26;  // muzzle angled in toward the crosshair
+    this.hipRoll = 0.08;
     this.viewScale = 0.82;
     this.refFov = 75;
     this.materials = [];
 
     this._build();
-    this.root.scale.setScalar(this.viewScale);
-    this.root.position.set(this.hipX, this.hipY, this.hipZ);
-    this.root.rotation.set(0.015, -0.065, 0);
+    this.pose.scale.setScalar(this.viewScale);
+    this.pose.position.set(this.hipX, this.hipY, this.hipZ);
+    this.pose.rotation.set(this.hipPitch, this.hipYaw, this.hipRoll);
+    this._fovComp(this.refFov);
   }
 
   setMode(m) {
     this.mode = m === 1 ? 1 : 0;
     this.aimFov = this.mode === 0 ? 38 : 58;
+    // rifle sights through the optic; rocket sights over the top slabs
+    this.aimY = this.mode === 0 ? -0.195 : -0.18;
     this.rifleGroup.visible = this.mode === 0;
     this.rocketGroup.visible = this.mode === 1;
     this._kick = 0.6;
   }
 
   _build() {
-    const shell = new THREE.MeshStandardMaterial({ color: 0xe8ebef, roughness: 0.48, metalness: 0 });
-    const carbon = new THREE.MeshStandardMaterial({ color: 0x16181d, roughness: 0.6, metalness: 0 });
-    const metal = new THREE.MeshStandardMaterial({ color: 0x343a44, roughness: 0.5, metalness: 0 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x0c0e12, roughness: 0.85, metalness: 0 });
-    const fire = new THREE.MeshStandardMaterial({ color: 0xff6000, roughness: 0.42, emissive: 0xff6000, emissiveIntensity: 0.32 });
-    const red = new THREE.MeshStandardMaterial({ color: 0xff4848, roughness: 0.42, emissive: 0xff4848, emissiveIntensity: 0.32 });
-    this.fireMat = fire;
-    this.redMat = red;
-    this.materials.push(shell, carbon, metal, dark, fire, red);
+    const gun = buildGun();
+    this.pose.add(gun.group);
+    this.rifleGroup = gun.rifleGroup;
+    this.rocketGroup = gun.rocketGroup;
+    this.glowMats = gun.glowMats;
+    this.materials.push(...gun.materials);
 
-    const base = new THREE.Group();
-    this.root.add(base);
-
-    const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0, parent = base) => {
+    // gloved trigger hand + armoured forearm running off the bottom-right edge
+    const glove = new THREE.MeshStandardMaterial({ color: 0x16181c, roughness: 0.78, metalness: 0 });
+    const plate = new THREE.MeshStandardMaterial({ color: 0x202329, roughness: 0.45, metalness: 0.15 });
+    this.materials.push(glove, plate);
+    const arm = new THREE.Group();
+    gun.group.add(arm);
+    const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
       const m = new THREE.Mesh(geo, mat);
-      m.position.set(x, y, z);
-      m.rotation.set(rx, ry, rz);
-      parent.add(m);
-      return m;
+      m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
+      arm.add(m); return m;
     };
-
-    const H = Math.PI / 2;
-
-    // white receiver and armored stock
-    add(new THREE.BoxGeometry(0.12, 0.105, 0.34), shell, 0, -0.005, 0.015);
-    add(new THREE.BoxGeometry(0.095, 0.075, 0.16), shell, 0, 0.075, -0.03);
-    add(new THREE.BoxGeometry(0.13, 0.032, 0.22), dark, 0, 0.125, -0.03);
-    add(new THREE.BoxGeometry(0.10, 0.07, 0.18), shell, 0, -0.015, 0.22);
-    add(new THREE.BoxGeometry(0.085, 0.09, 0.10), dark, 0, -0.02, 0.34);
-    add(new THREE.BoxGeometry(0.09, 0.10, 0.025), red, 0, -0.02, 0.40);
-
-    // side panels and illuminated channels
-    add(new THREE.BoxGeometry(0.022, 0.07, 0.20), shell, -0.068, -0.005, -0.03);
-    add(new THREE.BoxGeometry(0.022, 0.07, 0.20), shell, 0.068, -0.005, -0.03);
-    add(new THREE.BoxGeometry(0.006, 0.016, 0.18), fire, -0.081, 0.012, -0.04);
-    add(new THREE.BoxGeometry(0.006, 0.016, 0.18), fire, 0.081, 0.012, -0.04);
-    add(new THREE.BoxGeometry(0.032, 0.012, 0.05), red, -0.062, -0.04, 0.11);
-    add(new THREE.BoxGeometry(0.032, 0.012, 0.05), red, 0.062, -0.04, 0.11);
-
-    // grip, trigger, and magazine housing
-    const grip = add(new THREE.BoxGeometry(0.045, 0.13, 0.06), dark, 0, -0.115, 0.09);
-    grip.rotation.x = -0.22;
-    add(new THREE.TorusGeometry(0.033, 0.006, 8, 18, Math.PI), metal, 0, -0.061, 0.025, 0, 0, Math.PI);
-    add(new THREE.BoxGeometry(0.009, 0.024, 0.009), fire, 0, -0.057, 0.025);
-    add(new THREE.BoxGeometry(0.052, 0.12, 0.075), carbon, 0, -0.12, -0.045, 0.18);
-    add(new THREE.BoxGeometry(0.055, 0.018, 0.078), fire, 0, -0.175, -0.05, 0.18);
-
-    // fixed tri-barrel silhouette from the reference weapon
-    add(new THREE.CylinderGeometry(0.016, 0.016, 0.56, 18), dark, 0, 0.055, -0.38, H);
-    add(new THREE.CylinderGeometry(0.026, 0.026, 0.55, 18), dark, -0.04, -0.045, -0.36, H);
-    add(new THREE.CylinderGeometry(0.026, 0.026, 0.55, 18), dark, 0.04, -0.045, -0.36, H);
-    add(new THREE.CylinderGeometry(0.022, 0.022, 0.07, 18), metal, 0, 0.055, -0.64, H);
-    for (const x of [-0.04, 0.04]) {
-      add(new THREE.TorusGeometry(0.031, 0.006, 8, 20), fire, x, -0.045, -0.62);
-      add(new THREE.CylinderGeometry(0.034, 0.034, 0.035, 18), metal, x, -0.045, -0.64, H);
-    }
-    add(new THREE.TorusGeometry(0.024, 0.005, 8, 20), red, 0, 0.055, -0.67);
-
-    // rifle optic and top shroud
-    this.rifleGroup = new THREE.Group();
-    this.root.add(this.rifleGroup);
-    add(new THREE.CylinderGeometry(0.023, 0.023, 0.23, 20), dark, 0, 0.145, -0.04, H, 0, 0, this.rifleGroup);
-    add(new THREE.CylinderGeometry(0.028, 0.028, 0.045, 20), metal, 0, 0.145, -0.15, H, 0, 0, this.rifleGroup);
-    add(new THREE.CylinderGeometry(0.026, 0.026, 0.035, 20), red, 0, 0.145, 0.075, H, 0, 0, this.rifleGroup);
-    add(new THREE.BoxGeometry(0.022, 0.035, 0.025), dark, 0, 0.11, -0.08, 0, 0, 0, this.rifleGroup);
-    add(new THREE.BoxGeometry(0.022, 0.035, 0.025), dark, 0, 0.11, 0.03, 0, 0, 0, this.rifleGroup);
-    for (let i = 0; i < 4; i++) {
-      add(new THREE.BoxGeometry(0.064, 0.009, 0.018), metal, 0, 0.112, -0.10 - i * 0.035, 0, 0, 0, this.rifleGroup);
-    }
-
-    // rocket mode adds the twin-tube collars and charge indicators
-    this.rocketGroup = new THREE.Group();
-    this.rocketGroup.visible = false;
-    this.root.add(this.rocketGroup);
-    add(new THREE.CylinderGeometry(0.037, 0.037, 0.10, 20), carbon, -0.04, -0.045, -0.56, H, 0, 0, this.rocketGroup);
-    add(new THREE.CylinderGeometry(0.037, 0.037, 0.10, 20), carbon, 0.04, -0.045, -0.56, H, 0, 0, this.rocketGroup);
-    add(new THREE.TorusGeometry(0.033, 0.007, 8, 20), red, -0.04, -0.045, -0.61, 0, 0, 0, this.rocketGroup);
-    add(new THREE.TorusGeometry(0.033, 0.007, 8, 20), fire, 0.04, -0.045, -0.61, 0, 0, 0, this.rocketGroup);
-    add(new THREE.BoxGeometry(0.085, 0.012, 0.035), fire, -0.04, 0.085, -0.18, 0, 0, 0, this.rocketGroup);
-    add(new THREE.BoxGeometry(0.085, 0.012, 0.035), red, 0.04, 0.085, -0.18, 0, 0, 0, this.rocketGroup);
+    add(new THREE.BoxGeometry(0.085, 0.095, 0.10), glove, 0.004, -0.095, 0.01, -0.22);      // palm around the grip
+    add(new THREE.BoxGeometry(0.09, 0.03, 0.075), glove, 0.004, -0.045, -0.035, -0.1);      // knuckles
+    add(new THREE.CapsuleGeometry(0.018, 0.04, 3, 8), glove, 0.02, -0.035, -0.07, 1.3);     // trigger finger
+    add(new THREE.CapsuleGeometry(0.052, 0.20, 4, 10), glove, 0.045, -0.16, 0.14, 1.05, 0, -0.25);  // wrist / forearm
+    add(new THREE.BoxGeometry(0.115, 0.08, 0.20), plate, 0.06, -0.19, 0.20, 1.05, 0, -0.25);   // vambrace
+    add(new THREE.BoxGeometry(0.004, 0.012, 0.12), gun.glowMats[0], 0.12, -0.17, 0.19, 1.05, 0, -0.25);
   }
 
   setPaintColor() {}
 
   setNeon(on) {
-    for (const m of [this.fireMat, this.redMat]) {
-      m.emissiveIntensity = on ? 0.9 : 0.32;
-      m.toneMapped = !on;
-      m.needsUpdate = true;
-    }
+    for (const m of this.glowMats) m.emissiveIntensity = m.userData.baseEmissive * (on ? 1.2 : 1);
+  }
+
+  _fovComp(fov) {
+    const k = Math.tan(THREE.MathUtils.degToRad(fov) / 2) /
+              Math.tan(THREE.MathUtils.degToRad(this.refFov) / 2);
+    this.root.scale.set(k, k, 1);
+    return k;
   }
 
   kick(amount = 1) { this._kick = amount; }
@@ -171,9 +130,8 @@ export class Weapon {
     const sl = this.slideT;
 
     const curFov = THREE.MathUtils.lerp(baseFov, this.aimFov, t);
-    const comp = Math.tan(THREE.MathUtils.degToRad(curFov) / 2) /
-                 Math.tan(THREE.MathUtils.degToRad(this.refFov) / 2);
-    this.root.scale.setScalar(this.viewScale * comp);
+    const comp = this._fovComp(curFov);
+    this.root.scale.set(comp, comp, 1);
 
     this._kick = Math.max(0, this._kick - dt * 6.5);
     const k = this._kick * this._kick * 0.014 * this.recoilAmount;
@@ -190,17 +148,17 @@ export class Weapon {
     px += this.slideX * sl;
     py += this.slideY * sl;
     pz += this.slideZ * sl;
-    this.root.position.set(px, py, pz);
+    this.pose.position.set(px, py, pz);
 
-    let rx = 0.015 * (1 - t) + k * 1.4;
-    let ry = -0.065 * (1 - t);
-    let rz = 0;
+    let rx = this.hipPitch * (1 - t) + k * 1.4;
+    let ry = this.hipYaw * (1 - t);
+    let rz = this.hipRoll * (1 - t);
     rx = THREE.MathUtils.lerp(rx, this.sprintPitch, s);
     ry = THREE.MathUtils.lerp(ry, this.sprintYaw + swayPX * 3, s);
     rz = THREE.MathUtils.lerp(rz, this.sprintRoll + swayRz, s);
     rx = THREE.MathUtils.lerp(rx, this.slidePitch, sl);
     rz = THREE.MathUtils.lerp(rz, this.slideRoll, sl);
-    this.root.rotation.set(rx, ry, rz);
+    this.pose.rotation.set(rx, ry, rz);
   }
 
   dispose() {

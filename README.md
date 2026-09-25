@@ -53,8 +53,9 @@ RT fire, LT aim, Start pause).
 
 ## Characters & combat
 
-Armored humanoid avatars — graphite FIRE, black WHITE — with team-lit visors
-and accents. Legs and arms swing through a real walk cycle, and kills topple a
+Armored soldiers — black plates for FIRE, white plates over a graphite
+undersuit for WHITE — with glowing orange V-visors, flame shoulder emblems, and
+the twin-tube rifle gripped two-handed (arms are posed by a small IK solve). Legs and arms swing through a real walk cycle, and kills topple a
 ragdoll that stays down until respawn. Players have 100 HP with regen; hits
 flash a team-colored edge vignette.
 
@@ -75,8 +76,10 @@ kill feed. Signaling runs through the tiny server in `server/` (see
 - `index.html` — shell, importmap (vendored `three` + `lil-gui`), HUD/overlays
 - `styles.css` — liquid-glass UI, HUD, scoreboard, palette
 - `src/main.js` — orchestrator: renderer, lighting, match flow, projectiles, netcode wiring
-- `src/arena.js` — octagonal arena: floor, walls, ceiling, pillar, cover, colliders
-- `src/weapon.js` — first-person modular rifle/rocket viewmodel
+- `src/outline.js` — post chain: contour outline → bloom → tone map / sRGB output
+- `src/arena.js` — octagonal arena: polished tile floor, seamed wall panels, LED coves, faceted dome, pillar, cover, colliders
+- `src/gunModel.js` — shared twin-tube rifle model (viewmodel + avatars), flame emblem, glow material
+- `src/weapon.js` — first-person viewmodel: gloved hand, hip/ADS/sprint poses, FOV-independent framing
 - `src/playerGlow.js` — shared avatar rig (bots, remotes) with limb pivots + nameplates
 - `src/bots.js` — team AI: movement, targeting, walk cycle, ragdoll, scoring
 - `src/player.js` — movement physics, collision, slide/dive

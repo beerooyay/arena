@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import GUI from 'lil-gui';
 
@@ -68,6 +69,12 @@ camera.position.set(0, 1.7, 26);
 // ---------------------------------------------------------------------------
 // Lights
 // ---------------------------------------------------------------------------
+// Studio-style image-based light: soft fill + glossy reflections on the white
+// tiles and armour. Lights Out drops it for the dark neon look.
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envTex = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+scene.environment = envTex;
+
 const hemi = new THREE.HemisphereLight(0xffffff, 0xd7dce2, 0.62);
 scene.add(hemi);
 
@@ -302,16 +309,13 @@ const redLight = new THREE.PointLight(0xff4848, 0, 38, 1.8);
 redLight.position.set(12, 8, 12);
 scene.add(redLight);
 let nightMode = false;
+const BLOOM_DAY = 0.5;
 function setArenaEmissive(on) {
   for (const m of arena.materials) {
-    const accent = m.userData.accent;
-    if (on) {
-      m.emissive.setHex(accent || 0x101820);
-      m.emissiveIntensity = accent ? 0.7 : 0.08;
-    } else {
-      m.emissive.setHex(accent === 0xff6000 ? accent : 0x000000);
-      m.emissiveIntensity = accent === 0xff6000 ? 0.32 : 0;
-    }
+    const e = on ? m.userData.night : m.userData.day;
+    if (!e) continue;
+    m.emissive.setHex(e.hex);
+    m.emissiveIntensity = e.i;
     m.needsUpdate = true;
   }
 }
@@ -322,11 +326,13 @@ function setNightMode(on) {
   nightMode = on;
   if (on) {
     scene.background.set(0x05060e);
+    scene.environment = null;
+    outline.bloom.strength = 0.75;
     scene.fog.color.set(0x05060e); scene.fog.near = 55; scene.fog.far = 230;
-    renderer.toneMappingExposure = 0.95;
-    hemi.intensity = 0.28; hemi.color.set(0xe8ebef); hemi.groundColor.set(0x101318);
-    ambient.intensity = 0.32; ambient.color.set(0xd8dde4);
-    sun.intensity = 0.45; sun.color.set(0xf4f6f8);
+    renderer.toneMappingExposure = 0.9;
+    hemi.intensity = 0.07; hemi.color.set(0xe8ebef); hemi.groundColor.set(0x101318);
+    ambient.intensity = 0.04; ambient.color.set(0xd8dde4);
+    sun.intensity = 0.18; sun.color.set(0xb8c4ff);
     fireLight.intensity = 2.4; redLight.intensity = 2.1;
     outline.uniforms.outlineColor.value.set(0xffffff);
     outline.uniforms.strength.value = 1.0;
@@ -339,6 +345,8 @@ function setNightMode(on) {
     document.body.classList.add('lights-out');
   } else {
     scene.background.set(0xe8ebef);
+    scene.environment = envTex;
+    outline.bloom.strength = BLOOM_DAY;
     scene.fog.color.set(0xe8ebef); scene.fog.near = 55; scene.fog.far = 150;
     hemi.color.set(0xffffff); hemi.groundColor.set(0xd7dce2);
     ambient.color.set(0xffffff); sun.color.set(0xffffff);
@@ -380,8 +388,8 @@ audio.load({
   tankRoundImpact: './assets/TankRoundImpact.wav',  // a tank shell slamming into another tank
 });
 // tuned defaults: faint gray contour that reads well on pure white
-outline.uniforms.strength.value = 0.75;
-outline.uniforms.thickness.value = 1.4;
+outline.uniforms.strength.value = 0.32;
+outline.uniforms.thickness.value = 1.2;
 
 // ---------------------------------------------------------------------------
 // Controls / input (mouse+keyboard via pointer lock, plus Xbox gamepad)
@@ -2851,7 +2859,7 @@ const guiState = {
   dripSpeed: paint.settings.dripSpeed,
   clearPaint: () => paint.clear(),
   // environment
-  environmentContrast: 1.08,
+  environmentContrast: 0.88,
   shadowIntensity: 0.38,
   // movement
   moveSpeed: player.baseSpeed,
@@ -2876,9 +2884,9 @@ function applyEnvironment() {
   // not read as gray. Shadow intensity trades fill for a stronger directional
   // light, which makes cast/attached shadows more pronounced.
   const fill = 1 - guiState.shadowIntensity;
-  ambient.intensity = 0.55 + fill * 0.4;   // 0.55 (strong shadows) .. 0.95 (flat)
-  hemi.intensity = 0.4 + fill * 0.35;
-  sun.intensity = 1.1 + guiState.shadowIntensity * 1.3;
+  ambient.intensity = 0.04 + fill * 0.1;
+  hemi.intensity = 0.2 + fill * 0.25;
+  sun.intensity = 1.1 + guiState.shadowIntensity * 1.2;
 }
 
 function applyInvisibleMode() {

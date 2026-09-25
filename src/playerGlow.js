@@ -12,9 +12,11 @@
  */
 
 import * as THREE from 'three';
+import { buildGun, flameTexture, makeGlowMat } from './gunModel.js';
 
 // Shipped defaults (tune live in the dev panel, then hardcode the winners here).
-export const GLOW = { scale: 1.15, intensity: 0.85, power: 2.4, enabled: true };
+// Off by default: black vs white armour carries the team read now.
+export const GLOW = { scale: 1.12, intensity: 0.28, power: 3.6, enabled: false };
 
 const _shells = new Set(); // live shell meshes, for global re-tuning
 
@@ -57,119 +59,152 @@ export function makeNameSprite(text, hex) {
 }
 
 function makeWeapon(mats) {
+  const gun = buildGun({ detail: false });
+  mats.push(...gun.materials);
+  gun.group.rotation.y = Math.PI; // gun space faces -Z; avatars face +Z
   const g = new THREE.Group();
-  const shell = new THREE.MeshStandardMaterial({ color: 0xe8ebef, roughness: 0.5, metalness: 0 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x11151b, roughness: 0.58, metalness: 0 });
-  const metal = new THREE.MeshStandardMaterial({ color: 0x333a44, roughness: 0.48, metalness: 0 });
-  const accent = new THREE.MeshStandardMaterial({ color: 0xff6000, roughness: 0.4, emissive: 0xff6000, emissiveIntensity: 0.45 });
-  mats.push(shell, dark, metal, accent);
-  const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
-    m.castShadow = true; g.add(m); return m;
-  };
-  const H = Math.PI / 2;
-  add(new THREE.BoxGeometry(0.15, 0.13, 0.34), shell, 0, 0.02, 0.02);
-  add(new THREE.BoxGeometry(0.11, 0.08, 0.18), shell, 0, 0.09, -0.02);
-  add(new THREE.BoxGeometry(0.16, 0.045, 0.14), dark, 0, 0.135, -0.02);
-  add(new THREE.BoxGeometry(0.06, 0.08, 0.16), shell, -0.09, -0.02, 0.05);
-  add(new THREE.BoxGeometry(0.06, 0.08, 0.16), shell, 0.09, -0.02, 0.05);
-  add(new THREE.CylinderGeometry(0.018, 0.018, 0.56, 14), dark, 0, 0.055, 0.36, H);
-  add(new THREE.CylinderGeometry(0.024, 0.024, 0.54, 14), dark, -0.038, -0.055, 0.35, H);
-  add(new THREE.CylinderGeometry(0.024, 0.024, 0.54, 14), dark, 0.038, -0.055, 0.35, H);
-  for (const x of [-0.038, 0.038]) {
-    add(new THREE.TorusGeometry(0.028, 0.006, 8, 16), accent, x, -0.055, 0.61);
-    add(new THREE.CylinderGeometry(0.031, 0.031, 0.028, 14), metal, x, -0.055, 0.62, H);
-  }
-  add(new THREE.TorusGeometry(0.024, 0.005, 8, 16), accent, 0, 0.055, 0.62);
-  add(new THREE.CylinderGeometry(0.024, 0.024, 0.12, 14), dark, 0, 0.145, -0.04, H);
-  add(new THREE.BoxGeometry(0.05, 0.05, 0.07), dark, 0, 0.115, -0.13);
-  add(new THREE.BoxGeometry(0.055, 0.16, 0.07), dark, 0, -0.12, -0.08, -0.18);
-  add(new THREE.BoxGeometry(0.08, 0.11, 0.13), shell, 0, -0.015, -0.24);
-  add(new THREE.BoxGeometry(0.09, 0.09, 0.08), dark, 0, -0.02, -0.32);
-  add(new THREE.BoxGeometry(0.006, 0.02, 0.15), accent, -0.078, 0.025, 0.01);
-  add(new THREE.BoxGeometry(0.006, 0.02, 0.15), accent, 0.078, 0.025, 0.01);
+  g.add(gun.group);
   return g;
 }
 
+// Armour palettes from the concept art: FIRE wears black plates, WHITE wears
+// white plates over a graphite undersuit. Both squads share the orange visor.
+const ARMOR = {
+  fire:  { plate: 0x1c1f24, suit: 0x0f1114, joint: 0x08090b, trim: 0x2c3036 },
+  white: { plate: 0xe9ecef, suit: 0x2a2e35, joint: 0x17191d, trim: 0xb9bfc7 },
+};
+
 export function makeAvatar(name, hex) {
   const group = new THREE.Group();
-  const fire = hex === 0xff6000;
-  const bodyMat = new THREE.MeshStandardMaterial({ color: fire ? 0x59616c : 0x11151b, roughness: 0.64, metalness: 0 });
-  const plateMat = new THREE.MeshStandardMaterial({ color: fire ? 0x343a44 : 0x080a0e, roughness: 0.54, metalness: 0 });
-  const jointMat = new THREE.MeshStandardMaterial({ color: fire ? 0x20252d : 0x050609, roughness: 0.72, metalness: 0 });
-  const visorMat = new THREE.MeshStandardMaterial({
-    color: hex, roughness: 0.24, metalness: 0,
-    emissive: new THREE.Color(hex), emissiveIntensity: 0.6,
-  });
-  const teamMat = new THREE.MeshStandardMaterial({
-    color: hex, roughness: 0.42, metalness: 0,
-    emissive: new THREE.Color(hex), emissiveIntensity: 0.32,
-  });
+  const pal = hex === 0xff6000 ? ARMOR.fire : ARMOR.white;
+  // bodyMat = undersuit (flashes on hit), plateMat = armour shells
+  const bodyMat = new THREE.MeshStandardMaterial({ color: pal.suit, roughness: 0.78, metalness: 0 });
+  const plateMat = new THREE.MeshStandardMaterial({ color: pal.plate, roughness: 0.38, metalness: 0.05 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: pal.trim, roughness: 0.5, metalness: 0.1 });
+  const jointMat = new THREE.MeshStandardMaterial({ color: pal.joint, roughness: 0.7, metalness: 0 });
+  const visorMat = makeGlowMat(0xff1c00, 4.5);
+  const teamMat = makeGlowMat(0xff2a00, 7);
+  const decalMat = new THREE.MeshBasicMaterial({ map: flameTexture(), transparent: true, depthWrite: false });
   bodyMat.userData.baseColor = bodyMat.color.clone();
-  const mats = [bodyMat, plateMat, jointMat, visorMat, teamMat];
-  const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
-    const m = new THREE.Mesh(geo, mat);
-    m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
-    m.castShadow = true; m.receiveShadow = true; group.add(m); return m;
-  };
-
-  const body = add(new THREE.CapsuleGeometry(0.27, 0.58, 6, 14), jointMat, 0, 1.15, 0);
-  add(new THREE.BoxGeometry(0.5, 0.44, 0.17), plateMat, 0, 1.30, 0.14);
-  add(new THREE.BoxGeometry(0.34, 0.20, 0.04), bodyMat, 0, 1.38, 0.235);
-  add(new THREE.BoxGeometry(0.28, 0.12, 0.035), plateMat, 0, 1.22, 0.245);
-  add(new THREE.BoxGeometry(0.26, 0.045, 0.03), teamMat, 0, 1.39, 0.27);
-  add(new THREE.BoxGeometry(0.34, 0.16, 0.20), plateMat, 0, 0.88, 0.02);
-  add(new THREE.BoxGeometry(0.44, 0.07, 0.18), jointMat, 0, 0.96, 0.04);
-  add(new THREE.BoxGeometry(0.30, 0.34, 0.12), plateMat, 0, 1.36, -0.18);
-  add(new THREE.BoxGeometry(0.22, 0.08, 0.04), teamMat, 0, 1.48, -0.25);
-
-  add(new THREE.CylinderGeometry(0.12, 0.14, 0.14, 12), jointMat, 0, 1.59, 0);
-  const head = add(new THREE.SphereGeometry(0.255, 18, 18), plateMat, 0, 1.82, 0);
-  head.scale.set(1, 0.92, 1.04);
-  add(new THREE.BoxGeometry(0.30, 0.09, 0.055), visorMat, 0, 1.84, 0.245);
-  add(new THREE.BoxGeometry(0.25, 0.12, 0.07), plateMat, 0, 1.73, 0.22, 0.12);
-  add(new THREE.BoxGeometry(0.32, 0.06, 0.16), bodyMat, 0, 1.96, 0.01);
-  add(new THREE.CylinderGeometry(0.055, 0.055, 0.035, 12), jointMat, -0.25, 1.84, 0, 0, 0, Math.PI / 2);
-  add(new THREE.CylinderGeometry(0.055, 0.055, 0.035, 12), jointMat, 0.25, 1.84, 0, 0, 0, Math.PI / 2);
-
-  // Arms and legs are built inside pivot groups anchored at the shoulder/hip,
-  // so swinging the pivot animates the whole limb (walk cycle in bots.js).
+  const mats = [bodyMat, plateMat, trimMat, jointMat, visorMat, teamMat, decalMat];
   const addTo = (parent, geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
     m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
   };
-  const makeArm = (side) => {
+  const add = (...a) => addTo(group, ...a);
+  const decal = (parent, size, x, y, z, ry) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), decalMat);
+    m.position.set(x, y, z); m.rotation.y = ry; parent.add(m); return m;
+  };
+
+  // capsule / box spanning two points (limb segments)
+  const _up = new THREE.Vector3(0, 1, 0);
+  const span = (parent, a, b, geoFor, mat) => {
+    const d = new THREE.Vector3().subVectors(b, a);
+    const len = d.length();
+    const m = new THREE.Mesh(geoFor(len), mat);
+    m.position.copy(a).addScaledVector(d, 0.5);
+    m.quaternion.setFromUnitVectors(_up, d.normalize());
+    m.castShadow = true; m.receiveShadow = true;
+    parent.add(m);
+    return m;
+  };
+  // two-bone IK: elbow for a shoulder at the origin reaching `t`, bent toward `pole`
+  const elbowFor = (t, l1, l2, pole) => {
+    const d = Math.min(t.length(), l1 + l2 - 0.002);
+    const dir = t.clone().normalize();
+    const a = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
+    const h = Math.sqrt(Math.max(l1 * l1 - a * a, 0));
+    const p = pole.clone().addScaledVector(dir, -pole.dot(dir)).normalize();
+    return { elbow: dir.clone().multiplyScalar(a).addScaledVector(p, h), hand: dir.multiplyScalar(d) };
+  };
+
+  // --- torso: undersuit core under a layered plate rig, backpack ---
+  const body = add(new THREE.CapsuleGeometry(0.17, 0.56, 6, 14), bodyMat, 0, 1.15, 0);
+  add(new THREE.BoxGeometry(0.52, 0.34, 0.34), plateMat, 0, 1.36, 0.02);           // chest plate
+  add(new THREE.BoxGeometry(0.44, 0.10, 0.30), trimMat, 0, 1.18, 0.02);            // chest lower band
+  add(new THREE.BoxGeometry(0.36, 0.08, 0.06), trimMat, 0, 1.52, 0.16, -0.3);      // collar ridge
+  add(new THREE.BoxGeometry(0.20, 0.10, 0.03), jointMat, 0, 1.38, 0.195);          // chest vent
+  add(new THREE.BoxGeometry(0.36, 0.20, 0.26), bodyMat, 0, 1.06, 0.01);            // abdomen suit
+  add(new THREE.BoxGeometry(0.26, 0.16, 0.05), plateMat, 0, 1.07, 0.14);           // ab plate
+  add(new THREE.BoxGeometry(0.46, 0.07, 0.30), jointMat, 0, 0.95, 0.01);           // belt
+  add(new THREE.BoxGeometry(0.09, 0.12, 0.05), jointMat, -0.14, 0.95, 0.17);       // pouches
+  add(new THREE.BoxGeometry(0.09, 0.12, 0.05), jointMat, 0.14, 0.95, 0.17);
+  add(new THREE.BoxGeometry(0.08, 0.18, 0.08), jointMat, 0.27, 0.82, 0.02);        // thigh holster
+  add(new THREE.BoxGeometry(0.38, 0.16, 0.26), bodyMat, 0, 0.86, 0.0);             // hips
+  add(new THREE.BoxGeometry(0.40, 0.44, 0.16), plateMat, 0, 1.32, -0.22);          // backpack
+  add(new THREE.BoxGeometry(0.28, 0.30, 0.05), trimMat, 0, 1.30, -0.31);
+  add(new THREE.CylinderGeometry(0.07, 0.07, 0.06, 14), jointMat, 0.12, 1.42, -0.33, Math.PI / 2);
+
+  // --- helmet: rounded shell, crest, V visor, ear pods ---
+  add(new THREE.CylinderGeometry(0.10, 0.12, 0.14, 12), jointMat, 0, 1.58, 0);
+  const head = add(new THREE.SphereGeometry(0.23, 20, 18), plateMat, 0, 1.81, 0);
+  head.scale.set(1.0, 1.02, 1.1);
+  add(new THREE.BoxGeometry(0.06, 0.05, 0.38), trimMat, 0, 2.03, -0.01);           // crest ridge
+  add(new THREE.BoxGeometry(0.30, 0.17, 0.10), jointMat, 0, 1.79, 0.19);           // face plate
+  add(new THREE.BoxGeometry(0.22, 0.10, 0.10), plateMat, 0, 1.68, 0.19, 0.3);      // jaw guard
+  add(new THREE.BoxGeometry(0.03, 0.14, 0.05), plateMat, 0, 1.80, 0.245);          // nose ridge
+  for (const s of [-1, 1]) {
+    add(new THREE.BoxGeometry(0.13, 0.032, 0.03), visorMat, s * 0.075, 1.835, 0.245, 0, 0, s * 0.3); // V visor
+    add(new THREE.BoxGeometry(0.025, 0.07, 0.03), visorMat, s * 0.132, 1.79, 0.235, 0, 0, s * 0.15); // cheek line
+    add(new THREE.CylinderGeometry(0.07, 0.07, 0.05, 16), trimMat, s * 0.23, 1.82, -0.02, 0, 0, Math.PI / 2);
+    add(new THREE.CylinderGeometry(0.035, 0.035, 0.052, 12), jointMat, s * 0.235, 1.82, -0.02, 0, 0, Math.PI / 2);
+  }
+
+  // --- rifle, held across the chest ---
+  const marker = makeWeapon(mats);
+  marker.position.set(0.03, 1.18, 0.14);
+  marker.rotation.set(-0.04, -0.03, 0);
+  marker.scale.setScalar(0.82);
+  group.add(marker);
+
+  // Arms live in shoulder pivots (bots.js swings them a touch while running).
+  // Each is posed by IK so the gloves land on the grip and the front collar.
+  const L1 = 0.32, L2 = 0.34;
+  const makeArm = (side, handAt, pole) => {
     const pivot = new THREE.Group();
-    pivot.position.set(side * 0.42, 1.52, 0.02);
-    addTo(pivot, new THREE.BoxGeometry(0.2, 0.15, 0.21), plateMat, side * -0.02, -0.03, -0.01, 0, 0, side * -0.12);
-    addTo(pivot, new THREE.CapsuleGeometry(0.09, 0.34, 4, 10), bodyMat, side * -0.01, -0.32, 0.01, 0.15, 0, side * -0.10);
-    addTo(pivot, new THREE.CapsuleGeometry(0.075, 0.32, 4, 10), jointMat, side * 0.06, -0.42, 0.22, 1.18, 0, side * -0.10);
-    addTo(pivot, new THREE.SphereGeometry(0.08, 10, 10), jointMat, side * 0.15, -0.46, 0.40);
-    addTo(pivot, new THREE.BoxGeometry(0.10, 0.07, 0.04), teamMat, side * -0.03, -0.02, 0.10);
+    pivot.position.set(side * 0.30, 1.50, 0.0);
     group.add(pivot);
+    const t = handAt.clone().sub(pivot.position);
+    const { elbow, hand } = elbowFor(t, L1, L2, pole);
+    const o = new THREE.Vector3();
+    addTo(pivot, new THREE.BoxGeometry(0.22, 0.14, 0.26), plateMat, side * 0.03, 0.02, -0.01, 0, 0, side * -0.1); // pauldron
+    addTo(pivot, new THREE.BoxGeometry(0.20, 0.04, 0.24), trimMat, side * 0.05, -0.06, -0.01, 0, 0, side * -0.1);
+    decal(pivot, 0.1, side * 0.142, 0.02, -0.01, side * Math.PI / 2).rotation.z = side * -0.1; // flame emblem
+    span(pivot, o, elbow, (l) => new THREE.CapsuleGeometry(0.075, Math.max(0.01, l - 0.1), 4, 10), bodyMat);
+    const upperMid = elbow.clone().multiplyScalar(0.5);
+    span(pivot, upperMid.clone().multiplyScalar(0.4), upperMid.clone().multiplyScalar(1.6),
+      (l) => new THREE.BoxGeometry(0.15, l, 0.15), plateMat);                                  // bicep plate
+    addTo(pivot, new THREE.SphereGeometry(0.075, 10, 10), jointMat, elbow.x, elbow.y, elbow.z); // elbow
+    span(pivot, elbow, hand, (l) => new THREE.CapsuleGeometry(0.065, Math.max(0.01, l - 0.1), 4, 10), jointMat);
+    const foreA = elbow.clone().lerp(hand, 0.2), foreB = elbow.clone().lerp(hand, 0.75);
+    span(pivot, foreA, foreB, (l) => new THREE.BoxGeometry(0.13, l, 0.13), plateMat);          // vambrace
+    const g = addTo(pivot, new THREE.BoxGeometry(0.09, 0.10, 0.11), jointMat, hand.x, hand.y, hand.z); // glove
+    g.quaternion.setFromUnitVectors(_up, hand.clone().sub(elbow).normalize());
     return pivot;
   };
+  // right hand on the pistol grip, left hand under the front collar
+  const armR = makeArm(1, new THREE.Vector3(0.03, 1.10, 0.15), new THREE.Vector3(1, -0.5, -0.7));
+  const armL = makeArm(-1, new THREE.Vector3(0.03, 1.07, 0.39), new THREE.Vector3(-1, -0.6, -0.2));
+
   const makeLeg = (side) => {
     const pivot = new THREE.Group();
-    pivot.position.set(side * 0.15, 0.64, 0);
-    addTo(pivot, new THREE.CapsuleGeometry(0.12, 0.42, 4, 10), bodyMat, 0, -0.06, 0, 0.04, 0, side * 0.04);
-    addTo(pivot, new THREE.BoxGeometry(0.18, 0.15, 0.13), plateMat, 0, -0.19, 0.04);
-    addTo(pivot, new THREE.CapsuleGeometry(0.10, 0.34, 4, 10), bodyMat, 0, -0.40, 0, -0.04, 0, side * -0.02);
-    addTo(pivot, new THREE.BoxGeometry(0.19, 0.11, 0.30), plateMat, 0, -0.57, 0.06);
-    addTo(pivot, new THREE.BoxGeometry(0.10, 0.035, 0.02), teamMat, 0, -0.18, 0.11);
+    pivot.position.set(side * 0.13, 0.64, 0);
+    addTo(pivot, new THREE.CapsuleGeometry(0.11, 0.40, 4, 10), bodyMat, 0, -0.06, 0, 0.04, 0, side * 0.04);
+    addTo(pivot, new THREE.BoxGeometry(0.19, 0.28, 0.16), plateMat, side * 0.01, -0.05, 0.04, 0.04);    // thigh plate
+    addTo(pivot, new THREE.CylinderGeometry(0.07, 0.07, 0.12, 14), jointMat, 0, -0.29, 0.09, 0, 0, Math.PI / 2);
+    addTo(pivot, new THREE.BoxGeometry(0.14, 0.14, 0.08), plateMat, 0, -0.29, 0.12);                    // knee pad
+    addTo(pivot, new THREE.CapsuleGeometry(0.095, 0.30, 4, 10), bodyMat, 0, -0.42, 0, -0.04, 0, side * -0.02);
+    addTo(pivot, new THREE.BoxGeometry(0.18, 0.28, 0.16), plateMat, 0, -0.43, 0.035, -0.04);             // shin guard
+    addTo(pivot, new THREE.BoxGeometry(0.21, 0.13, 0.33), plateMat, 0, -0.585, 0.06);                    // boot
+    addTo(pivot, new THREE.BoxGeometry(0.22, 0.04, 0.34), jointMat, 0, -0.645, 0.06);                    // sole
+    addTo(pivot, new THREE.BoxGeometry(0.09, 0.02, 0.02), teamMat, 0, -0.43, 0.12);
     group.add(pivot);
     return pivot;
   };
-  const armL = makeArm(-1), armR = makeArm(1);
   const legL = makeLeg(-1), legR = makeLeg(1);
 
-  const marker = makeWeapon(mats);
-  marker.position.set(0.16, 1.14, 0.36);
-  marker.rotation.set(-0.05, -0.04, -0.03);
-  marker.scale.setScalar(0.9);
-  group.add(marker);
   const label = makeNameSprite(name, hex);
   group.add(label);
   // slightly taller + broader than the old capsule build; feet stay at y=0

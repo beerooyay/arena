@@ -208,7 +208,7 @@ export class BotSystem {
     bot.legL.rotation.x = 0; bot.legR.rotation.x = 0;
     bot.ragdoll = null;
     bot.bodyMat.color.copy(bot.bodyMat.userData.baseColor || bot.bodyMat.color);
-    bot.ringMat.emissiveIntensity = 0.32;
+    bot.ringMat.emissiveIntensity = bot.ringMat.userData.baseEmissive ?? 0.32;
     bot.burst = 0; bot.reloadUntil = 0; bot.lockAt = 0;
     bot.paintHits = 0;
     bot.bodyDecals = [];
@@ -369,7 +369,7 @@ export class BotSystem {
       // opposite leg — eased toward zero when the bot stops moving.
       const ease = Math.min(1, dt * 10);
       const legTarget = moving ? Math.sin(bot.rockPhase) * 0.55 : 0;
-      const armTarget = moving ? Math.sin(bot.rockPhase) * 0.3 : 0;
+      const armTarget = moving ? Math.sin(bot.rockPhase) * 0.06 : 0; // hands stay on the rifle
       bot.legL.rotation.x += (legTarget - bot.legL.rotation.x) * ease;
       bot.legR.rotation.x += (-legTarget - bot.legR.rotation.x) * ease;
       bot.armL.rotation.x += (-armTarget - bot.armL.rotation.x) * ease;

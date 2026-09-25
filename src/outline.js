@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 /**
  * Screen-space contour outline.
@@ -132,6 +134,14 @@ export function createOutline(renderer, scene, camera) {
   outlinePass.uniforms.cameraFar.value = camera.far;
   composer.addPass(outlinePass);
 
+  // HDR glow for LED strips, visors and the gun's lit rings. The threshold sits
+  // above lit white surfaces so only emissive parts bloom.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.5, 0.35, 2.6);
+  composer.addPass(bloom);
+  // Tone mapping + sRGB encode — the composer renders into linear targets, so
+  // without this the whole frame would be shown as raw linear light.
+  composer.addPass(new OutputPass());
+
   function setSize(width, height) {
     composer.setSize(width, height);
     const pr2 = renderer.getPixelRatio();
@@ -164,5 +174,5 @@ export function createOutline(renderer, scene, camera) {
   }
 
   const uniforms = outlinePass.uniforms;
-  return { render, setSize, uniforms };
+  return { render, setSize, uniforms, bloom };
 }

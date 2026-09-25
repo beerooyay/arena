@@ -34,7 +34,7 @@ const SCHEMA = [
   {
     key: 'fov', label: 'Field of View',
     min: 60, max: 110, step: 1, default: 110, unit: '°', // maxed by default; players can lower it
-    apply: (v, t) => { t.camera.fov = v; t.camera.updateProjectionMatrix(); },
+    apply: (v, t) => { t.camera.fov = v; t.camera.updateProjectionMatrix(); if (t.weapon) t.weapon._fovComp(v); },
   },
   {
     key: 'aimZoom', label: 'Aim Zoom (FOV)',

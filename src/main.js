@@ -25,6 +25,7 @@ import { createNightSky } from './nightSky.js';
 import { createDaySky } from './sky.js';
 import { Nuke } from './nuke.js';
 import { unlockAchievement } from './steamClient.js';
+import { FlashLights } from './fx.js';
 
 // ---------------------------------------------------------------------------
 // Paint colors (future: teams)
@@ -96,6 +97,9 @@ sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.02;
 scene.add(sun);
 scene.add(sun.target);
+
+// pooled muzzle / impact / blast lights (fixed count → no shader recompiles)
+const flashes = new FlashLights(scene, 4);
 
 // ---------------------------------------------------------------------------
 // Arena + systems
@@ -318,6 +322,11 @@ function setArenaEmissive(on) {
     m.emissiveIntensity = e.i;
     m.needsUpdate = true;
   }
+  for (const m of arena.washMats || []) {
+    const w = on ? m.userData.night : m.userData.day;
+    m.color.setHex(w.hex);
+    m.opacity = w.o;
+  }
 }
 // Flip the whole scene between the bright white day and a glowing night: dark
 // sky + moon/stars, dim cool light, a WHITE contour so everything is rimmed in a
@@ -328,11 +337,12 @@ function setNightMode(on) {
     scene.background.set(0x05060e);
     scene.environment = null;
     outline.bloom.strength = 0.75;
+    flashes.scale = 1.8;
     scene.fog.color.set(0x05060e); scene.fog.near = 55; scene.fog.far = 230;
     renderer.toneMappingExposure = 0.9;
     hemi.intensity = 0.07; hemi.color.set(0xe8ebef); hemi.groundColor.set(0x101318);
     ambient.intensity = 0.04; ambient.color.set(0xd8dde4);
-    sun.intensity = 0.18; sun.color.set(0xb8c4ff);
+    sun.intensity = 0.18; sun.color.set(0xd8dde4);
     fireLight.intensity = 2.4; redLight.intensity = 2.1;
     outline.uniforms.outlineColor.value.set(0xffffff);
     outline.uniforms.strength.value = 1.0;
@@ -347,6 +357,7 @@ function setNightMode(on) {
     scene.background.set(0xe8ebef);
     scene.environment = envTex;
     outline.bloom.strength = BLOOM_DAY;
+    flashes.scale = 1;
     scene.fog.color.set(0xe8ebef); scene.fog.near = 55; scene.fog.far = 150;
     hemi.color.set(0xffffff); hemi.groundColor.set(0xd7dce2);
     ambient.color.set(0xffffff); sun.color.set(0xffffff);
@@ -1577,7 +1588,7 @@ const rocketFlameGeo = new THREE.ConeGeometry(0.09, 0.3, 8).rotateX(-Math.PI / 2
 const rocketShellMat = new THREE.MeshStandardMaterial({ color: 0x2b3038, metalness: 0.55, roughness: 0.35 });
 const rocketNoseMat = new THREE.MeshStandardMaterial({ color: 0xff6000, emissive: 0xff6000, emissiveIntensity: 0.7 });
 const rocketFinMat = new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 0.6 });
-const rocketFlameMat = new THREE.MeshBasicMaterial({ color: 0xffb36b, transparent: true, opacity: 0.95 });
+const rocketFlameMat = new THREE.MeshBasicMaterial({ color: 0xff6000, transparent: true, opacity: 0.95 });
 const glowMats = new Map(); // hex -> shared unlit material; tracers + embers stay full-bright
 function glowMat(hex) {
   let m = glowMats.get(hex);
@@ -1612,6 +1623,8 @@ function spawnProjectile(origin, dir, hex, team, speed = 70, isPlayer = false, s
   } else mesh = new THREE.Mesh(kind === 'spark' ? sparkGeo : tracerGeo, glowMat(hex));
   mesh.position.copy(origin);
   if (kind === 'bullet' || kind === 'rocket') mesh.quaternion.setFromUnitVectors(_zAxis, dir);
+  if (kind === 'bullet') flashes.flash(origin, hex, 5, 6, 0.07);
+  else if (kind === 'rocket') flashes.flash(origin, 0xff6000, 9, 9, 0.14);
   scene.add(mesh);
   const proj = {
     mesh,
@@ -2796,6 +2809,7 @@ function updateProjectiles(dt) {
 
 function rocketImpact(p, i, point) {
   bots.applyBlast(point, 6.5, 110, p.team, p.shooter);
+  flashes.flash(point, 0xff6000, 30, 16, 0.35);
   busterPaintBurst(point, 0xff6000);
   audio.play('tankRoundImpact', { volume: 1.1, rate: 1.08 });
   showTankHitmarker(true);
@@ -2804,6 +2818,8 @@ function rocketImpact(p, i, point) {
 
 function removeProjectile(i) {
   const p = projectiles[i];
+  // a tracer that stopped early hit something: brief glow where it landed
+  if (p.kind === 'bullet' && performance.now() - p.born < p.ttl) flashes.flash(p.mesh.position, p.hex, 3, 4, 0.1);
   scene.remove(p.mesh);
   if (p.kind === 'ball') p.mesh.material.dispose(); // only 'ball' owns a per-shot material
   projectiles.splice(i, 1);
@@ -3171,11 +3187,11 @@ import('./devRecorder.js').then(({ DevRecorder }) => {
   const aBtn = mkBtn('Record Audio Only');
   const toggleVideo = async () => {
     if (rec.recordingVideo) { rec.stopVideo(); vBtn.textContent = 'Record Video + Audio'; vBtn.style.background = '#1c1f24'; }
-    else if (await rec.startVideo()) { vBtn.textContent = 'Stop + Download Video'; vBtn.style.background = '#c0392b'; }
+    else if (await rec.startVideo()) { vBtn.textContent = 'Stop + Download Video'; vBtn.style.background = '#ff4848'; }
   };
   const toggleAudio = () => {
     if (rec.recordingAudio) { rec.stopAudio(); aBtn.textContent = 'Record Audio Only'; aBtn.style.background = '#1c1f24'; }
-    else if (rec.startAudio()) { aBtn.textContent = 'Stop + Download Audio'; aBtn.style.background = '#c0392b'; }
+    else if (rec.startAudio()) { aBtn.textContent = 'Stop + Download Audio'; aBtn.style.background = '#ff4848'; }
   };
   vBtn.onclick = toggleVideo;
   aBtn.onclick = toggleAudio;
@@ -3254,6 +3270,8 @@ function _frameWarn(where, e) {
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
+  flashes.update(dt);
+  outline.tick(performance.now() / 1000);
 
   input.poll();
 

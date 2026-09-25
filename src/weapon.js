@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { buildGun } from './gunModel.js';
+import { buildGun, ORANGE } from './gunModel.js';
+import { muzzleFlashTexture } from './fx.js';
 
 export class Weapon {
   constructor() {
@@ -78,6 +79,20 @@ export class Weapon {
     this.glowMats = gun.glowMats;
     this.materials.push(...gun.materials);
 
+    // muzzle flash: additive star sprite at the firing barrel, bloom does the rest
+    this._muzzles = [gun.topMuzzle, ...gun.muzzles];
+    this._rocketSide = 0;
+    this.flashMat = new THREE.SpriteMaterial({
+      // normal blend: additive would vanish against the white arena
+      map: muzzleFlashTexture(), color: ORANGE, transparent: true, opacity: 0, depthWrite: false,
+    });
+    this.materials.push(this.flashMat);
+    this.flash = new THREE.Sprite(this.flashMat);
+    this.flash.scale.setScalar(0.22);
+    this.flash.renderOrder = 5;
+    gun.group.add(this.flash);
+    this._flashT = 0;
+
     // gloved trigger hand + armoured forearm running off the bottom-right edge
     const glove = new THREE.MeshStandardMaterial({ color: 0x16181c, roughness: 0.78, metalness: 0 });
     const plate = new THREE.MeshStandardMaterial({ color: 0x202329, roughness: 0.45, metalness: 0.15 });
@@ -110,7 +125,15 @@ export class Weapon {
     return k;
   }
 
-  kick(amount = 1) { this._kick = amount; }
+  kick(amount = 1) {
+    this._kick = amount;
+    // rifle fires from the top barrel; rockets alternate the lower tubes
+    const m = this.mode === 0 ? this._muzzles[0] : this._muzzles[1 + (this._rocketSide++ % 2)];
+    this.flash.position.copy(m);
+    this.flash.material.rotation = Math.random() * Math.PI;
+    this.flash.scale.setScalar(this.mode === 0 ? 0.34 + Math.random() * 0.1 : 0.5);
+    this._flashT = 1;
+  }
 
   update(dt, aiming, baseFov = 75, sprinting = false, sliding = false) {
     const target = aiming ? 1 : 0;
@@ -134,6 +157,8 @@ export class Weapon {
     this.root.scale.set(comp, comp, 1);
 
     this._kick = Math.max(0, this._kick - dt * 6.5);
+    this._flashT = Math.max(0, this._flashT - dt * 18);
+    this.flashMat.opacity = this._flashT;
     const k = this._kick * this._kick * 0.014 * this.recoilAmount;
 
     const wp = this.wallPull;

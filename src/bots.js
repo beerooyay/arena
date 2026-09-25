@@ -172,11 +172,11 @@ export class BotSystem {
   _spawnBot(team, idx) {
     const namePool = team.id === 0 ? FIRE_NAMES : WHITE_NAMES;
     const name = namePool[idx % namePool.length];
-    const { group, body, head, bodyMat, teamMat, label, marker, armL, armR, legL, legR } = makeAvatar(name, team.hex);
+    const { group, body, head, bodyMat, teamMat, label, marker, armL, armR, legL, legR, blob } = makeAvatar(name, team.hex);
 
     const bot = {
       team, hex: team.hex, group, body, head, bodyMat, ringMat: teamMat,
-      name, label, marker, armL, armR, legL, legR,
+      name, label, marker, armL, armR, legL, legR, blob,
       kills: 0, deaths: 0, shots: 0,
       pos: this._spawnPoint(team, idx),
       spawn: null,
@@ -204,6 +204,7 @@ export class BotSystem {
     bot.group.scale.set(1.06, 1.1, 1.06); // matches makeAvatar's build scale
     bot.group.visible = true;
     bot.label.visible = true;
+    if (bot.blob) bot.blob.visible = true;
     bot.armL.rotation.x = 0; bot.armR.rotation.x = 0;
     bot.legL.rotation.x = 0; bot.legR.rotation.x = 0;
     bot.ragdoll = null;
@@ -219,6 +220,7 @@ export class BotSystem {
   _startRagdoll(bot) {
     bot.ragdoll = { t: 0, dur: 0.5, dir: Math.random() < 0.5 ? -1 : 1 };
     bot.label.visible = false;
+    if (bot.blob) bot.blob.visible = false; // contact shadow would stand upright on the fallen body
   }
 
   _updateRagdoll(bot, dt) {

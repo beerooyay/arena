@@ -12,7 +12,9 @@
  */
 
 import * as THREE from 'three';
-import { buildGun, flameTexture, makeGlowMat } from './gunModel.js';
+import { buildGun, flameTexture, makeGlowMat, ORANGE, RED } from './gunModel.js';
+import { rbox, lathe, limbGeo } from './geo.js';
+import { contactShadowTexture } from './fx.js';
 
 // Shipped defaults (tune live in the dev panel, then hardcode the winners here).
 // Off by default: black vs white armour carries the team read now.
@@ -68,150 +70,213 @@ function makeWeapon(mats) {
 }
 
 // Armour palettes from the concept art: FIRE wears black plates, WHITE wears
-// white plates over a graphite undersuit. Both squads share the orange visor.
+// white plates over a graphite undersuit. Visors carry the squad accent.
 const ARMOR = {
-  fire:  { plate: 0x1c1f24, suit: 0x0f1114, joint: 0x08090b, trim: 0x2c3036 },
-  white: { plate: 0xe9ecef, suit: 0x2a2e35, joint: 0x17191d, trim: 0xb9bfc7 },
+  fire:  { plate: 0x1c1f24, suit: 0x101216, joint: 0x08090b, trim: 0x33373e, accent: ORANGE },
+  white: { plate: 0xe9ecef, suit: 0x2a2e35, joint: 0x17191d, trim: 0xb9bfc7, accent: RED },
 };
+
+// Skeleton landmarks (avatar-local, feet at y=0; the group is scaled ×1.1 in
+// Y). Everything above HEAD_LINE counts as a headshot in bots.js (1.72 world),
+// so shoulders/pauldrons stay under it and the neck starts right at it.
+const HIP_Y = 0.94, SHOULDER_Y = 1.43, SHOULDER_X = 0.215, HEAD_Y = 1.705;
 
 export function makeAvatar(name, hex) {
   const group = new THREE.Group();
-  const pal = hex === 0xff6000 ? ARMOR.fire : ARMOR.white;
+  const pal = hex === ORANGE ? ARMOR.fire : ARMOR.white;
   // bodyMat = undersuit (flashes on hit), plateMat = armour shells
-  const bodyMat = new THREE.MeshStandardMaterial({ color: pal.suit, roughness: 0.78, metalness: 0 });
-  const plateMat = new THREE.MeshStandardMaterial({ color: pal.plate, roughness: 0.38, metalness: 0.05 });
-  const trimMat = new THREE.MeshStandardMaterial({ color: pal.trim, roughness: 0.5, metalness: 0.1 });
-  const jointMat = new THREE.MeshStandardMaterial({ color: pal.joint, roughness: 0.7, metalness: 0 });
-  const visorMat = makeGlowMat(0xff1c00, 4.5);
-  const teamMat = makeGlowMat(0xff2a00, 7);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: pal.suit, roughness: 0.72, metalness: 0 });
+  const plateMat = new THREE.MeshStandardMaterial({ color: pal.plate, roughness: 0.32, metalness: 0.06, side: THREE.DoubleSide });
+  const trimMat = new THREE.MeshStandardMaterial({ color: pal.trim, roughness: 0.45, metalness: 0.15 });
+  const jointMat = new THREE.MeshStandardMaterial({ color: pal.joint, roughness: 0.6, metalness: 0.1 });
+  const visorMat = makeGlowMat(pal.accent, 1.8);
+  const teamMat = makeGlowMat(pal.accent, 1.3);
   const decalMat = new THREE.MeshBasicMaterial({ map: flameTexture(), transparent: true, depthWrite: false });
+  const blobMat = new THREE.MeshBasicMaterial({
+    map: contactShadowTexture(), transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2,
+  });
   bodyMat.userData.baseColor = bodyMat.color.clone();
-  const mats = [bodyMat, plateMat, trimMat, jointMat, visorMat, teamMat, decalMat];
-  const addTo = (parent, geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
+  const mats = [bodyMat, plateMat, trimMat, jointMat, visorMat, teamMat, decalMat, blobMat];
+  const put = (parent, geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
     m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
   };
-  const add = (...a) => addTo(group, ...a);
-  const decal = (parent, size, x, y, z, ry) => {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), decalMat);
-    m.position.set(x, y, z); m.rotation.y = ry; parent.add(m); return m;
-  };
-
-  // capsule / box spanning two points (limb segments)
+  const add = (...a) => put(group, ...a);
   const _up = new THREE.Vector3(0, 1, 0);
-  const span = (parent, a, b, geoFor, mat) => {
-    const d = new THREE.Vector3().subVectors(b, a);
-    const len = d.length();
-    const m = new THREE.Mesh(geoFor(len), mat);
-    m.position.copy(a).addScaledVector(d, 0.5);
-    m.quaternion.setFromUnitVectors(_up, d.normalize());
-    m.castShadow = true; m.receiveShadow = true;
-    parent.add(m);
+  // geometry built along +Y from its origin, laid from point a toward point b
+  const along = (parent, geo, mat, a, b) => {
+    const m = put(parent, geo, mat, a.x, a.y, a.z);
+    m.quaternion.setFromUnitVectors(_up, b.clone().sub(a).normalize());
     return m;
   };
-  // two-bone IK: elbow for a shoulder at the origin reaching `t`, bent toward `pole`
-  const elbowFor = (t, l1, l2, pole) => {
-    const d = Math.min(t.length(), l1 + l2 - 0.002);
-    const dir = t.clone().normalize();
-    const a = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
-    const h = Math.sqrt(Math.max(l1 * l1 - a * a, 0));
-    const p = pole.clone().addScaledVector(dir, -pole.dot(dir)).normalize();
-    return { elbow: dir.clone().multiplyScalar(a).addScaledVector(p, h), hand: dir.multiplyScalar(d) };
-  };
+  // armour sleeve: a turned band with rolled edges, hugging a limb of radius r
+  const sleeve = (len, r0, r1, t = 0.012) => lathe([
+    [r0 - 0.002, 0], [r0 + t, 0.012], [r1 + t, len - 0.012], [r1 - 0.002, len],
+  ], 16);
+  // curved front/back plate: a partial turned shell (phi 0 = +Z / front)
+  const shell = (pairs, phiStart, phiLen, segs = 20) => lathe(pairs, segs, phiStart, phiLen);
 
-  // --- torso: undersuit core under a layered plate rig, backpack ---
-  const body = add(new THREE.CapsuleGeometry(0.17, 0.56, 6, 14), bodyMat, 0, 1.15, 0);
-  add(new THREE.BoxGeometry(0.52, 0.34, 0.34), plateMat, 0, 1.36, 0.02);           // chest plate
-  add(new THREE.BoxGeometry(0.44, 0.10, 0.30), trimMat, 0, 1.18, 0.02);            // chest lower band
-  add(new THREE.BoxGeometry(0.36, 0.08, 0.06), trimMat, 0, 1.52, 0.16, -0.3);      // collar ridge
-  add(new THREE.BoxGeometry(0.20, 0.10, 0.03), jointMat, 0, 1.38, 0.195);          // chest vent
-  add(new THREE.BoxGeometry(0.36, 0.20, 0.26), bodyMat, 0, 1.06, 0.01);            // abdomen suit
-  add(new THREE.BoxGeometry(0.26, 0.16, 0.05), plateMat, 0, 1.07, 0.14);           // ab plate
-  add(new THREE.BoxGeometry(0.46, 0.07, 0.30), jointMat, 0, 0.95, 0.01);           // belt
-  add(new THREE.BoxGeometry(0.09, 0.12, 0.05), jointMat, -0.14, 0.95, 0.17);       // pouches
-  add(new THREE.BoxGeometry(0.09, 0.12, 0.05), jointMat, 0.14, 0.95, 0.17);
-  add(new THREE.BoxGeometry(0.08, 0.18, 0.08), jointMat, 0.27, 0.82, 0.02);        // thigh holster
-  add(new THREE.BoxGeometry(0.38, 0.16, 0.26), bodyMat, 0, 0.86, 0.0);             // hips
-  add(new THREE.BoxGeometry(0.40, 0.44, 0.16), plateMat, 0, 1.32, -0.22);          // backpack
-  add(new THREE.BoxGeometry(0.28, 0.30, 0.05), trimMat, 0, 1.30, -0.31);
-  add(new THREE.CylinderGeometry(0.07, 0.07, 0.06, 14), jointMat, 0.12, 1.42, -0.33, Math.PI / 2);
+  // --- contact shadow ---
+  const blob = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 1.15), blobMat);
+  blob.rotation.x = -Math.PI / 2;
+  blob.position.y = 0.012;
+  blob.renderOrder = 1;
+  group.add(blob);
 
-  // --- helmet: rounded shell, crest, V visor, ear pods ---
-  add(new THREE.CylinderGeometry(0.10, 0.12, 0.14, 12), jointMat, 0, 1.58, 0);
-  const head = add(new THREE.SphereGeometry(0.23, 20, 18), plateMat, 0, 1.81, 0);
-  head.scale.set(1.0, 1.02, 1.1);
-  add(new THREE.BoxGeometry(0.06, 0.05, 0.38), trimMat, 0, 2.03, -0.01);           // crest ridge
-  add(new THREE.BoxGeometry(0.30, 0.17, 0.10), jointMat, 0, 1.79, 0.19);           // face plate
-  add(new THREE.BoxGeometry(0.22, 0.10, 0.10), plateMat, 0, 1.68, 0.19, 0.3);      // jaw guard
-  add(new THREE.BoxGeometry(0.03, 0.14, 0.05), plateMat, 0, 1.80, 0.245);          // nose ridge
+  // --- torso: one turned undersuit form (hips → waist → ribcage → neck) ---
+  const TORSO = [
+    [0.001, 0.86], [0.13, 0.875], [0.165, 0.93], [0.168, 1.0], [0.148, 1.08], [0.15, 1.16],
+    [0.172, 1.25], [0.19, 1.33], [0.19, 1.40], [0.165, 1.455], [0.105, 1.5], [0.06, 1.53],
+    [0.056, 1.6], [0.001, 1.61],
+  ];
+  const body = add(lathe(TORSO, 24), bodyMat);
+  body.scale.set(1, 1, 0.64);
+
+  // chest + back plates: turned shells slightly proud of the ribcage
+  const chest = add(shell([[0.168, 1.19], [0.19, 1.22], [0.212, 1.31], [0.212, 1.39], [0.19, 1.445], [0.16, 1.47]], -1.3, 2.6), plateMat);
+  chest.scale.set(1, 1, 0.74);
+  const back = add(shell([[0.17, 1.2], [0.2, 1.24], [0.208, 1.4], [0.18, 1.46]], Math.PI - 1.2, 2.4), plateMat);
+  back.scale.set(1, 1, 0.72);
+  add(rbox(0.16, 0.035, 0.03, 0.012), trimMat, 0, 1.43, 0.155, -0.35);         // collar ridge
+  add(rbox(0.10, 0.05, 0.02, 0.008), jointMat, 0, 1.33, 0.158);                // chest vent
+  add(rbox(0.06, 0.012, 0.012, 0.005), teamMat, 0, 1.305, 0.16);              // chest light
+  // segmented abdomen bands
+  for (const [y0, y1] of [[1.02, 1.085], [1.095, 1.16]]) {
+    const band = add(shell([[0.15, y0], [0.162, y0 + 0.01], [0.162, y1 - 0.01], [0.15, y1]], -1.05, 2.1), plateMat);
+    band.scale.set(1, 1, 0.72);
+  }
+  // belt, buckle, pouches, holster
+  const belt = add(lathe([[0.168, 0.915], [0.178, 0.925], [0.178, 0.975], [0.166, 0.985]], 24), jointMat);
+  belt.scale.set(1, 1, 0.68);
+  add(rbox(0.07, 0.05, 0.02, 0.008), trimMat, 0, 0.95, 0.12);
+  add(rbox(0.07, 0.09, 0.045, 0.015), jointMat, -0.11, 0.93, 0.1, 0, -0.35);
+  add(rbox(0.07, 0.09, 0.045, 0.015), jointMat, 0.11, 0.93, 0.1, 0, 0.35);
+  add(rbox(0.055, 0.15, 0.07, 0.02), jointMat, 0.19, 0.84, 0.0);
+  // backpack
+  add(rbox(0.3, 0.36, 0.12, 0.035), plateMat, 0, 1.27, -0.19);
+  add(rbox(0.22, 0.24, 0.04, 0.015), trimMat, 0, 1.26, -0.255);
+  add(new THREE.CylinderGeometry(0.05, 0.05, 0.05, 18), jointMat, 0.1, 1.37, -0.27, Math.PI / 2);
+  add(rbox(0.012, 0.16, 0.012, 0.005), teamMat, -0.09, 1.26, -0.277);
+
+  // --- helmet: sculpted shell, dark face mask, swept V visor ---
+  const HS = new THREE.Vector3(1.0, 1.08, 1.12); // helmet ellipsoid scale
+  const HR = 0.145;
+  const helmet = add(new THREE.SphereGeometry(HR, 28, 22), plateMat, 0, HEAD_Y, 0);
+  helmet.scale.copy(HS);
+  const head = helmet;
+  // face mask: lower-front patch of a slightly larger ellipsoid
+  const mask = add(new THREE.SphereGeometry(HR + 0.006, 24, 14, Math.PI / 2 - 0.95, 1.9, 1.35, 1.1), jointMat, 0, HEAD_Y, 0);
+  mask.scale.copy(HS);
+  add(rbox(0.12, 0.05, 0.05, 0.02), plateMat, 0, HEAD_Y - 0.115, 0.115, 0.35); // jaw guard
+  add(rbox(0.03, 0.035, 0.3, 0.012), trimMat, 0, HEAD_Y + HR * HS.y - 0.005, -0.01); // crest
+  // point on the helmet surface at azimuth az (0 = front) and elevation el
+  const onHelmet = (az, el, lift = 0.012) => new THREE.Vector3(
+    Math.sin(az) * Math.cos(el) * (HR + lift) * HS.x,
+    HEAD_Y + Math.sin(el) * (HR + lift) * HS.y,
+    Math.cos(az) * Math.cos(el) * (HR + lift) * HS.z);
   for (const s of [-1, 1]) {
-    add(new THREE.BoxGeometry(0.13, 0.032, 0.03), visorMat, s * 0.075, 1.835, 0.245, 0, 0, s * 0.3); // V visor
-    add(new THREE.BoxGeometry(0.025, 0.07, 0.03), visorMat, s * 0.132, 1.79, 0.235, 0, 0, s * 0.15); // cheek line
-    add(new THREE.CylinderGeometry(0.07, 0.07, 0.05, 16), trimMat, s * 0.23, 1.82, -0.02, 0, 0, Math.PI / 2);
-    add(new THREE.CylinderGeometry(0.035, 0.035, 0.052, 12), jointMat, s * 0.235, 1.82, -0.02, 0, 0, Math.PI / 2);
+    const brow = new THREE.CatmullRomCurve3([onHelmet(0, -0.02), onHelmet(s * 0.35, 0.07), onHelmet(s * 0.72, 0.12)]);
+    add(new THREE.TubeGeometry(brow, 12, 0.013, 8), visorMat);
+    const cheek = new THREE.CatmullRomCurve3([onHelmet(s * 0.72, 0.1), onHelmet(s * 0.8, -0.06), onHelmet(s * 0.74, -0.2)]);
+    add(new THREE.TubeGeometry(cheek, 8, 0.008, 8), visorMat);
+    // ear pods: turned discs
+    const pod = add(lathe([[0.001, 0], [0.05, 0], [0.056, 0.012], [0.05, 0.03], [0.02, 0.036], [0.001, 0.036]], 20), trimMat,
+      s * (HR * HS.x - 0.012), HEAD_Y - 0.005, -0.01, 0, 0, -s * Math.PI / 2);
+    pod.castShadow = false;
   }
 
   // --- rifle, held across the chest ---
   const marker = makeWeapon(mats);
-  marker.position.set(0.03, 1.18, 0.14);
+  marker.position.set(0.0, 1.14, 0.17);
   marker.rotation.set(-0.04, -0.03, 0);
-  marker.scale.setScalar(0.82);
+  marker.scale.setScalar(0.8);
   group.add(marker);
 
   // Arms live in shoulder pivots (bots.js swings them a touch while running).
-  // Each is posed by IK so the gloves land on the grip and the front collar.
-  const L1 = 0.32, L2 = 0.34;
+  // Two-bone IK lands the gloves on the grip and under the front collar.
+  const L1 = 0.3, L2 = 0.29;
+  const elbowFor = (t, pole) => {
+    const d = Math.min(t.length(), L1 + L2 - 0.002);
+    const dir = t.clone().normalize();
+    const a = (L1 * L1 - L2 * L2 + d * d) / (2 * d);
+    const h = Math.sqrt(Math.max(L1 * L1 - a * a, 0));
+    const p = pole.clone().addScaledVector(dir, -pole.dot(dir)).normalize();
+    return { elbow: dir.clone().multiplyScalar(a).addScaledVector(p, h), hand: dir.multiplyScalar(d) };
+  };
   const makeArm = (side, handAt, pole) => {
     const pivot = new THREE.Group();
-    pivot.position.set(side * 0.30, 1.50, 0.0);
+    pivot.position.set(side * SHOULDER_X, SHOULDER_Y, -0.01);
     group.add(pivot);
-    const t = handAt.clone().sub(pivot.position);
-    const { elbow, hand } = elbowFor(t, L1, L2, pole);
+    const { elbow, hand } = elbowFor(handAt.clone().sub(pivot.position), pole);
     const o = new THREE.Vector3();
-    addTo(pivot, new THREE.BoxGeometry(0.22, 0.14, 0.26), plateMat, side * 0.03, 0.02, -0.01, 0, 0, side * -0.1); // pauldron
-    addTo(pivot, new THREE.BoxGeometry(0.20, 0.04, 0.24), trimMat, side * 0.05, -0.06, -0.01, 0, 0, side * -0.1);
-    decal(pivot, 0.1, side * 0.142, 0.02, -0.01, side * Math.PI / 2).rotation.z = side * -0.1; // flame emblem
-    span(pivot, o, elbow, (l) => new THREE.CapsuleGeometry(0.075, Math.max(0.01, l - 0.1), 4, 10), bodyMat);
-    const upperMid = elbow.clone().multiplyScalar(0.5);
-    span(pivot, upperMid.clone().multiplyScalar(0.4), upperMid.clone().multiplyScalar(1.6),
-      (l) => new THREE.BoxGeometry(0.15, l, 0.15), plateMat);                                  // bicep plate
-    addTo(pivot, new THREE.SphereGeometry(0.075, 10, 10), jointMat, elbow.x, elbow.y, elbow.z); // elbow
-    span(pivot, elbow, hand, (l) => new THREE.CapsuleGeometry(0.065, Math.max(0.01, l - 0.1), 4, 10), jointMat);
-    const foreA = elbow.clone().lerp(hand, 0.2), foreB = elbow.clone().lerp(hand, 0.75);
-    span(pivot, foreA, foreB, (l) => new THREE.BoxGeometry(0.13, l, 0.13), plateMat);          // vambrace
-    const g = addTo(pivot, new THREE.BoxGeometry(0.09, 0.10, 0.11), jointMat, hand.x, hand.y, hand.z); // glove
-    g.quaternion.setFromUnitVectors(_up, hand.clone().sub(elbow).normalize());
+    put(pivot, new THREE.SphereGeometry(0.068, 16, 12), bodyMat);                              // deltoid
+    // pauldron: domed shell capping the shoulder, rolled rim, flame emblem
+    const pg = new THREE.Group();
+    pg.position.set(side * 0.012, -0.005, 0);
+    pg.rotation.z = side * -0.5;
+    pivot.add(pg);
+    const cap = put(pg, new THREE.SphereGeometry(0.085, 20, 14, 0, Math.PI * 2, 0, 1.75), plateMat);
+    cap.scale.set(1.0, 1.05, 1.2);
+    const rim = put(pg, new THREE.TorusGeometry(0.084, 0.007, 6, 24), trimMat, 0, Math.cos(1.75) * 0.085 * 1.05, 0, Math.PI / 2);
+    rim.scale.set(1.0, 1.2, 1);
+    const emblem = new THREE.Mesh(new THREE.PlaneGeometry(0.075, 0.075), decalMat);
+    emblem.position.set(side * 0.087, 0.0, 0);
+    emblem.rotation.y = side * Math.PI / 2;
+    pg.add(emblem);
+    // upper arm (bicep bulge) + sleeve plate, elbow, forearm + vambrace
+    along(pivot, limbGeo(L1, 0.056, 0.046, 0.012, 0.4), bodyMat, o, elbow);
+    along(pivot, sleeve(L1 * 0.5, 0.058, 0.05), plateMat, elbow.clone().multiplyScalar(0.35), elbow);
+    put(pivot, new THREE.SphereGeometry(0.05, 14, 10), jointMat, elbow.x, elbow.y, elbow.z);
+    along(pivot, limbGeo(L2, 0.047, 0.036, 0.012, 0.3), jointMat, elbow, hand);
+    const vA = elbow.clone().lerp(hand, 0.18), vB = elbow.clone().lerp(hand, 0.8);
+    along(pivot, sleeve(vA.distanceTo(vB), 0.052, 0.042, 0.014), plateMat, vA, vB);
+    along(pivot, rbox(0.01, vA.distanceTo(vB) * 0.6, 0.01, 0.004), teamMat,
+      vA.clone().lerp(vB, 0.2).add(new THREE.Vector3(side * 0.06, 0, 0)), vB.clone().add(new THREE.Vector3(side * 0.06, 0, 0)));
+    // glove: palm + knuckles, oriented down the forearm
+    const glove = put(pivot, rbox(0.072, 0.1, 0.05, 0.02), jointMat, hand.x, hand.y, hand.z);
+    glove.quaternion.setFromUnitVectors(_up, hand.clone().sub(elbow).normalize());
     return pivot;
   };
   // right hand on the pistol grip, left hand under the front collar
-  const armR = makeArm(1, new THREE.Vector3(0.03, 1.10, 0.15), new THREE.Vector3(1, -0.5, -0.7));
-  const armL = makeArm(-1, new THREE.Vector3(0.03, 1.07, 0.39), new THREE.Vector3(-1, -0.6, -0.2));
+  const armR = makeArm(1, new THREE.Vector3(0.0, 1.06, 0.17), new THREE.Vector3(1, -0.6, -0.4));
+  const armL = makeArm(-1, new THREE.Vector3(0.0, 1.035, 0.4), new THREE.Vector3(-1, -0.8, -0.2));
 
+  // Legs hang from hip pivots (bots.js swings them for the walk cycle).
   const makeLeg = (side) => {
     const pivot = new THREE.Group();
-    pivot.position.set(side * 0.13, 0.64, 0);
-    addTo(pivot, new THREE.CapsuleGeometry(0.11, 0.40, 4, 10), bodyMat, 0, -0.06, 0, 0.04, 0, side * 0.04);
-    addTo(pivot, new THREE.BoxGeometry(0.19, 0.28, 0.16), plateMat, side * 0.01, -0.05, 0.04, 0.04);    // thigh plate
-    addTo(pivot, new THREE.CylinderGeometry(0.07, 0.07, 0.12, 14), jointMat, 0, -0.29, 0.09, 0, 0, Math.PI / 2);
-    addTo(pivot, new THREE.BoxGeometry(0.14, 0.14, 0.08), plateMat, 0, -0.29, 0.12);                    // knee pad
-    addTo(pivot, new THREE.CapsuleGeometry(0.095, 0.30, 4, 10), bodyMat, 0, -0.42, 0, -0.04, 0, side * -0.02);
-    addTo(pivot, new THREE.BoxGeometry(0.18, 0.28, 0.16), plateMat, 0, -0.43, 0.035, -0.04);             // shin guard
-    addTo(pivot, new THREE.BoxGeometry(0.21, 0.13, 0.33), plateMat, 0, -0.585, 0.06);                    // boot
-    addTo(pivot, new THREE.BoxGeometry(0.22, 0.04, 0.34), jointMat, 0, -0.645, 0.06);                    // sole
-    addTo(pivot, new THREE.BoxGeometry(0.09, 0.02, 0.02), teamMat, 0, -0.43, 0.12);
+    pivot.position.set(side * 0.1, HIP_Y, 0);
     group.add(pivot);
+    // thigh (quad bulge high), knee, shin (calf bulge high), ankle
+    put(pivot, limbGeo(0.45, 0.058, 0.088, 0.016, 0.62).translate(0, -0.45, 0), bodyMat);
+    put(pivot, new THREE.SphereGeometry(0.05, 14, 10), bodyMat, 0, -0.45, 0.0);
+    put(pivot, limbGeo(0.44, 0.042, 0.058, 0.02, 0.72).translate(0, -0.87, 0), bodyMat);
+    // thigh plate + outer hip plate (front shells)
+    const tp = put(pivot, shell([[0.086, -0.36], [0.1, -0.34], [0.105, -0.16], [0.097, -0.07], [0.085, -0.05]], -1.2, 2.4, 16), plateMat);
+    tp.scale.set(1, 1, 1.05);
+    put(pivot, shell([[0.092, -0.2], [0.105, -0.18], [0.108, 0.03], [0.095, 0.05]], side * Math.PI / 2 - 0.7, 1.4, 12), trimMat);
+    // knee pad: domed cap facing forward
+    const kp = put(pivot, new THREE.SphereGeometry(0.06, 18, 12, 0, Math.PI * 2, 0, 1.35), plateMat, 0, -0.45, 0.022, Math.PI / 2);
+    kp.scale.set(1.0, 1.3, 1.1);
+    // shin guard
+    const sg = put(pivot, shell([[0.05, -0.84], [0.064, -0.82], [0.074, -0.6], [0.068, -0.53], [0.058, -0.515]], -1.1, 2.2, 16), plateMat);
+    sg.scale.set(1, 1, 1.15);
+    put(pivot, rbox(0.012, 0.12, 0.012, 0.005), teamMat, 0, -0.66, 0.084);
+    // boot: rounded shell, toe cap, sole
+    put(pivot, rbox(0.115, 0.12, 0.25, 0.045), plateMat, 0, -0.875, 0.035);
+    put(pivot, rbox(0.105, 0.07, 0.08, 0.03), trimMat, 0, -0.9, 0.14);
+    put(pivot, rbox(0.125, 0.03, 0.27, 0.012), jointMat, 0, -0.925, 0.035);
     return pivot;
   };
   const legL = makeLeg(-1), legR = makeLeg(1);
 
   const label = makeNameSprite(name, hex);
   group.add(label);
-  // slightly taller + broader than the old capsule build; feet stay at y=0
-  group.scale.set(1.06, 1.1, 1.06);
+  group.scale.set(1.06, 1.1, 1.06); // feet stay at y=0
   group.userData = {
     group, body, head, bodyMat, plateMat, visorMat, teamMat, label, marker, mats,
-    armL, armR, legL, legR,
+    armL, armR, legL, legR, blob,
   };
   return group.userData;
 }

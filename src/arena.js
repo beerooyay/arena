@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { rbox } from './geo.js';
 
 // Polished white floor tiles: bright faces, soft gray grout.
 function tileTexture() {
@@ -26,6 +27,22 @@ function tileTexture() {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.anisotropy = 8;
   return tex;
+}
+
+// Vertical falloff for fake light spill (bright edge → transparent).
+function washTexture() {
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 128;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 128);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.18, 'rgba(255,255,255,0.45)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 4, 128);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
 }
 
 export function buildArena(scene, mapId = 1) {
@@ -63,6 +80,24 @@ export function buildArena(scene, mapId = 1) {
     materials.push(m);
     return m;
   }
+
+  // Light-spill washes: additive gradients below each LED cove and across the
+  // floor in front of the kick strips. No real lights, all the glow.
+  const washTex = washTexture();
+  const washMats = [];
+  function washMat(opacity, night) {
+    const m = new THREE.MeshBasicMaterial({
+      map: washTex, color: 0xffffff, transparent: true, opacity,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    m.userData.day = { hex: 0xffffff, o: opacity };
+    m.userData.night = { hex: night, o: opacity * 0.8 };
+    washMats.push(m);
+    return m;
+  }
+  const coveWash = washMat(0.22, 0xff6000);
+  const floorWashA = washMat(0.16, 0xff6000);
+  const floorWashB = washMat(0.16, 0xff4848);
 
   const tex = tileTexture();
   const floorMat = mat(0xffffff, 0.16, { map: tex, envMapIntensity: 1.1 });
@@ -118,28 +153,38 @@ export function buildArena(scene, mapId = 1) {
     for (let p = 0; p < PANELS; p++) {
       const x = -edgeLen / 2 + 0.1 + panelW * (p + 0.5);
       // main panel, from the kick strip to the cove
-      const panel = new THREE.Mesh(new THREE.BoxGeometry(panelW - 0.07, wallH - 1.45, 0.08), panelMat);
+      const panel = new THREE.Mesh(rbox(panelW - 0.07, wallH - 1.45, 0.08), panelMat);
       panel.position.set(x, -0.28, inner - 0.04);
       panel.receiveShadow = true;
       seg.add(panel);
       paintTargets.push(panel);
       // upper fascia above the LED strip, slightly proud
-      const fascia = new THREE.Mesh(new THREE.BoxGeometry(panelW - 0.07, 0.62, 0.2), panelMat);
+      const fascia = new THREE.Mesh(rbox(panelW - 0.07, 0.62, 0.2), panelMat);
       fascia.position.set(x, wallH / 2 - 0.34, inner - 0.1);
       seg.add(fascia);
       paintTargets.push(fascia);
     }
     // LED cove under the fascia + kick strip along the floor
-    const cove = new THREE.Mesh(new THREE.BoxGeometry(edgeLen - 0.2, 0.09, 0.05), ledA);
+    const cove = new THREE.Mesh(rbox(edgeLen - 0.2, 0.09, 0.05), ledA);
     cove.position.set(0, wallH / 2 - 0.71, inner - 0.18);
     seg.add(cove);
-    const coveShelf = new THREE.Mesh(new THREE.BoxGeometry(edgeLen - 0.2, 0.05, 0.24), trimMat);
+    const coveShelf = new THREE.Mesh(rbox(edgeLen - 0.2, 0.05, 0.24), trimMat);
     coveShelf.position.set(0, wallH / 2 - 0.66, inner - 0.12);
     seg.add(coveShelf);
-    const kick = new THREE.Mesh(new THREE.BoxGeometry(edgeLen - 0.2, 0.06, 0.04), i % 2 ? ledB : ledA);
+    const kick = new THREE.Mesh(rbox(edgeLen - 0.2, 0.06, 0.04), i % 2 ? ledB : ledA);
     kick.position.set(0, -wallH / 2 + 0.2, inner - 0.08);
     seg.add(kick);
-    const base = new THREE.Mesh(new THREE.BoxGeometry(edgeLen - 0.2, 0.16, 0.14), darkMat);
+    // spill down the panels from the cove, and out across the floor from the kick strip
+    const wash = new THREE.Mesh(new THREE.PlaneGeometry(edgeLen - 0.3, 3.2), coveWash);
+    wash.position.set(0, wallH / 2 - 0.74 - 1.6, inner - 0.095);
+    wash.rotation.y = Math.PI;
+    seg.add(wash);
+    const fw = new THREE.Mesh(new THREE.PlaneGeometry(edgeLen - 0.3, 1.6), i % 2 ? floorWashB : floorWashA);
+    fw.rotation.x = -Math.PI / 2;
+    fw.rotation.z = Math.PI;
+    fw.position.set(0, -wallH / 2 + 0.006, inner - 0.14 - 0.8);
+    seg.add(fw);
+    const base = new THREE.Mesh(rbox(edgeLen - 0.2, 0.16, 0.14), darkMat);
     base.position.set(0, -wallH / 2 + 0.08, inner - 0.07);
     seg.add(base);
   }
@@ -147,7 +192,7 @@ export function buildArena(scene, mapId = 1) {
   // corner posts
   for (let i = 0; i < 8; i++) {
     const a = i * Math.PI / 4 + Math.PI / 8;
-    const post = new THREE.Mesh(new THREE.BoxGeometry(0.9, wallH, 0.9), panelMat);
+    const post = new THREE.Mesh(rbox(0.9, wallH, 0.9), panelMat);
     post.position.set(Math.sin(a) * (radius - 0.2), wallH / 2, Math.cos(a) * (radius - 0.2));
     post.rotation.y = a;
     post.castShadow = true;
@@ -183,10 +228,10 @@ export function buildArena(scene, mapId = 1) {
     rib.position.set(Math.sin(a) * ribMid, ceilY + domeH / 2 - 0.12, Math.cos(a) * ribMid);
     rib.rotation.set(0, a, 0);
     group.add(rib);
-    const beam = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.18, ribLen), panelMat);
+    const beam = new THREE.Mesh(rbox(0.34, 0.18, ribLen), panelMat);
     beam.rotation.x = slope;
     rib.add(beam);
-    const line = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, ribLen - 0.4), ledA);
+    const line = new THREE.Mesh(rbox(0.07, 0.04, ribLen - 0.4), ledA);
     line.rotation.x = slope;
     line.position.y = -0.1;
     rib.add(line);
@@ -197,7 +242,7 @@ export function buildArena(scene, mapId = 1) {
   for (let i = 0; i < 8; i++) {
     const a = i * Math.PI / 4;
     const r = midR * Math.cos(Math.PI / 8) - 0.15;
-    const ringSeg = new THREE.Mesh(new THREE.BoxGeometry(midEdge, 0.05, 0.08), ledA);
+    const ringSeg = new THREE.Mesh(rbox(midEdge, 0.05, 0.08), ledA);
     ringSeg.position.set(Math.sin(a) * r, midY, Math.cos(a) * r);
     ringSeg.rotation.y = a;
     group.add(ringSeg);
@@ -209,7 +254,7 @@ export function buildArena(scene, mapId = 1) {
   group.add(oculus);
 
   function addBox(w, h, d, x, y, z, material, rotY = 0) {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+    const mesh = new THREE.Mesh(rbox(w, h, d), material);
     mesh.position.set(x, y, z);
     mesh.rotation.y = rotY;
     mesh.castShadow = true;
@@ -248,7 +293,7 @@ export function buildArena(scene, mapId = 1) {
   }
   for (let i = 0; i < 6; i++) { // vertical seams
     const a = i * Math.PI / 3;
-    const seam = new THREE.Mesh(new THREE.BoxGeometry(0.03, pillarH - 0.4, 0.03), trimMat);
+    const seam = new THREE.Mesh(rbox(0.03, pillarH - 0.4, 0.03), trimMat);
     seam.position.set(Math.sin(a) * 1.8, pillarH / 2, Math.cos(a) * 1.8);
     group.add(seam);
   }
@@ -266,10 +311,10 @@ export function buildArena(scene, mapId = 1) {
   ];
   covers.forEach(([x, z, r], i) => {
     const c = addBox(4.6, 1.35, 0.75, x, 0.675, z, coverMat, r);
-    const plinthC = new THREE.Mesh(new THREE.BoxGeometry(4.64, 0.14, 0.79), darkMat);
+    const plinthC = new THREE.Mesh(rbox(4.64, 0.14, 0.79), darkMat);
     plinthC.position.set(0, -0.6, 0);
     c.add(plinthC);
-    const lip = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.04, 0.05), i % 2 ? ledB : ledA);
+    const lip = new THREE.Mesh(rbox(4.4, 0.04, 0.05), i % 2 ? ledB : ledA);
     lip.position.set(0, 0.5, -0.4);
     c.add(lip);
     const lip2 = lip.clone();
@@ -277,5 +322,5 @@ export function buildArena(scene, mapId = 1) {
     c.add(lip2);
   });
 
-  return { group, paintTargets, blockers, tankBlockers, groundMeshes, ceilings, materials, floor, size, mapId };
+  return { group, paintTargets, blockers, tankBlockers, groundMeshes, ceilings, materials, washMats, floor, size, mapId };
 }

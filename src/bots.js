@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { makeAvatar, disposeAvatar } from './playerGlow.js';
-import { teamSpawnXZ } from './spawns.js';
+import { makeAvatar, disposeAvatar } from './avatarRig.js';
+import { teamSpawnXZ, scatterSpawnXZ } from './spawns.js';
 
 /**
  * BotSystem — compact team deathmatch AI.
@@ -47,13 +47,13 @@ export class BotSystem {
     this.onTag = opts.onTag || null;   // fired whenever a combatant is tagged
     this.onBotDown = null;             // (botIndex, byTeamId) — every bot death, any cause
     this.extraTargets = [];            // online: remote players the bots should fight
-    this.paint = opts.paint || null;
 
     this.perTeam = 5;
     this.fireInterval = opts.fireInterval ?? 90; // ms — matches the player
     this.skill = SKILL[1];
     this.hitsToTag = 3; // hits needed to drop a bot in standard play
     this.onPlayerHit = opts.onPlayerHit || null; // (teamId, hex, shooter) => lethal?
+    this._headPos = new THREE.Vector3();
 
     // First spawn slot bots take per team; human players occupy the slots below
     // it. Free play: the player holds FIRE slot 0, so FIRE bots start at slot 1.
@@ -98,17 +98,6 @@ export class BotSystem {
     }
   }
 
-  addPaintHit(bot, threshold, shooter) {
-    if (!bot.alive) return false;
-    bot.paintHits++;
-    if (bot.paintHits >= threshold) {
-      const now = performance.now();
-      this._tagBot(bot, bot.team.id === 0 ? 1 : 0, now, shooter || null);
-      return true;
-    }
-    return false;
-  }
-
   respawnAll(blueBots = this.perTeam - 1, redBots = this.perTeam) {
     this._despawnAll();
     this.scores = [0, 0];
@@ -140,25 +129,34 @@ export class BotSystem {
     return true;
   }
 
-  /** Kill a bot with NO team credit — environmental (e.g. the angry moon). */
-  moonKill(idx) {
-    const bot = this.bots[idx];
-    if (!bot || !bot.alive) return false;
-    bot.alive = false;
-    bot.respawnAt = performance.now() + 3000;
-    bot.deaths++;
-    this._startRagdoll(bot);
-    if (this.paint) { for (const d of bot.bodyDecals) this.paint.removeDecal(d); bot.bodyDecals = []; }
-    return true;
-  }
-
   _despawnAll() {
     for (const b of this.bots) {
-      if (this.paint) for (const d of b.bodyDecals) this.paint.removeDecal(d);
       this.scene.remove(b.group);
       disposeAvatar(b.group);
     }
     this.bots.length = 0;
+  }
+
+  /**
+   * Swap procedural avatars for rigged ones in place (the rigged suits finished
+   * loading after this match's bots spawned). Keeps position, facing and state.
+   */
+  refreshAvatars() {
+    for (const bot of this.bots) {
+      if (bot.anim) continue;
+      const { group, body, head, bodyMat, teamMat, label, marker, armL, armR, legL, legR, blob, anim } = makeAvatar(bot.name, bot.hex);
+      if (!anim) return; // still procedural: nothing to upgrade to
+      group.position.copy(bot.group.position);
+      group.rotation.y = bot.group.rotation.y;
+      group.visible = bot.group.visible;
+      label.visible = bot.label.visible;
+      this.scene.remove(bot.group);
+      disposeAvatar(bot.group);
+      this.scene.add(group);
+      Object.assign(bot, { group, body, head, bodyMat, ringMat: teamMat, label, marker, armL, armR, legL, legR, blob, anim });
+      bot.ragdoll = null;
+      if (!bot.alive) anim.die();
+    }
   }
 
   /** Bots fill the spawn slots above the humans on each team (see _slotBase). */
@@ -172,11 +170,13 @@ export class BotSystem {
   _spawnBot(team, idx) {
     const namePool = team.id === 0 ? FIRE_NAMES : WHITE_NAMES;
     const name = namePool[idx % namePool.length];
-    const { group, body, head, bodyMat, teamMat, label, marker, armL, armR, legL, legR, blob } = makeAvatar(name, team.hex);
+    const { group, body, head, bodyMat, teamMat, label, marker, armL, armR, legL, legR, blob, anim } = makeAvatar(name, team.hex);
 
     const bot = {
       team, hex: team.hex, group, body, head, bodyMat, ringMat: teamMat,
       name, label, marker, armL, armR, legL, legR, blob,
+      anim: anim || null, // rigged avatar: clip-driven; null = procedural limbs
+      vel: new THREE.Vector3(),
       kills: 0, deaths: 0, shots: 0,
       pos: this._spawnPoint(team, idx),
       spawn: null,
@@ -185,8 +185,6 @@ export class BotSystem {
       lastShot: 0, burst: 0, reloadUntil: 0, lockAt: 0,
       wanderT: 0, strafeSign: Math.random() < 0.5 ? -1 : 1,
       rockPhase: Math.random() * Math.PI * 2,
-      paintHits: 0,
-      bodyDecals: [],
       ragdoll: null,
     };
     bot.spawn = bot.pos.clone();
@@ -195,32 +193,46 @@ export class BotSystem {
     this.bots.push(bot);
   }
 
+  /** Live enemies a bot shouldn't respawn next to. */
+  _avoidFor(bot) {
+    const out = [];
+    for (const b of this.bots) if (b !== bot && b.alive && b.team.id !== bot.team.id) out.push(b.pos);
+    if (this._player.alive && this._player.team !== bot.team.id) out.push(this._player.pos);
+    return out;
+  }
+
   _respawn(bot) {
     bot.alive = true;
     bot.hp = 100;
-    bot.pos.copy(bot.spawn);
+    const s = scatterSpawnXZ(this._avoidFor(bot)); // anywhere on the ring, not the same lane
+    bot.pos.set(s.x, 0, s.z);
+    bot.spawn.copy(bot.pos);
     bot.group.position.copy(bot.pos);
     bot.group.rotation.set(0, bot.group.rotation.y, 0);
-    bot.group.scale.set(1.06, 1.1, 1.06); // matches makeAvatar's build scale
     bot.group.visible = true;
     bot.label.visible = true;
     if (bot.blob) bot.blob.visible = true;
-    bot.armL.rotation.x = 0; bot.armR.rotation.x = 0;
-    bot.legL.rotation.x = 0; bot.legR.rotation.x = 0;
     bot.ragdoll = null;
-    bot.bodyMat.color.copy(bot.bodyMat.userData.baseColor || bot.bodyMat.color);
-    bot.ringMat.emissiveIntensity = bot.ringMat.userData.baseEmissive ?? 0.32;
+    bot.vel.set(0, 0, 0);
+    if (bot.anim) {
+      bot.anim.revive();
+    } else {
+      bot.group.scale.set(1.06, 1.1, 1.06); // matches makeAvatar's build scale
+      bot.armL.rotation.x = 0; bot.armR.rotation.x = 0;
+      bot.legL.rotation.x = 0; bot.legR.rotation.x = 0;
+      bot.bodyMat.color.copy(bot.bodyMat.userData.baseColor || bot.bodyMat.color);
+      bot.ringMat.emissiveIntensity = bot.ringMat.userData.baseEmissive ?? 0.32;
+    }
     bot.burst = 0; bot.reloadUntil = 0; bot.lockAt = 0;
-    bot.paintHits = 0;
-    bot.bodyDecals = [];
   }
 
   // Topples the avatar over so it comes to rest LYING on the floor — a cheap
   // ragdoll-style drop. The corpse stays until the respawn timer brings it back.
   _startRagdoll(bot) {
-    bot.ragdoll = { t: 0, dur: 0.5, dir: Math.random() < 0.5 ? -1 : 1 };
     bot.label.visible = false;
     if (bot.blob) bot.blob.visible = false; // contact shadow would stand upright on the fallen body
+    if (bot.anim) { bot.anim.die(); return; } // rigged: death clip instead of the topple
+    bot.ragdoll = { t: 0, dur: 0.5, dir: Math.random() < 0.5 ? -1 : 1 };
   }
 
   _updateRagdoll(bot, dt) {
@@ -243,11 +255,6 @@ export class BotSystem {
     if (shooter && typeof shooter.kills === 'number') shooter.kills++;
     if (this.onBotDown) this.onBotDown(this.bots.indexOf(bot), byTeamId);
     this._startRagdoll(bot);
-    // remove paint splatters that hit this bot's body
-    if (this.paint) {
-      for (const d of bot.bodyDecals) this.paint.removeDecal(d);
-      bot.bodyDecals = [];
-    }
   }
 
   _nearestEnemy(bot) {
@@ -277,7 +284,7 @@ export class BotSystem {
     dir.multiplyScalar(1 / d);
     this._ray.set(a, dir);
     this._ray.far = d - 0.5;
-    return this._ray.intersectObjects(this.arena.paintTargets, false).length === 0;
+    return this._ray.intersectObjects(this.arena.losBlockers, false).length === 0;
   }
 
   _collide(bot) {
@@ -296,17 +303,6 @@ export class BotSystem {
         else bot.pos.z = maxZ;
       }
     }
-    // push out of the tanks (cylinder approximation)
-    if (this.tankSolids) {
-      for (const ts of this.tankSolids) {
-        const dx = bot.pos.x - ts.x, dz = bot.pos.z - ts.z;
-        const d2 = dx * dx + dz * dz, md = ts.r + r;
-        if (d2 > 1e-4 && d2 < md * md) {
-          const d = Math.sqrt(d2), push = (md - d) / d;
-          bot.pos.x += dx * push; bot.pos.z += dz * push;
-        }
-      }
-    }
   }
 
   /** @param {{playerPos:THREE.Vector3, playerTeam:number, playerAlive:boolean, now:number}} ctx */
@@ -319,7 +315,8 @@ export class BotSystem {
     const now = ctx.now;
     for (const bot of this.bots) {
       if (!bot.alive) {
-        if (bot.ragdoll) this._updateRagdoll(bot, dt);
+        if (bot.anim) bot.anim.update(dt, 0, 0, bot.group.rotation.y); // death clip plays out
+        else if (bot.ragdoll) this._updateRagdoll(bot, dt);
         if (now >= bot.respawnAt) this._respawn(bot);
         continue;
       }
@@ -342,9 +339,10 @@ export class BotSystem {
       move.x += (Math.random() * 2 - 1) * 0.15;
       move.z += (Math.random() * 2 - 1) * 0.15;
 
+      const px = bot.pos.x, pz = bot.pos.z;
       if (move.lengthSq() > 0) {
         move.normalize();
-        const spd = 6.0;
+        const spd = 5.8; // a touch past the run clip's pace keeps fights moving (timeScale covers it)
         bot.pos.x += move.x * spd * dt;
         bot.pos.z += move.z * spd * dt;
       }
@@ -359,23 +357,39 @@ export class BotSystem {
       if (bSub > diagBnd) { const d = (bSub - diagBnd) * 0.5; bot.pos.x -= d; bot.pos.z += d; }
       else if (bSub < -diagBnd) { const d = (-bSub - diagBnd) * 0.5; bot.pos.x += d; bot.pos.z += d; }
       bot.group.position.copy(bot.pos);
-      bot.group.rotation.y = Math.atan2(to.x, to.z);
+      // turn toward the target smoothly (snapping reads as twitchy on rigged avatars)
+      {
+        const want = Math.atan2(to.x, to.z);
+        let d = want - bot.group.rotation.y;
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        bot.group.rotation.y += bot.anim ? d * Math.min(1, dt * 9) : d;
+      }
 
-      // running rock: side-to-side lean + a little vertical bob while moving
-      const moving = move.lengthSq() > 1e-4;
-      bot.rockPhase += dt * (moving ? 9 : 0);
-      bot.group.rotation.z = moving ? Math.sin(bot.rockPhase) * 0.11 : 0;
-      bot.group.position.y = bot.pos.y + (moving ? Math.abs(Math.sin(bot.rockPhase)) * 0.09 : 0);
+      if (bot.anim) {
+        // real displacement (after collisions), smoothed, drives the run blend
+        if (dt > 0) {
+          const a = Math.min(1, dt * 6); // steadier run blend through strafe flips
+          bot.vel.x += ((bot.pos.x - px) / dt - bot.vel.x) * a;
+          bot.vel.z += ((bot.pos.z - pz) / dt - bot.vel.z) * a;
+        }
+        bot.anim.update(dt, bot.vel.x, bot.vel.z, bot.group.rotation.y);
+      } else {
+        // running rock: side-to-side lean + a little vertical bob while moving
+        const moving = move.lengthSq() > 1e-4;
+        bot.rockPhase += dt * (moving ? 9 : 0);
+        bot.group.rotation.z = moving ? Math.sin(bot.rockPhase) * 0.11 : 0;
+        bot.group.position.y = bot.pos.y + (moving ? Math.abs(Math.sin(bot.rockPhase)) * 0.09 : 0);
 
-      // walk cycle: legs swing from the hip, arms counter-swing from the
-      // opposite leg — eased toward zero when the bot stops moving.
-      const ease = Math.min(1, dt * 10);
-      const legTarget = moving ? Math.sin(bot.rockPhase) * 0.55 : 0;
-      const armTarget = moving ? Math.sin(bot.rockPhase) * 0.06 : 0; // hands stay on the rifle
-      bot.legL.rotation.x += (legTarget - bot.legL.rotation.x) * ease;
-      bot.legR.rotation.x += (-legTarget - bot.legR.rotation.x) * ease;
-      bot.armL.rotation.x += (-armTarget - bot.armL.rotation.x) * ease;
-      bot.armR.rotation.x += (armTarget - bot.armR.rotation.x) * ease;
+        // walk cycle: legs swing from the hip, arms counter-swing from the
+        // opposite leg — eased toward zero when the bot stops moving.
+        const ease = Math.min(1, dt * 10);
+        const legTarget = moving ? Math.sin(bot.rockPhase) * 0.55 : 0;
+        const armTarget = moving ? Math.sin(bot.rockPhase) * 0.06 : 0; // hands stay on the rifle
+        bot.legL.rotation.x += (legTarget - bot.legL.rotation.x) * ease;
+        bot.legR.rotation.x += (-legTarget - bot.legR.rotation.x) * ease;
+        bot.armL.rotation.x += (-armTarget - bot.armL.rotation.x) * ease;
+        bot.armR.rotation.x += (armTarget - bot.armR.rotation.x) * ease;
+      }
 
       // firing
       const chest = this._chest.copy(bot.pos); chest.y += 1.45;
@@ -400,6 +414,7 @@ export class BotSystem {
         aim.normalize();
         const origin = chest.clone().addScaledVector(aim, 0.6);
         this.spawnProjectile(origin, aim, bot.hex, bot.team.id, 190, false, bot);
+        if (bot.anim) bot.anim.fire();
         bot.shots++;
         if (this.onFire) this.onFire(origin, bot.hex, aim, bot.team.id);
         bot.burst++;
@@ -437,11 +452,16 @@ export class BotSystem {
 
     if (best.kind === 'bot') {
       const bot = best.bot;
-      const headshot = this._tmp.y >= bot.pos.y + 1.72;
+      // rigged avatars lean into runs and crouch, so measure from the real head
+      // bone (its origin sits at the base of the skull) rather than a fixed height
+      let headY = bot.pos.y + 1.72;
+      if (bot.head && bot.anim) headY = bot.head.getWorldPosition(this._headPos).y - 0.06;
+      const headshot = this._tmp.y >= headY;
       const dmg = headshot ? 100 : 50;
       bot.hp -= dmg;
       const killed = bot.hp <= 0;
       if (killed) this._tagBot(bot, shooterTeamId, now, shooter);
+      else this._flinch(bot, dir, now); // non-lethal hit staggers them
       if (this.onTag) {
         this.onTag({ shooter, victimName: bot.name, victimIsPlayer: false, pos: this._tmp, wounded: !killed, headshot });
       }
@@ -462,18 +482,29 @@ export class BotSystem {
     return true;
   }
 
+  /** Hit reaction: jolt along the shot line, an upper-body flinch, and a beat
+   *  before they can shoot back. Reads like a stagger without needing a clip. */
+  _flinch(bot, dir, now) {
+    bot.pos.addScaledVector(dir, 0.22);
+    if (bot.anim) bot.anim.hit(); // chest whip — reads as a stagger, not a shot
+    bot.reloadUntil = Math.max(bot.reloadUntil, now + 240);
+  }
+
   applyBlast(center, radius, maxDmg, shooterTeamId, shooter) {
-    if (!this.enabled) return;
+    if (!this.enabled) return false;
     const now = performance.now();
+    let tagged = false;
     for (const b of this.bots) {
       if (!b.alive || b.team.id === shooterTeamId) continue;
       const d = b.pos.distanceTo(center);
       if (d <= radius) {
+        tagged = true;
         const falloff = 1 - d / radius;
         const dmg = Math.round(maxDmg * Math.max(0.3, falloff));
         b.hp -= dmg;
         const killed = b.hp <= 0;
         if (killed) this._tagBot(b, shooterTeamId, now, shooter);
+        else this._flinch(b, this._tmp.subVectors(b.pos, center).normalize(), now);
         if (this.onTag) {
           this.onTag({ shooter, victimName: b.name, victimIsPlayer: false, pos: b.pos, wounded: !killed, blast: true });
         }
@@ -482,6 +513,7 @@ export class BotSystem {
     if (this._player.alive && this._player.team !== shooterTeamId && now >= this._playerInvulnUntil) {
       const d = this._player.pos.distanceTo(center);
       if (d <= radius) {
+        tagged = true;
         const falloff = 1 - d / radius;
         const dmg = Math.round(maxDmg * Math.max(0.3, falloff));
         const lethal = this.onPlayerHit ? this.onPlayerHit(shooterTeamId, 0xff6000, shooter, dmg, false) : true;
@@ -496,53 +528,6 @@ export class BotSystem {
         }
       }
     }
-  }
-
-  /**
-   * Test a projectile segment against enemy combatants for invisible mode.
-   * Increments paint hits instead of instant kill; returns true only when threshold reached.
-   * @returns {boolean} true if threshold reached (projectile consumed)
-   */
-  hitscanPaint(origin, dir, maxDist, shooterTeamId, threshold, hex) {
-    if (!this.enabled) return false;
-    const now = performance.now();
-    let best = null, bestT = maxDist;
-
-    for (const b of this.bots) {
-      if (!b.alive || b.team.id === shooterTeamId) continue;
-      this._tmp.copy(b.pos); this._tmp.y += 1.3;
-      const t = raySphere(origin, dir, this._tmp, 0.8);
-      if (t >= 0 && t < bestT) { bestT = t; best = { kind: 'bot', bot: b, t }; }
-    }
-    if (this._player.alive && this._player.team !== shooterTeamId && now >= this._playerInvulnUntil) {
-      this._tmp.copy(this._player.pos); this._tmp.y -= 0.55;
-      const t = raySphere(origin, dir, this._tmp, 0.85);
-      if (t >= 0 && t < bestT) { bestT = t; best = { kind: 'player', t }; }
-    }
-
-    if (!best) return false;
-    if (best.kind === 'bot') {
-      this._splatBot(best.bot, origin, dir, best.t, hex);
-      const killed = this.addPaintHit(best.bot, threshold);
-      return killed;
-    } else {
-      // Player hit - track via callback
-      this._playerInvulnUntil = now + 1500;
-      this.onPlayerPaintHit(threshold);
-      return true;
-    }
-  }
-
-  /**
-   * Bodies are intentionally NOT painted. A decal projected onto a moving bot
-   * bakes into world space at the hit point, so it floats where the bot *was*
-   * (and its drips linger untracked) — the "leftover paint from dead players"
-   * artifact. Combat feedback comes from the wet-splat sound + kill feed + the
-   * victim's paint-border instead; only the static arena keeps paint.
-   */
-  _splatBot(/* bot, origin, dir, t, hex */) {}
-
-  onPlayerPaintHit(threshold) {
-    // This will be set by main.js
+    return tagged;
   }
 }

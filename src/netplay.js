@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { makeAvatar, disposeAvatar } from './playerGlow.js';
+import { makeAvatar, disposeAvatar } from './avatarRig.js';
 import { teamSpawnXZ } from './spawns.js';
 
 /**
@@ -9,7 +9,7 @@ import { teamSpawnXZ } from './spawns.js';
  *  - remote players render as avatars (capsule + team ring + name label)
  *  - position/look sync at ~12Hz with smoothing on the receiving side
  *  - shots replicate as real projectiles in everyone's world
- *  - tags: shooter's client detects the hit, victim takes the paint-hit +
+ *  - tags: shooter's client detects the hit, victim takes the damage +
  *    respawn, team score updates for everyone, shooter gets the kill feed
  *  - host is the hub: joiner messages go to the host, which relays them on
  *  - bots sit out while a net session is live (PvP only, endless skirmish)
@@ -25,6 +25,19 @@ import { teamSpawnXZ } from './spawns.js';
  */
 
 const TEAM_HEX = [0xff6000, 0xf4f6f8]; // FIRE, WHITE
+
+// Remote avatars only get positions, so derive a smoothed ground velocity from
+// how far the interpolated body moved this frame and feed the run blend.
+function animateFromMotion(group, dt) {
+  const u = group.userData;
+  if (!u.anim || dt <= 0) return;
+  const m = u.motion || (u.motion = { x: group.position.x, z: group.position.z, vx: 0, vz: 0 });
+  const a = Math.min(1, dt * 8);
+  m.vx += ((group.position.x - m.x) / dt - m.vx) * a;
+  m.vz += ((group.position.z - m.z) / dt - m.vz) * a;
+  m.x = group.position.x; m.z = group.position.z;
+  u.anim.update(dt, m.vx, m.vz, group.rotation.y);
+}
 const SEND_HZ = 12;
 const EYE_HEIGHT = 1.7;
 
@@ -52,19 +65,8 @@ export class NetPlay {
     this.net = net;
     this.deps = deps;
     this.roster = new Map();   // id -> {id, name, team}
-    this.remotes = new Map();  // id -> {group, cur:{...}, target:{...}}
-    this.selfPosOverride = null; // set to the tank position while driving (else camera is used)
+    this.remotes = new Map();  // id -> {group, target:{...}}
 
-    // --- tanks (host-authoritative) ---
-    this.tankNet = [null, null];        // client: latest tsync state per team {x,z,ry,ty,bp,hp,alive,driver}
-    this.tankDriver = [null, null];     // driver id per team (authoritative; '' / null = AI)
-    this.clientTankPose = [null, null]; // host: latest pose a client driver sent
-    this.tankHits = [0, 0];             // host: pending damage hits to apply per team
-    this._tankSendT = 0;
-
-    // --- Lights Out moon easter egg (host tallies hits; wake is broadcast) ---
-    this._moonHits = 0;
-    this._moonWoken = false;
     this.scores = [0, 0];
     this.me = null;            // {id, name, team}
     this._sendT = 0;
@@ -128,7 +130,6 @@ export class NetPlay {
   collisionActors() {
     const out = [];
     for (const r of this.remotes.values()) {
-      if (r.inTank) continue; // no phantom body collision while they're in a tank
       out.push({ x: r.group.position.x, z: r.group.position.z, alive: true });
     }
     for (const g of this.ghostBots) {
@@ -186,8 +187,6 @@ export class NetPlay {
     if (this.net.role !== 'host') return;
     this.roster.delete(id);
     this._removeRemote(id);
-    // free any tank the departing player was driving
-    for (let t = 0; t < 2; t++) if (this.tankDriver[t] === id) this.tankDriver[t] = null;
     this.net.send({ t: 'remove', id });
     this.deps.onRosterChange();
   }
@@ -260,12 +259,20 @@ export class NetPlay {
           const [x, z, ry, alive] = msg.b[i];
           const g = this.ghostBots[i];
           g.target.x = x; g.target.z = z; g.target.ry = ry;
+          const anim = g.group.userData.anim;
+          if (anim) {
+            if (!alive && g.alive) anim.die();
+            else if (alive && !g.alive) { // respawned: jump to the spawn, don't slide there
+              anim.revive();
+              g.group.position.set(x, g.group.position.y, z);
+            }
+          }
           g.alive = !!alive;
-          g.group.visible = g.alive;
+          g.group.visible = g.alive || !!anim; // rigged corpses stay down until respawn
         }
         break;
       }
-      case 'bothit': { // (host only) a client's paintball hit one of my bots
+      case 'bothit': { // (host only) a client's round hit one of my bots
         if (this.isHost && !this.matchOver) {
           const shooter = this.roster.get(senderId);
           this.deps.tagBot(msg.i, shooter ? shooter.team : 0);
@@ -278,7 +285,9 @@ export class NetPlay {
         const g = this.ghostBots[msg.i];
         if (g) {
           if (g.alive && this.deps.onGhostBotDied) this.deps.onGhostBotDied(g.group.position);
-          g.alive = false; g.group.visible = false;
+          const anim = g.group.userData.anim;
+          if (anim) anim.die(); else g.group.visible = false;
+          g.alive = false;
         }
         break;
       }
@@ -299,7 +308,7 @@ export class NetPlay {
         if (r) {
           r.target.x = msg.p[0]; r.target.y = msg.p[1]; r.target.z = msg.p[2];
           r.target.ry = msg.ry;
-          r.inTank = !!msg.v; // driving a tank -> hidden + untargetable (the tank represents them)
+          r.target.st = msg.st || 0; // move flags: bit0 airborne, bit1 dive, bit2 slide
         }
         break;
       }
@@ -310,7 +319,15 @@ export class NetPlay {
         this.deps.spawnProjectile(
           new THREE.Vector3(...msg.o), new THREE.Vector3(...msg.d),
           msg.hex, team, msg.sp || 70, false, { netGhost: true },
-          (msg.r || msg.k) ? { radius: msg.r, splatScale: msg.ss, kind: msg.k } : undefined);
+          (msg.r || msg.k) ? { radius: msg.r, kind: msg.k } : undefined);
+        // recoil on the shooter's avatar (the host also relays its bots' shots,
+        // so only kick if the shot actually starts at this player's body)
+        const r = this.remotes.get(senderId);
+        const anim = r && r.group.userData.anim;
+        if (anim) {
+          const dx = msg.o[0] - r.group.position.x, dz = msg.o[2] - r.group.position.z;
+          if (dx * dx + dz * dz < 6.25) anim.fire();
+        }
         break;
       }
       case 'tag': {
@@ -324,50 +341,6 @@ export class NetPlay {
         break;
       }
 
-      // --- tanks ---
-      case 'tenter': { // client wants to drive its team's tank (host decides)
-        if (this.isHost) {
-          const p = this.roster.get(senderId);
-          if (p && p.team === msg.team && !this.tankDriver[msg.team]) {
-            this.tankDriver[msg.team] = senderId;
-          }
-        }
-        break;
-      }
-      case 'texit': {
-        if (this.isHost && this.tankDriver[msg.team] === senderId) this.tankDriver[msg.team] = null;
-        break;
-      }
-      case 'tdrive': { // client driver's pose for its tank
-        if (this.isHost && this.tankDriver[msg.team] === senderId) {
-          this.clientTankPose[msg.team] = { x: msg.p[0], z: msg.p[1], ry: msg.p[2], ty: msg.ty, bp: msg.bp };
-        }
-        break;
-      }
-      case 'thit': { // a client's shell hit a tank — host applies the damage
-        if (this.isHost) this.tankHits[msg.team]++;
-        break;
-      }
-      case 'tsync': { // host's authoritative tank states
-        if (!this.isHost) {
-          for (const [team, x, z, ry, ty, bp, hp, al, drv, y] of msg.s) {
-            this.tankNet[team] = { x, z, ry, ty, bp, hp, alive: !!al, driver: drv, y };
-            this.tankDriver[team] = drv || null;
-          }
-        }
-        break;
-      }
-
-      // --- Lights Out moon easter egg ---
-      case 'mhit': { // someone painted the moon: everyone splats; the host tallies
-        if (this.deps.onMoonSplat) this.deps.onMoonSplat(msg.p, msg.hex);
-        if (this.isHost) { this._moonHits++; this._checkMoonWake(); }
-        break;
-      }
-      case 'mwake': { // host says the moon woke — everyone plays it + barrages
-        if (this.deps.onMoonWake) this.deps.onMoonWake();
-        break;
-      }
     }
   }
 
@@ -380,7 +353,6 @@ export class NetPlay {
     this.remotes.set(p.id, {
       group,
       target: { x: group.position.x, y: EYE_HEIGHT, z: group.position.z, ry: 0 },
-      inTank: false, // true while this player is driving a tank: hidden + untargetable
     });
   }
 
@@ -426,23 +398,31 @@ export class NetPlay {
     const k = Math.min(1, dt * 10);
     for (const r of this.remotes.values()) {
       const g = r.group;
-      g.visible = !r.inTank; // in a tank: the tank is the avatar, so hide the body
-      // keep tracking the tank spot even while hidden, so exiting doesn't snap
       g.position.x += (r.target.x - g.position.x) * k;
       g.position.z += (r.target.z - g.position.z) * k;
       g.position.y += ((r.target.y - EYE_HEIGHT) - g.position.y) * k; // eye -> feet
       let d = r.target.ry - g.rotation.y;
       d = Math.atan2(Math.sin(d), Math.cos(d));
       g.rotation.y += d * k;
+      animateFromMotion(g, dt);
+      const anim = g.userData.anim;
+      if (anim) {
+        const st = r.target.st || 0;
+        anim.setAirborne(!!(st & 1));
+        const diving = !!(st & 2);
+        if (diving && !r._dive) anim.roll();
+        r._dive = diving;
+      }
     }
     // smooth the host's bots on clients (ghosts)
     for (const g of this.ghostBots) {
-      if (!g.alive) continue;
+      if (!g.alive) { animateFromMotion(g.group, dt); continue; } // death clip plays out
       g.group.position.x += (g.target.x - g.group.position.x) * k;
       g.group.position.z += (g.target.z - g.group.position.z) * k;
       let d = g.target.ry - g.group.rotation.y;
       d = Math.atan2(Math.sin(d), Math.cos(d));
       g.group.rotation.y += d * k;
+      animateFromMotion(g.group, dt);
     }
 
     // broadcast my own state at SEND_HZ
@@ -451,14 +431,11 @@ export class NetPlay {
       this._sendT = 0;
       const cam = this.deps.camera;
       _euler.setFromQuaternion(cam.quaternion);
-      // while driving the tank the camera is a 3rd-person rig, so broadcast the
-      // tank's own position instead of the camera's
-      const pos = this.selfPosOverride || cam.position;
       this.net.send({
         t: 's',
-        p: [+pos.x.toFixed(2), +pos.y.toFixed(2), +pos.z.toFixed(2)],
+        p: [+cam.position.x.toFixed(2), +cam.position.y.toFixed(2), +cam.position.z.toFixed(2)],
         ry: +_euler.y.toFixed(3),
-        v: this.selfPosOverride ? 1 : 0, // 1 = in a tank -> peers hide my body + can't shoot it
+        st: this.deps.moveFlags ? this.deps.moveFlags() : 0,
       });
     }
 
@@ -517,7 +494,7 @@ export class NetPlay {
     this._statTally = null;
   }
 
-  /** Announce a shot so everyone else sees the paintball (team drives color). */
+  /** Announce a shot so everyone else sees the round (team drives color). */
   sendShot(origin, dir, hex, team, opts = null) {
     if (!this.active) return;
     const m = {
@@ -527,34 +504,9 @@ export class NetPlay {
       hex,
       team: team ?? (this.me ? this.me.team : 0),
     };
-    if (opts) { m.r = opts.radius; m.sp = opts.speed; m.ss = opts.splatScale; m.k = opts.kind; }
+    if (opts) { m.r = opts.radius; m.sp = opts.speed; m.k = opts.kind; }
     this.net.send(m);
   }
-
-  // --- tank sync API (main.js drives these) ---
-  sendTankEnter(team) { if (this.active) this.net.send({ t: 'tenter', team }); }
-  sendTankExit(team) { if (this.active) this.net.send({ t: 'texit', team }); }
-  sendTankDrive(team, x, z, ry, ty, bp) {
-    if (this.active) this.net.send({ t: 'tdrive', team, p: [+x.toFixed(2), +z.toFixed(2), +ry.toFixed(3)], ty: +ty.toFixed(3), bp: +bp.toFixed(3) });
-  }
-  sendTankHit(team) { if (this.active) this.net.send({ t: 'thit', team }); }
-  broadcastTankSync(snap) { if (this.active) this.net.send({ t: 'tsync', s: snap }); }
-
-  // --- moon easter-egg sync API ---
-  /** I painted the moon. Tell peers to splat it; the host tallies toward waking. */
-  sendMoonHit(local, hex) {
-    if (!this.active) return;
-    this.net.send({ t: 'mhit', p: local, hex }); // host -> all clients; client -> host (auto-relayed)
-    if (this.isHost) { this._moonHits++; this._checkMoonWake(); }
-  }
-  _checkMoonWake() {
-    if (this._moonWoken || this._moonHits < 8) return;
-    this._moonWoken = true;
-    this.net.send({ t: 'mwake' });
-    if (this.deps.onMoonWake) this.deps.onMoonWake();
-  }
-  /** Host: re-arm the moon once the egg has finished (called from the main loop). */
-  rearmMoon() { if (this.isHost) { this._moonHits = 0; this._moonWoken = false; } }
 
   /**
    * Shooter-side hit test of my projectile segment against remote players AND
@@ -567,7 +519,6 @@ export class NetPlay {
     for (const [id, r] of this.remotes) {
       const p = this.roster.get(id);
       if (this.me && p && p.team === this.me.team) continue; // no friendly fire
-      if (r.inTank) continue; // in a tank -> untargetable (shoot the tank instead)
       _center.copy(r.group.position); _center.y += 1.3;
       const t = raySphere(origin, dir, _center, 0.8);
       if (t >= 0 && t < bestT) {
@@ -622,7 +573,7 @@ export class NetPlay {
     const out = [];
     for (const [id, r] of this.remotes) {
       const p = this.roster.get(id);
-      if (p && !r.inTank) out.push({ pos: r.group.position, team: p.team, alive: true }); // skip tank drivers
+      if (p) out.push({ pos: r.group.position, team: p.team, alive: true });
     }
     return out;
   }
@@ -633,7 +584,6 @@ export class NetPlay {
     for (const [id, r] of this.remotes) {
       const p = this.roster.get(id);
       if (!p || p.team === shooterTeam) continue;
-      if (r.inTank) continue; // in a tank -> untargetable by bots too
       _center.copy(r.group.position); _center.y += 1.3;
       const t = raySphere(origin, dir, _center, 0.8);
       if (t >= 0 && t < bestT) { bestT = t; best = { id }; }

@@ -104,8 +104,8 @@ kill feed. Signaling runs through the tiny server in `server/` (see
 - `src/settings.js` — player-facing settings + persistence
 - `server/` — WebRTC signaling server
 
-Legacy paintball-era systems (tanks, jet, nuke, splat decals) remain in the
-tree but are inert — gated behind `LEGACY_VEHICLES` and unused in this ruleset.
+All paintball-era systems (paint, splat decals, tanks, jet, nuke, moon easter
+egg) have been fully removed — this ruleset is rifle + rockets only.
 
 ## Credits
 

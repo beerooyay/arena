@@ -20,17 +20,20 @@
   <div id="app"></div>
 
   <!-- Minimalist Precision Crosshair -->
+  <!-- Battle-rifle reticle: thin ring + four inner ticks, bright centre dot on the shot line -->
   <div id="crosshair" class="hidden">
-    <span class="ch-line ch-h"></span>
-    <span class="ch-line ch-v"></span>
-    <span class="ch-dot"></span>
+    <svg class="ch-svg" viewBox="-20 -20 40 40" aria-hidden="true">
+      <circle class="ch-ring" r="12.5" />
+      <path class="ch-tick" d="M0 -12.5V-8.5 M0 12.5V8.5 M-12.5 0H-8.5 M12.5 0H8.5" />
+      <circle class="ch-dot" r="1.9" />
+    </svg>
   </div>
 
   <!-- Hitmarker -->
   <div id="hitmarker"><i></i><i></i></div>
 
   <!-- Tactical Sniper Scope Overlay (Active when aiming with Battle Rifle) -->
-  <div id="buster-scope">
+  <div id="rifle-scope">
     <div class="bs-vignette"></div>
     <div class="bs-grid"></div>
     <div class="bs-scan"></div>
@@ -69,15 +72,16 @@
     <div class="bs-top">// FREE FIRE ARENA &middot; PRECISION OPTICS &middot; 1-HIT HEADSHOT //</div>
 
     <div class="bs-solution">
-      <div class="bs-status" id="buster-scope-status">ACTIVE SIGHT</div>
     </div>
   </div>
 
-  <!-- Paint / Impact Vignette -->
-  <div id="paint-hit">
-    <div class="ph-vignette"></div>
-    <div class="ph-drips"></div>
-  </div>
+  <!-- Damage Vignette (attacker's team colour) + directional hit arc -->
+  <div id="hit-vignette"><div class="ph-vignette"></div></div>
+  <div id="hit-dir"><i></i></div>
+
+  <!-- Reload ring around the reticle + low-ammo prompt -->
+  <div id="ch-reload"><svg viewBox="0 0 56 56"><circle cx="28" cy="28" r="24"/></svg></div>
+  <div id="reload-prompt"><kbd id="reload-prompt-key">R</kbd><span>RELOAD</span></div>
 
   <!-- Kill confirmation -->
   <div id="killfeed" class="hidden"><span class="kf-verb">ELIMINATED</span> <span id="kf-name"></span></div>
@@ -124,13 +128,7 @@
         <span id="weap-ammo">SEMI-AUTO</span>
       </div>
       <div id="weap-reload-bar" class="hidden"><i id="weap-reload-fill"></i></div>
-      <span class="weap-key-hint"><kbd>Q</kbd>Swap</span>
-    </div>
-
-    <!-- Hidden legacy element for script hooks -->
-    <div id="color-hud" style="display:none;">
-      <span id="color-swatch"></span>
-      <span id="color-name">FIRE</span>
+      <span class="weap-key-hint"><kbd>Q</kbd>Swap <kbd>R</kbd>Reload</span>
     </div>
   </div>
 
@@ -145,7 +143,7 @@
         <feGaussianBlur in="noise" stdDeviation="3" result="soft" />
         <feDisplacementMap in="SourceGraphic" in2="soft" scale="46" xChannelSelector="R" yChannelSelector="G" />
       </filter>
-      <symbol id="kf-splat-ico" viewBox="0 0 24 24">
+      <symbol id="kf-flame-ico" viewBox="0 0 24 24">
         <path d="M13.6 2c.4 3.4-1.2 5.6-3.6 7.4C7.6 11.1 5 13 5 16.6 5 19.6 7.3 22 10.6 22c-1.4-.9-2-2.2-1.8-3.6.3-2 2.4-2.7 4.3-3.8 1.9-1.1 3.4-2.6 3.8-4.7.9 1.5 1.3 3.2 1 5-.4 2.8-2.2 5.3-5.1 7.1C17.4 21.6 20 18.7 20 14.6c0-5.2-3.4-9.8-6.4-12.6z" />
       </symbol>
       <symbol id="kf-gun-ico" viewBox="0 0 32 16">
@@ -157,10 +155,6 @@
   <!-- Title Screen -->
   <div id="title">
     <div id="title-hero">
-      <div class="brand-lockup">
-        <img class="brand-mark" src="./assets/ffa-icon.png" alt="" />
-        <img class="brand-word" src="./assets/ffa-text.png" alt="Free Fire Arena" />
-      </div>
       <div id="title-tag" class="t-eyebrow">Team Deathmatch</div>
     </div>
     <div id="title-actions">
@@ -184,10 +178,6 @@
 
       <main class="lc-main">
         <section class="lc-center">
-          <div class="brand-lockup brand-lockup--menu">
-            <img class="brand-mark" src="./assets/ffa-icon.png" alt="" />
-            <img class="brand-word" src="./assets/ffa-text.png" alt="Free Fire Arena" />
-          </div>
           <div class="t-eyebrow">Team Deathmatch</div>
           <button class="btn btn-primary btn-xl" id="play-btn">
             <span>Play Now</span>
@@ -240,24 +230,30 @@
       <!-- Hidden hooks the game logic still wires up -->
       <div class="lc-hooks" aria-hidden="true">
         <span id="lc-pname"></span>
+        <span id="lc-arena-name"></span>
+        <span id="lc-arena-sub"></span>
         <button id="lc-top-settings"></button>
         <button id="mode-quick"></button>
         <button id="mode-private"></button>
         <button id="mode-practice"></button>
         <button id="mode-custom"></button>
-        <button id="nav-splats"></button>
         <button id="open-public-btn"></button>
         <button id="open-private-btn"></button>
         <button id="open-settings-btn"></button>
         <button id="open-howto-btn"></button>
-        <button id="open-splat-btn"></button>
         <div id="map-picker"></div>
-        <div id="buster-hud"><span id="buster-lock-pct">0%</span></div>
       </div>
     </div>
   </div>
 
   <!-- Controls Modal -->
+  <!-- One logo for the title AND the main menu: pinned in place while the
+       screens around it cross-fade (shown via sibling selectors in styles.css) -->
+  <div id="brand" class="brand-lockup" aria-hidden="true">
+    <img class="brand-mark" src="./assets/ffa-icon.png" alt="" />
+    <img class="brand-word" src="./assets/ffa-text.png" alt="Free Fire Arena" />
+  </div>
+
   <div id="howto-overlay" class="menu-overlay hidden">
     <div class="menu-card glass">
       <h2>Controls</h2>
@@ -267,6 +263,7 @@
         <div><span class="keys"><kbd>LMB</kbd></span>Fire</div>
         <div><span class="keys"><kbd>RMB</kbd></span>Aim / scope</div>
         <div><span class="keys"><kbd>Q</kbd><kbd>1</kbd><kbd>2</kbd></span>Swap weapon</div>
+        <div><span class="keys"><kbd>R</kbd></span>Reload</div>
         <div><span class="keys"><kbd>Space</kbd></span>Jump</div>
         <div><span class="keys"><kbd>Shift</kbd></span>Sprint</div>
         <div><span class="keys"><kbd>Ctrl</kbd><kbd>C</kbd></span>Crouch / slide / dive</div>
@@ -310,14 +307,9 @@
     </div>
   </div>
 
-  <!-- Legacy engine hooks kept hidden while vehicle and network systems remain loaded -->
+  <!-- Network overlays (kept hidden inside #compat until a session is live) -->
   <div id="compat" class="hidden" aria-hidden="true">
-    <div id="title-splat"></div>
-    <div id="jet-hud"><span id="jet-speed">0</span><span id="jet-alt">0</span><i id="jet-throttle-fill"></i><div id="jet-warn" class="hidden"><span id="jet-warn-count">8</span></div></div>
-    <div id="tank-sight" class="hidden"><div id="ts-zoom"></div><span id="ts-exit-key">E</span><span id="ts-rng">---</span><div id="ts-compass"></div><span id="ts-heading">000</span><span id="ts-speed">0</span><span id="ts-gun-status">READY</span><span id="ts-armor">100</span><i id="ts-armor-fill"></i><div id="ts-boost"><i id="ts-boost-fill"></i></div></div>
-    <div id="tank-prompt" class="hidden"><span id="tank-prompt-key">E</span></div>
     <div id="net-hud" class="hidden"><span id="net-code"></span><span id="net-count"></span><span id="net-status" class="hidden"></span></div>
-    <span id="bs-brg">---</span><i id="bs-lockfill"></i>
 
     <div id="public-overlay" class="menu-overlay hidden"><span id="public-note"></span><div id="server-rows"></div><div id="server-empty"></div><div id="public-status"></div><button id="public-host-btn"></button><button id="public-enter-btn" class="hidden"></button><button id="public-refresh-btn"></button><button id="public-back-btn"></button></div>
     <div id="private-overlay" class="menu-overlay hidden"><span id="private-note"></span><div id="room-code-box" class="hidden"><span id="room-code-value"></span></div><input id="join-code-input" /><div id="join-status"></div><button id="private-host-btn"></button><button id="private-enter-btn" class="hidden"></button><button id="private-join-btn"></button><button id="private-back-btn"></button></div>

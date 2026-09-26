@@ -2,7 +2,7 @@
  * AudioManager — lightweight WebAudio sound player.
  *
  * Decodes short clips once, then plays them through pooled buffer sources so
- * many overlapping shots/splats can ring at the same time without cutting each
+ * many overlapping shots/hits can ring at the same time without cutting each
  * other off (which an HTMLAudioElement would do). Master volume is wired to the
  * Settings menu and persisted there.
  *
@@ -42,6 +42,13 @@ export class AudioManager {
         console.warn('audio: failed to load', name, e);
       }
     }));
+  }
+
+  /** Register synthesized clips: build(ctx) -> {name: AudioBuffer}. */
+  addBuffers(build) {
+    this._ensureCtx();
+    if (!this.ctx) return;
+    try { Object.assign(this.buffers, build(this.ctx)); } catch (e) { console.warn('audio: synth failed', e); }
   }
 
   /** Resume the context. Call from a user gesture (click / key / gamepad). */

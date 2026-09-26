@@ -1,6 +1,9 @@
 import * as THREE from 'three';
-import { buildGun, ORANGE, upgradeToRocketRifle, RR_MUZZLES, RR_TOP } from './gunModel.js';
+import { buildGun, ORANGE, upgradeToRocketRifle, RR_MUZZLES, RR_TOP, RR_SCALE, RR_GRIP } from './gunModel.js';
+import { makeFirstPersonArms } from './avatarRig.js';
 import { muzzleFlashTexture } from './fx.js';
+
+const _lookEuler = new THREE.Euler();
 
 export class Weapon {
   constructor() {
@@ -14,8 +17,8 @@ export class Weapon {
 
     this.mode = 0; // 0 = rifle, 1 = rocket
 
-    this.hipX = 0.3; this.hipY = -0.29; this.hipZ = -0.74;
-    this.aimX = 0.00; this.aimY = -0.195; this.aimZ = -0.36;
+    this.hipX = 0.27; this.hipY = -0.31; this.hipZ = -0.52; // classic FPS hold: low right, downrange, stock off-frame
+    this.aimX = 0.00; this.aimY = -0.195; this.aimZ = -0.42; // ~ -0.44 × viewScale keeps the sight picture
     this.wallPull = 0;
     this.cant = 0;
     this.wallPullZ = 0.32;
@@ -24,7 +27,7 @@ export class Weapon {
     this.aimSpeed = 26;
     this.recoilAmount = 0.25;
 
-    this.sprintX = 0.24; this.sprintY = -0.32; this.sprintZ = -0.36;
+    this.sprintX = 0.22; this.sprintY = -0.3; this.sprintZ = -0.4;
     this.sprintPitch = -0.80;
     this.sprintYaw = 0.52;
     this.sprintRoll = 0.45;
@@ -41,28 +44,39 @@ export class Weapon {
     this.slideZ = 0;
     this.slideBlend = 16;
 
+    // recoil: a damped spring per channel (back, up-pitch, yaw, roll) kicked by
+    // each shot; look sway: the gun lags a touch behind the camera's rotation
+    this.recoil = { z: 0, vz: 0, p: 0, vp: 0, y: 0, vy: 0, r: 0, vr: 0 };
+    this.recoilStiff = 180; this.recoilDamp = 17;
+    this._lookPrev = null;
+    this._look = { x: 0, y: 0 };
+    this.lookSway = 0.9;
     this.aimT = 0;
     this.sprintT = 0;
     this.slideT = 0;
+    this.swapT = 1;      // 1 = gun up; dips to 0 mid-swap
+    this.reloadT = 0;    // 0..1 while a reload is in progress
+    this._swapCb = null;
     this._swayPhase = 0;
     this._kick = 0;
 
-    this.hipPitch = 0.05;
-    this.hipYaw = 0.26;  // muzzle angled in toward the crosshair
-    this.hipRoll = 0.08;
-    this.viewScale = 0.82;
+    this.hipPitch = 0.10;  // stock dips out of frame
+    this.hipYaw = 0.20;    // mostly forward, a hint of the flank showing
+    this.hipRoll = 0.06;
+    this.viewScale = 0.95;
     this.refFov = 75;
     this.materials = [];
 
     this._build();
     // swap in the authored rocket rifle once it loads (procedural gun until then)
-    upgradeToRocketRifle(this._gun, { keep: [this.arm, this.flash], castShadow: false }).then((ok) => {
+    this._rrReady = upgradeToRocketRifle(this._gun, { keep: [this.arm, this.flash], castShadow: false }).then((ok) => {
       if (!ok) return;
       this.rr = this._gun.rr;
       this.rr.layers.mask = this._gun.group.layers.mask; // stay on the viewmodel layer
       this._muzzles = [RR_MUZZLES.top, ...RR_MUZZLES.tubes];
       this._rrAimY = -(RR_TOP + 0.012) * this.viewScale; // sight along the top line
       this.aimY = this._rrAimY;
+      return true;
     });
     this.pose.scale.setScalar(this.viewScale);
     this.pose.position.set(this.hipX, this.hipY, this.hipZ);
@@ -125,7 +139,34 @@ export class Weapon {
     add(new THREE.BoxGeometry(0.004, 0.012, 0.12), gun.glowMats[0], 0.12, -0.17, 0.19, 1.05, 0, -0.25);
   }
 
-  setPaintColor() {}
+  /**
+   * Swap the box glove for the team suit's real arms, posed on the rifle.
+   * Call once the rigged avatars have loaded (and again if the team changes).
+   */
+  attachArms(hex) {
+    return this._rrReady.then((ok) => {
+      if (!ok) return false;
+      const arms = makeFirstPersonArms(hex);
+      if (!arms) return false;
+      if (this.suitArms) { this._gun.group.remove(this.suitArms); }
+      // rr geometry is baked as S(RR_SCALE) * RotY(90deg) * T(-RR_GRIP) (see
+      // gunModel.js); place the suit so its rifle lands exactly on that
+      const rrToGun = new THREE.Matrix4().makeScale(RR_SCALE, RR_SCALE, RR_SCALE)
+        .multiply(new THREE.Matrix4().makeRotationY(Math.PI / 2))
+        .multiply(new THREE.Matrix4().makeTranslation(-RR_GRIP.x, -RR_GRIP.y, -RR_GRIP.z));
+      const m = arms.model;
+      m.matrixAutoUpdate = false;
+      m.matrix.copy(rrToGun).multiply(arms.rifleMatrix.clone().invert());
+      m.traverse((o) => { o.layers.mask = this._gun.group.layers.mask; }); // viewmodel layer
+      this._gun.group.add(m);
+      this.suitArms = m;
+      this.arm.visible = false; // retire the box glove
+      return true;
+    });
+  }
+
+  /** Dip the gun down, run cb at the bottom (model swap), raise it again. */
+  swap(cb) { if (this._swapCb) this._swapCb(); this._swapCb = cb; }
 
   setNeon(on) {
     for (const m of this.glowMats) m.emissiveIntensity = m.userData.baseEmissive * (on ? 1.2 : 1);
@@ -140,6 +181,14 @@ export class Weapon {
 
   kick(amount = 1) {
     this._kick = amount;
+    // spring impulses: shove back + muzzle climb, small random yaw/roll; much
+    // lighter while aiming down sights
+    const ads = 1 - 0.7 * this.aimT;
+    const R = this.recoil;
+    R.vz += 1.6 * amount * ads;
+    R.vp += 5.5 * amount * ads;
+    R.vy += (Math.random() - 0.5) * 2.4 * amount * ads;
+    R.vr += (Math.random() - 0.5) * 4.0 * amount * ads;
     // rifle fires from the top barrel; rockets alternate the lower tubes
     const m = this.mode === 0 ? this._muzzles[0] : this._muzzles[1 + (this._rocketSide++ % 2)];
     this.flash.position.copy(m);
@@ -148,10 +197,23 @@ export class Weapon {
     this._flashT = 1;
   }
 
-  update(dt, aiming, baseFov = 75, sprinting = false, sliding = false) {
+  /**
+   * @param move 0..1 — player ground speed as a fraction of sprint speed; drives
+   *   the walk bob (sprint has its own pose + sway)
+   */
+  update(dt, aiming, baseFov = 75, sprinting = false, sliding = false, move = 0, reloading = false) {
     const target = aiming ? 1 : 0;
     this.aimT += (target - this.aimT) * Math.min(1, dt * this.aimSpeed);
     const t = this.aimT;
+
+    // weapon swap: dive to the bottom, swap models there, come back up
+    if (this._swapCb || this.swapT < 1) {
+      this.swapT = THREE.MathUtils.clamp(this.swapT + (this._swapCb ? -7 : 5.5) * dt, 0, 1);
+      if (this.swapT === 0 && this._swapCb) { this._swapCb(); this._swapCb = null; }
+    }
+    const sw = 1 - this.swapT;
+    this.reloadT += ((reloading ? 1 : 0) - this.reloadT) * Math.min(1, dt * 10);
+    const rl = this.reloadT;
 
     const sTarget = (sprinting && !aiming) ? 1 : 0;
     this.sprintT += (sTarget - this.sprintT) * Math.min(1, dt * this.sprintSpeed);
@@ -174,6 +236,32 @@ export class Weapon {
     this.flashMat.opacity = this._flashT;
     const k = this._kick * this._kick * 0.014 * this.recoilAmount;
 
+    // integrate the recoil springs (semi-implicit Euler, sub-stepped for stability)
+    const R = this.recoil;
+    for (let n = 0, h = Math.min(dt, 0.05) / 2; n < 2; n++) {
+      for (const [x, v] of [['z', 'vz'], ['p', 'vp'], ['y', 'vy'], ['r', 'vr']]) {
+        R[v] += (-this.recoilStiff * R[x] - this.recoilDamp * R[v]) * h;
+        R[x] += R[v] * h;
+      }
+    }
+    // look sway: follow camera yaw/pitch deltas with lag (the gun trails the view)
+    const cam = this.root.parent;
+    if (cam) {
+      _lookEuler.setFromQuaternion(cam.quaternion, 'YXZ'); // yaw/pitch as the look controls define them
+      const ex = _lookEuler.x, ey = _lookEuler.y;
+      if (this._lookPrev) {
+        let dyaw = ey - this._lookPrev.y; dyaw = Math.atan2(Math.sin(dyaw), Math.cos(dyaw));
+        const dpitch = ex - this._lookPrev.x;
+        const lim = 0.06;
+        this._look.x = THREE.MathUtils.clamp(this._look.x - dyaw * this.lookSway, -lim, lim);
+        this._look.y = THREE.MathUtils.clamp(this._look.y - dpitch * this.lookSway, -lim, lim);
+      }
+      this._lookPrev = { x: ex, y: ey };
+      const back = Math.min(1, dt * 9);
+      this._look.x -= this._look.x * back; this._look.y -= this._look.y * back;
+    }
+    const swayK = 1 - 0.8 * t; // steadier while aiming
+
     const wp = this.wallPull;
     let px = THREE.MathUtils.lerp(this.hipX, this.aimX, t);
     let py = THREE.MathUtils.lerp(this.hipY, this.aimY, t) - k * 0.35 + wp * this.wallPullY;
@@ -186,6 +274,23 @@ export class Weapon {
     px += this.slideX * sl;
     py += this.slideY * sl;
     pz += this.slideZ * sl;
+    // swap dip: the gun drops out of frame and returns with the other weapon
+    px += sw * 0.06;
+    py -= sw * 0.42;
+    // reload pose: drops low and cants inboard, mag-well toward the camera
+    px += rl * 0.05;
+    py -= rl * 0.30;
+    py = Math.max(py, this.hipY - 0.55); // never sink fully out of frame
+    // walk bob (hip only, fades while aiming/sprinting) + slow breathing at rest
+    this._walkPhase = (this._walkPhase || 0) + dt * (4 + move * 9);
+    this._breath = (this._breath || 0) + dt;
+    const hip = (1 - t) * (1 - s) * (1 - sl);
+    const wb = Math.min(1, move * 1.6) * hip;
+    px += Math.sin(this._walkPhase) * 0.009 * wb;
+    py += -Math.abs(Math.cos(this._walkPhase)) * 0.012 * wb + Math.sin(this._breath * 1.7) * 0.0022 * (1 - t);
+    px += this._look.x * 0.5 * swayK;
+    py += this._look.y * 0.5 * swayK;
+    pz += R.z * 0.05;
     this.pose.position.set(px, py, pz);
 
     let rx = this.hipPitch * (1 - t) + k * 1.4;
@@ -196,6 +301,13 @@ export class Weapon {
     rz = THREE.MathUtils.lerp(rz, this.sprintRoll + swayRz, s);
     rx = THREE.MathUtils.lerp(rx, this.slidePitch, sl);
     rz = THREE.MathUtils.lerp(rz, this.slideRoll, sl);
+    rx += sw * 0.75 + rl * (0.55 + Math.sin(this._breath * 9) * 0.05); // reload wobbles like hands working
+    ry += rl * 0.35;
+    rz += sw * 0.35 + rl * 0.30;
+    rz += Math.sin(this._walkPhase) * 0.012 * wb; // tiny roll with each step
+    rx += R.p * 0.06 + this._look.y * 0.6 * swayK;
+    ry += R.y * 0.03 + this._look.x * 0.8 * swayK;
+    rz += R.r * 0.03 + this._look.x * 0.5 * swayK;
     this.pose.rotation.set(rx, ry, rz);
   }
 

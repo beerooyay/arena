@@ -52,7 +52,7 @@ export class DevRecorder {
     let stream, displayTrack = null;
     try {
       // Capture the whole tab so every DOM overlay (crosshair, HUD, scoreboard,
-      // kill feed, tank sight) is included — canvas.captureStream would miss them.
+      // kill feed, scope) is included — canvas.captureStream would miss them.
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: fps },
         audio: false,
@@ -78,7 +78,7 @@ export class DevRecorder {
     const chunks = [];
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
     rec.onstop = () => {
-      this._download(new Blob(chunks, { type: 'video/webm' }), 'whiteout-clip', 'webm');
+      this._download(new Blob(chunks, { type: 'video/webm' }), 'ffa-clip', 'webm');
       if (displayTrack) displayTrack.stop(); // release the tab-share (removes the banner)
     };
     rec.start();
@@ -103,7 +103,7 @@ export class DevRecorder {
     const rec = new MediaRecorder(a, mime ? { mimeType: mime } : undefined);
     const chunks = [];
     rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
-    rec.onstop = () => this._download(new Blob(chunks, { type: 'audio/webm' }), 'whiteout-audio', 'webm');
+    rec.onstop = () => this._download(new Blob(chunks, { type: 'audio/webm' }), 'ffa-audio', 'webm');
     rec.start();
     this.audioRec = rec;
     this._showIndicator();
@@ -135,7 +135,7 @@ export class DevRecorder {
       el.style.cssText =
         'position:fixed;top:10px;right:12px;z-index:9999;display:flex;align-items:center;' +
         'gap:7px;padding:5px 10px;border-radius:6px;background:rgba(20,20,22,.72);' +
-        'color:#fff;font:700 12px/1 system-ui,sans-serif;letter-spacing:.12em;pointer-events:none';
+        'color:#fff;font:700 12px/1 var(--font);letter-spacing:.12em;pointer-events:none';
       const dot = document.createElement('span');
       dot.style.cssText = 'width:9px;height:9px;border-radius:50%;background:#FF4848;' +
         'animation:wo-rec-blink 1s steps(1) infinite';

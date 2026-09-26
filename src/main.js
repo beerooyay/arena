@@ -4,37 +4,28 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import GUI from 'lil-gui';
 
 import { buildArena } from './arena.js';
-import { PaintSystem } from './paint.js';
 import { createOutline, NO_OUTLINE_LAYER } from './outline.js';
 import { PlayerController } from './player.js';
 import { InputManager } from './input.js';
 import { BotSystem, FIRE_NAMES, WHITE_NAMES } from './bots.js';
 import { Settings } from './settings.js';
-import { SplatDesigner } from './splatDesigner.js';
 import { Weapon } from './weapon.js';
 import { AudioManager } from './audio.js';
 import { NetClient, signalUrl } from './net.js';
 import { NetPlay } from './netplay.js';
 import { GLOW, setGlow } from './playerGlow.js';
-import { teamSpawnXZ, SPAWNS_PER_TEAM, SPAWN_EYE_Y, setArenaSize, tankSpawn } from './spawns.js';
-import { Tank } from './tank.js';
-import { Jet } from './jet.js';
-import { TankFX } from './tankFX.js';
-import { TankBuster } from './tankBuster.js';
+import { preloadAvatars } from './avatarRig.js';
+import { createFloorReflection } from './floorReflection.js';
+import { initLiquidGlass } from './liquidGlass.js';
+import { teamSpawnXZ, scatterSpawnXZ, SPAWN_EYE_Y, setArenaSize } from './spawns.js';
 import { createNightSky } from './nightSky.js';
 import { createDaySky } from './sky.js';
-import { Nuke } from './nuke.js';
 import { unlockAchievement } from './steamClient.js';
 import { FlashLights } from './fx.js';
+import { buildCombatSfx } from './sfx.js';
 
-// ---------------------------------------------------------------------------
-// Paint colors (future: teams)
-// ---------------------------------------------------------------------------
-const COLORS = [
-  { name: 'FIRE', hex: 0xff6000 },
-  { name: 'WHITE', hex: 0xf4f6f8 },
-];
-let colorIndex = 0;
+// Team palette: FIRE (orange) and WHITE. The only accent colours in the game.
+const TEAM_HEX = [0xff6000, 0xf4f6f8]; // FIRE, WHITE
 
 // Dev-only: the lil-gui tuning panel exists only during local development
 // (localhost) or with ?dev in the URL. The itch build is served from itch's
@@ -42,7 +33,6 @@ let colorIndex = 0;
 const DEV = (['localhost', '127.0.0.1'].includes(location.hostname)
   || new URLSearchParams(location.search).has('dev'))
   && !new URLSearchParams(location.search).has('prod'); // ?prod forces the itch (DEV=false) path for testing
-let colorCtrl = null; // dev-panel color dropdown (null when the panel is off)
 
 // ---------------------------------------------------------------------------
 // Renderer / scene / camera
@@ -76,14 +66,14 @@ const pmrem = new THREE.PMREMGenerator(renderer);
 const envTex = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
 scene.environment = envTex;
 
-const hemi = new THREE.HemisphereLight(0xffffff, 0xd7dce2, 0.62);
+const hemi = new THREE.HemisphereLight(0xfff3e6, 0x9a958e, 0.62);
 scene.add(hemi);
 
 const ambient = new THREE.AmbientLight(0xffffff, 0.64);
 scene.add(ambient);
 
 // kept fairly low so shadowed faces stay near-white; the outline defines shape
-const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+const sun = new THREE.DirectionalLight(0xfff0dc, 1.5);
 sun.position.set(30, 48, 20);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -104,201 +94,52 @@ const flashes = new FlashLights(scene, 4);
 // ---------------------------------------------------------------------------
 // Arena + systems
 // ---------------------------------------------------------------------------
-// Map selection (1 = original, 2 = larger symmetric). Persisted; the menu picker
-// swaps it live (see setMap). ?map= still works as a quick override.
+// Map selection. Persisted; ?map= still works as a quick override.
 const MAPS = [
   { id: 1, name: 'Octagon Cage' },
 ];
 const _urlMap = parseInt(new URLSearchParams(location.search).get('map'), 10);
 let _savedMap = 1;
-try { _savedMap = parseInt(localStorage.getItem('wo.map'), 10) || 1; } catch {}
+try { _savedMap = parseInt(localStorage.getItem('ffa.map'), 10) || 1; } catch {}
 let arena = buildArena(scene, Math.max(1, Math.min(MAPS.length, _urlMap || _savedMap)));
-setArenaSize(arena.size); // spawns/tanks scale to this map's half-extent
-const paint = new PaintSystem(scene);
 
-// One drivable tank per team, parked at each team's base. Press T (near your
-// team's tank) to drive it. ~40 armor; destroyed -> driver ejected, respawns.
-// Free Fire Arena is on-foot only — the legacy vehicle systems (tank, jet,
-// nuke, cluster bombs) stay inert. No tanks are constructed or spawned.
-const tanks = [];
-const TANK_RESPAWN_MS = 45000;
-const tankFX = new TankFX(scene);
-let tankAlarmLoop = null; // looping alarm handle while the driven tank is critical
-const fxTune = { paintCount: 60 }; // dev-tunable ember count for the tank explosion burst
-
-// A wide, loud palette for the death paint burst — the 6 selectable paints plus
-// a bunch of extra vivid hues so the explosion throws every colour around.
-const EXPLOSION_COLORS = [0xff6000, 0xff4848, 0xffffff, 0xd9dee5];
-
-// Violent tank death: blast the hull apart, throw a black smoke/fireball, and
-// burst many paint colours outward so they splatter the surrounding walls and
-// objects. The paint uses visual-only (netGhost) shells so it harms no one.
-function explodeTank(tank) {
-  const pos = tank.pos;
-  // global (not spatial) so the signature boom is never culled by the voice cap
-  audio.play('tankExplode', { volume: 0.95 });
-  tankFX.explode(pos, tank.hex);
-  const origin = new THREE.Vector3(pos.x, 1.4, pos.z);
-  const dir = new THREE.Vector3();
-  for (let i = 0; i < fxTune.paintCount; i++) {
-    const col = EXPLOSION_COLORS[(Math.random() * EXPLOSION_COLORS.length) | 0];
-    const a = Math.random() * Math.PI * 2;
-    const el = 0.05 + Math.random() * 0.95;          // mostly outward, some up
-    dir.set(Math.cos(a) * Math.cos(el), Math.sin(el), Math.sin(a) * Math.cos(el)).normalize();
-    const speed = 14 + Math.random() * 18;
-    spawnProjectile(origin.clone().addScaledVector(dir, 1.0), dir.clone(), col,
-      tank.teamId, speed, false, { netGhost: true }, { kind: 'spark', ttl: 900 });
-  }
+// Reflections of the actual arena: render the lit room once into a PMREM env
+// map from a standing spot between the pillar and the wall (fromScene captures
+// at the origin, so shift the arena for the capture). The glossy floor and the
+// armour then reflect the real LED coves/pillar instead of a generic studio.
+let arenaEnv = null;
+function captureArenaReflections() {
+  if (arenaEnv) arenaEnv.dispose();
+  const prevEnv = scene.environment;
+  scene.environment = envTex; // light the capture with the studio env
+  arena.group.position.set(0, -2.2, -14);
+  arena.group.updateMatrixWorld(true);
+  arenaEnv = pmrem.fromScene(scene, 0.02, 0.1, 120).texture; // scene = arena + lights (+ sky) at this point
+  arena.group.position.set(0, 0, 0);
+  arena.group.updateMatrixWorld(true);
+  scene.environment = prevEnv === envTex ? arenaEnv : prevEnv;
 }
+captureArenaReflections();
 
-// A player/bot going down — a soft thud and a couple of dust puffs where they
-// fell. No paint, no particle spray; the ragdoll drop (bots.js) sells the hit.
-function explodePlayer(pos) {
-  audio.playAt('splat', pos, { volume: 0.45, rate: 0.85 });
-  spawnBusterPuff(pos.x, 0.6, pos.z, { size: 0.5, opacity: 0.28 });
-  spawnBusterPuff(pos.x, 0.5, pos.z, { size: 0.4, opacity: 0.22 });
+// Polished floor: planar reflection of the room over the tiles (see floorReflection.js).
+let floorRefl = null;
+function setupFloorReflection() {
+  if (floorRefl) { scene.remove(floorRefl.mesh); floorRefl.dispose(); }
+  floorRefl = createFloorReflection(renderer, camera, {
+    radius: arena.size / Math.cos(Math.PI / 8), layer: NO_OUTLINE_LAYER, strength: 1.0, base: 0.38,
+  });
+  scene.add(floorRefl.mesh);
 }
+setupFloorReflection();
+setArenaSize(arena.size); // spawns scale to this map's half-extent
 
-// A moving tank crushes enemy combatants caught under its hull — same paint
-// death as a shot. Bots are killed where they actually live (host / free play);
-// the local on-foot player checks itself against enemy tanks in every mode.
-function tankRunOver() {
-  const halfX = 1.6, halfZ = 2.4; // hull footprint, a touch past the tracks
-  for (const tank of tanks) {
-    if (!tank.alive || Math.abs(tank.speed) < 1.5) continue; // must be rolling
-    const c = Math.cos(tank.heading), s = Math.sin(tank.heading);
-    if (!netplay.active || netplay.isHost) {
-      for (let i = 0; i < bots.bots.length; i++) {
-        const b = bots.bots[i];
-        if (!b.alive || b.team.id === tank.teamId) continue; // never crush teammates
-        const dx = b.pos.x - tank.pos.x, dz = b.pos.z - tank.pos.z;
-        const lx = dx * c - dz * s, lz = dx * s + dz * c; // world → tank-local
-        if (Math.abs(lx) < halfX && Math.abs(lz) < halfZ) {
-          if (tank === currentTank) { playerStats.kills++; showKill(b.name); unlockAchievement('ROADKILL'); pushKill(getPlayerName(), myTeamId(), b.name, b.team.id); } // your roadkill counts
-          bots.tagBotByIndex(i, tank.teamId);
-        }
-      }
-    }
-    // only an ENEMY tank you're not driving can crush the on-foot player
-    // (never while flying the jet — you're in the air, not under the tracks)
-    if (active && !playerDead && !tankMode && !jetMode && tank !== currentTank && tank.teamId !== myTeamId()) {
-      const dx = camera.position.x - tank.pos.x, dz = camera.position.z - tank.pos.z;
-      const lx = dx * c - dz * s, lz = dx * s + dz * c;
-      if (Math.abs(lx) < halfX && Math.abs(lz) < halfZ) {
-        pushKill((tank.teamId === 0 ? 'FIRE' : 'WHITE') + ' TANK', tank.teamId, getPlayerName(), myTeamId());
-        onPlayerTagged(tank.teamId, tank.hex, 'TANK');
-      }
-    }
-  }
-}
-// tunables live on tanks[0] (dev panel); mirrored onto tanks[1] each frame
-const TANK_TUNE_KEYS = ['driveSpeed', 'reverseSpeed', 'turnSpeed', 'turretTraverse',
-  'barrelTraverse', 'barrelMin', 'barrelMax', 'projSpeed', 'projGravity', 'projRadius',
-  'splatScale', 'fireInterval', 'turretVolume', 'recoilAmount', 'zoomFov', 'maxHp',
-  'boostMult', 'boostDuration', 'boostCooldown', 'dmgSmokeMul',
-  'gravity', 'maxLaunch', 'launchBoost',
-  'cam3rdDist', 'cam3rdHeight', 'camZoomDist', 'camZoomHeight', 'camZoomSide'];
-let currentTank = null; // the tank the local player is driving (null = on foot)
-const LEGACY_VEHICLES = false;
-let tankMode = false;
-let tankZoomT = 0;
-// --- Jet (free-play air support): player-flown fighter, 3rd-person ---
-const jet = new Jet(scene, 0); // player's FIRE team (PLAYER_TEAM is defined later)
-jet.arenaBlockers = arena.blockers; // for chase-cam wall pull-in
-let jetMode = false;
-let JET_BOUND = arena.size + 32; // half-extent of the "in bounds" box (past the walls); beyond → warning
-const JET_CEILING = 120;   // max altitude before the same warning
-const JET_RETURN_SECS = 8; // seconds to get back before the jet self-destructs
-let jetWarnT = 0;          // counts UP while out of bounds; explodes at JET_RETURN_SECS
-const jetHudEl = document.getElementById('jet-hud');
-const jetSpeedEl = document.getElementById('jet-speed');
-const jetAltEl = document.getElementById('jet-alt');
-const jetThrEl = document.getElementById('jet-throttle-fill');
-const jetWarnEl = document.getElementById('jet-warn');
-const jetWarnCountEl = document.getElementById('jet-warn-count');
-function updateJetHud() {
-  if (!jetHudEl) return;
-  jetSpeedEl.textContent = Math.round(jet.speed);
-  jetAltEl.textContent = Math.round(jet.pos.y);
-  // throttle bar: minSpeed→maxSpeed mapped 0..100%
-  const frac = THREE.MathUtils.clamp((jet.speed - jet.minSpeed) / (jet.maxSpeed - jet.minSpeed), 0, 1);
-  jetThrEl.style.width = Math.round(frac * 100) + '%';
-  const out = jetWarnT > 0;
-  jetWarnEl.classList.toggle('hidden', !out);
-  if (out) jetWarnCountEl.textContent = Math.max(0, Math.ceil(JET_RETURN_SECS - jetWarnT));
-}
-const _jetLook = new THREE.Vector3();
-const _tankAim = new THREE.Vector3();
-const _tankSelfPos = new THREE.Vector3();
-const _aiAim = new THREE.Vector3();
-const _tankHit = new THREE.Vector3();
-const _segEnd = new THREE.Vector3();
-const tankSightEl = document.getElementById('tank-sight');
 const hitmarkerEl = document.getElementById('hitmarker');
-// Flash the crosshair hitmarker on EVERY enemy hit — on foot or in the tank.
-// `big` = a larger pop, used when the shot tags a player/bot (vs a tank).
-function showTankHitmarker(big = false) {
+// Flash the crosshair hitmarker on every enemy hit; `big` pops larger on a kill.
+function showHitmarker(big = false) {
   hitmarkerEl.classList.remove('hit', 'big');
   void hitmarkerEl.offsetWidth; // force reflow so the animation restarts each hit
   hitmarkerEl.classList.toggle('big', big);
   hitmarkerEl.classList.add('hit');
-}
-const tsZoomEl = document.getElementById('ts-zoom');
-const tsExitKeyEl = document.getElementById('ts-exit-key');
-const tsRngEl = document.getElementById('ts-rng');
-const tsCompassEl = document.getElementById('ts-compass');
-const tsHeadingEl = document.getElementById('ts-heading');
-const tsSpeedEl = document.getElementById('ts-speed');
-const tsGunStatusEl = document.getElementById('ts-gun-status');
-const tsArmorEl = document.getElementById('ts-armor');
-const tsArmorFillEl = document.getElementById('ts-armor-fill');
-const tsArmorWrapEl = () => tsArmorFillEl.parentElement.parentElement;
-const tsBoostEl = document.getElementById('ts-boost');
-const tsBoostFillEl = document.getElementById('ts-boost-fill');
-const TS_CARDINALS = { 0: 'N', 45: 'NE', 90: 'E', 135: 'SE', 180: 'S', 225: 'SW', 270: 'W', 315: 'NW' };
-let tsTicks = null;
-function buildTankCompass() {
-  tsTicks = [];
-  for (let i = 0; i < 13; i++) {
-    const d = document.createElement('div'); d.className = 'tk';
-    const bar = document.createElement('i'); const lbl = document.createElement('span');
-    d.append(bar, lbl); tsCompassEl.appendChild(d);
-    tsTicks.push({ el: d, lbl });
-  }
-}
-function updateTankHud() {
-  const tank = currentTank;
-  if (!tank) return;
-  if (!tsTicks) buildTankCompass();
-  const headingDeg = (Math.atan2(_tankAim.x, _tankAim.z) * 180 / Math.PI + 360) % 360;
-  tsHeadingEl.textContent = String(Math.round(headingDeg)).padStart(3, '0');
-  const cx = 260, pxPerDeg = 5.6, base = Math.round(headingDeg / 15) * 15;
-  for (let i = 0; i < 13; i++) {
-    const th = base + (i - 6) * 15;
-    const diff = ((th - headingDeg + 540) % 360) - 180;
-    const x = cx + diff * pxPerDeg;
-    const t = tsTicks[i];
-    if (x < -20 || x > 540) { t.el.style.display = 'none'; continue; }
-    const h = ((th % 360) + 360) % 360, card = TS_CARDINALS[h];
-    t.el.style.display = 'block';
-    t.el.style.left = x + 'px';
-    t.el.className = card ? 'tk card' : 'tk';
-    t.lbl.textContent = card || String(h);
-  }
-  tsSpeedEl.textContent = String(Math.round(Math.abs(tank.speed) * 3.6));
-  raycaster.set(camera.position, _tankAim); raycaster.far = 500;
-  const hit = raycaster.intersectObjects(arena.paintTargets, false)[0];
-  tsRngEl.textContent = hit ? String(Math.round(hit.distance)) : '---';
-  const ready = tank.canFire(performance.now());
-  tsGunStatusEl.textContent = ready ? 'READY' : 'RELOADING';
-  tsGunStatusEl.classList.toggle('reloading', !ready);
-  const pct = Math.max(0, Math.round((tank.hp / tank.maxHp) * 100));
-  tsArmorEl.textContent = pct;
-  tsArmorFillEl.style.width = pct + '%';
-  tsArmorWrapEl().classList.toggle('low', pct <= 30);
-  tsBoostFillEl.style.width = Math.round(tank.boostFrac * 100) + '%';
-  tsBoostEl.classList.toggle('charging', !tank.boostReady);
-  tsExitKeyEl.textContent = input.gamepadConnected ? 'Y' : 'E';
 }
 let devPanelOpen = false; // dev panel visible → Esc frees the cursor to tune, no menu
 const outline = createOutline(renderer, scene, camera);
@@ -313,7 +154,7 @@ const redLight = new THREE.PointLight(0xff4848, 0, 38, 1.8);
 redLight.position.set(12, 8, 12);
 scene.add(redLight);
 let nightMode = false;
-const BLOOM_DAY = 0.5;
+const BLOOM_DAY = 0.5; // LEDs glow without hazing the room
 function setArenaEmissive(on) {
   for (const m of arena.materials) {
     const e = on ? m.userData.night : m.userData.day;
@@ -328,9 +169,8 @@ function setArenaEmissive(on) {
     m.opacity = w.o;
   }
 }
-// Flip the whole scene between the bright white day and a glowing night: dark
-// sky + moon/stars, dim cool light, a WHITE contour so everything is rimmed in a
-// faint glow, faintly self-lit surfaces, and neon paint.
+// Flip the whole scene between the warm day and a glowing night: dark sky +
+// moon/stars, dim cool light, a white contour rim, and neon-lit surfaces.
 function setNightMode(on) {
   nightMode = on;
   if (on) {
@@ -349,18 +189,17 @@ function setNightMode(on) {
     setArenaEmissive(true);
     daySky.group.visible = false;
     nightSky.group.visible = true;
-    paint.setNeon(true);
     weapon.setNeon(true);
     setGlow({ intensity: 1.2 });
     document.body.classList.add('lights-out');
   } else {
     scene.background.set(0xe8ebef);
-    scene.environment = envTex;
+    scene.environment = arenaEnv || envTex;
     outline.bloom.strength = BLOOM_DAY;
     flashes.scale = 1;
     scene.fog.color.set(0xe8ebef); scene.fog.near = 55; scene.fog.far = 150;
-    hemi.color.set(0xffffff); hemi.groundColor.set(0xd7dce2);
-    ambient.color.set(0xffffff); sun.color.set(0xffffff);
+    hemi.color.set(0xfff3e6); hemi.groundColor.set(0x9a958e); // warm key, neutral bounce
+    ambient.color.set(0xfff6ee); sun.color.set(0xfff0dc);
     applyEnvironment();
     fireLight.intensity = 0; redLight.intensity = 0;
     outline.uniforms.outlineColor.value.set(guiState.outlineGray);
@@ -368,36 +207,23 @@ function setNightMode(on) {
     setArenaEmissive(false);
     daySky.group.visible = true;
     nightSky.group.visible = false;
-    nightSky.resetEgg(); // calm the moon when leaving Lights Out
-    paint.setNeon(false);
     weapon.setNeon(false);
     setGlow({ intensity: guiState.glowIntensity });
     document.body.classList.remove('lights-out');
   }
 }
 
-// Sound: gun on player fire, splat on paintball impact, jump on liftoff.
-// Decoded up front; the context is resumed from the first user gesture.
+// Sound: movement/UI clips are small files; all combat sounds (rifle, rockets,
+// explosions, hits, reloads) are synthesized at boot — see sfx.js.
 const audio = new AudioManager();
 audio.load({
-  single: './assets/SingleShotPaintballSound.wav', // one tap = one shot
-  gun:    './assets/PaintballGunSound.wav',         // sustained loop while held
-  splat:  './assets/PaintballSplatterSound.wav',
-  jump:   './assets/PlayerJumpSound.wav',
-  slide:  './assets/PlayerSlideSound.wav',          // seamless loop, any duration
-  bodyHit: './assets/WetPaintballSplatHittingPlayer.wav', // wet splat on a player
-  killConfirm: './assets/KillConfirm.wav',          // satisfying chime on your kills
-  countdownBeep: './assets/CountdownBeep.wav',      // tick per second in a countdown
-  countdownGo: './assets/CountdownGo.wav',          // final "GO" / respawn tone
-  tankFire: './assets/TankFiring.wav',              // tank cannon shot
-  tankEngine: './assets/TankEngine.wav',            // diesel loop (throttles with speed)
-  tankTracks: './assets/TankTracks.wav',            // track clatter loop
-  tankTurret: './assets/TankTurret.wav',            // turret traverse servo loop
-  tankReload: './assets/TankReload.wav',            // shell reload after each shot
-  tankAlarm: './assets/TankAlarm.wav',              // seamless alarm loop when armor is critical
-  tankExplode: './assets/TankExploding.wav',        // violent blast when the tank is destroyed
-  tankRoundImpact: './assets/TankRoundImpact.wav',  // a tank shell slamming into another tank
+  jump:          './assets/sfx/jump.wav',
+  slide:         './assets/sfx/slide.wav',          // seamless loop, any duration
+  killConfirm:   './assets/sfx/kill-confirm.wav',   // chime on your kills
+  countdownBeep: './assets/sfx/countdown-beep.wav', // tick per second in a countdown
+  countdownGo:   './assets/sfx/countdown-go.wav',   // final "GO" / respawn tone
 });
+audio.addBuffers(buildCombatSfx);
 // tuned defaults: faint gray contour that reads well on pure white
 outline.uniforms.strength.value = 0.32;
 outline.uniforms.thickness.value = 1.2;
@@ -411,85 +237,52 @@ scene.add(controls.getObject());
 const input = new InputManager(renderer.domElement);
 const player = new PlayerController(camera);
 
-// First-person marker, parented to the camera. Its hopper runs a ball sim.
-const weapon = new Weapon(COLORS[1].hex);
+// First-person rifle (battle rifle on top, twin rocket tubes below), parented to the camera.
+const weapon = new Weapon();
 camera.add(weapon.root);
-const tankBuster = new TankBuster(COLORS[1].hex);
-camera.add(tankBuster.root);
-let currentWeapon = 0; // 0 = paint marker, 1 = tank buster
+let currentWeapon = 0; // 0 = battle rifle, 1 = twin rockets
 
-// ---- Digital scope: a live world feed rendered onto the buster's optic ----
-// Viewmodels live on their own layer so the scope camera can render the world
-// WITHOUT the launcher poking into its own screen (no feedback loop).
+// Viewmodels live on their own layer (drawn by the main camera, and kept out of
+// the floor reflection).
 const VIEWMODEL_LAYER = 2;
 const _setLayerDeep = (obj, layer) => obj.traverse((o) => o.layers.set(layer));
 _setLayerDeep(weapon.root, VIEWMODEL_LAYER);
-_setLayerDeep(tankBuster.root, VIEWMODEL_LAYER);
 camera.layers.enable(VIEWMODEL_LAYER); // the main camera still shows the viewmodels
+// Sprites render as solid quads in the outline's normal prepass, so a muzzle
+// flash (even at zero opacity) would be outlined as a floating rectangle.
+// NO_OUTLINE_LAYER: drawn by the main camera, skipped by the edge pass.
+weapon.flash.layers.set(NO_OUTLINE_LAYER);
 
-// the scope RT matches the screen aspect so the full-screen ADS view isn't
-// stretched; it renders at ~0.6× resolution to stay cheap
-const _scopeDim = () => [Math.max(320, Math.round(window.innerWidth * 0.6)),
-                         Math.max(200, Math.round(window.innerHeight * 0.6))];
-const [_sw, _sh] = _scopeDim();
-const scopeRT = new THREE.WebGLRenderTarget(_sw, _sh, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
-const scopeCam = new THREE.PerspectiveCamera(42, _sw / _sh, 0.1, 300);
-scopeCam.layers.set(0);                     // world only,
-scopeCam.layers.enable(NO_OUTLINE_LAYER);   // + smoke/decals — but NOT the viewmodels
-tankBuster.screenMat.map = scopeRT.texture; // the live feed drives the gun's mini screen
-tankBuster.screenMat.color.setHex(0xffffff);
-tankBuster.screenMat.needsUpdate = true;
-
-// full-screen quad that shows the scope feed over the whole view while zoomed —
-// so aiming down the buster IS looking through its live screen (clean: no
-// viewmodel, no contour outline)
-const scopeOverlay = new THREE.Scene();
-const scopeOverlayCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-const scopeQuadMat = new THREE.MeshBasicMaterial({
-  map: scopeRT.texture, transparent: true, opacity: 0, depthTest: false, depthWrite: false, toneMapped: false,
-});
-scopeOverlay.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), scopeQuadMat));
-
-const _scopeP = new THREE.Vector3(), _scopeQ = new THREE.Quaternion();
-function renderScope() {
-  camera.getWorldPosition(_scopeP);
-  camera.getWorldQuaternion(_scopeQ);
-  scopeCam.position.copy(_scopeP);
-  scopeCam.quaternion.copy(_scopeQ);
-  scopeCam.fov = camera.fov;       // match the main (zoomed) FOV so ADS lines up
-  scopeCam.aspect = camera.aspect;
-  scopeCam.updateProjectionMatrix();
-  scopeCam.updateMatrixWorld();
-  renderer.setRenderTarget(scopeRT);
-  renderer.render(scene, scopeCam); // autoClear paints scene.background + world
-  renderer.setRenderTarget(null);
-}
-// draw the full-screen scope feed over the main render, faded by the zoom amount
+// rifle ADS: fade the full-screen scope reticle in with the zoom
+const rifleScopeEl = document.getElementById('rifle-scope');
 function drawScopeOverlay() {
   const show = currentWeapon === 0 && weapon.root.visible;
-  const z = show ? weapon.aimT : 0;
-  if (busterScopeEl) busterScopeEl.style.opacity = String(z);
+  if (rifleScopeEl) rifleScopeEl.style.opacity = String(show ? weapon.aimT : 0);
 }
 
 // Free play: the player holds FIRE slot 0; bots fill the other lanes.
 const _ps = teamSpawnXZ(0, 0);
 const PLAYER_SPAWN = new THREE.Vector3(_ps.x, 1.7, _ps.z);
 const _spawnV = new THREE.Vector3();
-// Always a slot on YOUR team's side — never the enemy half, in any game mode.
-function playerSpawnPoint() {
-  const p = teamSpawnXZ(myTeamId(), 0);
+// Match start: your own side. Respawns: anywhere on the ring, biased away
+// from live enemies (bots, and remote players while online).
+function spawnAvoid() {
+  const out = [];
+  if (bots.bots) for (const b of bots.bots) if (b.alive) out.push(b.pos);
+  if (netplay.active) for (const a of netplay.collisionActors()) if (a.alive) out.push(a);
+  return out;
+}
+function playerSpawnPoint(scatter = false) {
+  const p = scatter ? scatterSpawnXZ(spawnAvoid()) : teamSpawnXZ(myTeamId(), 0);
   return _spawnV.set(p.x, SPAWN_EYE_Y, p.z);
 }
-let playerPaintHits = 0;
-
-// Player health: each enemy paintball costs HP_HIT, so three solid hits tag
-// you out. Stay clean for HP_DELAY ms and it refills at HP_RATE per second.
+// Player health: stay clean for HP_DELAY ms and it refills at HP_RATE per second.
 const HP_MAX = 100, HP_HIT = 34, HP_DELAY = 4500, HP_RATE = 45;
 let playerHp = HP_MAX;
 let lastHurtAt = -Infinity;
 
 // Player name (chosen in the main menu, persisted, used in-game + online).
-const PLAYER_NAME_KEY = 'whiteout.playerName';
+const PLAYER_NAME_KEY = 'ffa.playerName';
 function loadPlayerName() {
   try { return (localStorage.getItem(PLAYER_NAME_KEY) || '').slice(0, 14); } catch { return ''; }
 }
@@ -515,7 +308,7 @@ const sbTimerEl = document.getElementById('sb-timer'); // center scoreboard cloc
 let matchStartMs = 0; // wall-clock at match start, for the free-play elapsed timer
 const fmtClock = (sec) => `${Math.floor(sec / 60)}:${String(Math.max(0, Math.floor(sec % 60))).padStart(2, '0')}`;
 
-// ---- Global multi-row kill feed (top-right): "shooter [splat][gun] victim" ----
+// ---- Global multi-row kill feed (top-right): "shooter [mark][gun] victim" ----
 const killfeedRowsEl = document.getElementById('killfeed-rows');
 const KF_MAX = 5, KF_TTL_MS = 5200;
 const _kfEsc = (s) => { const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; };
@@ -525,10 +318,10 @@ function pushKill(shooterName, shooterTeam, victimName, victimTeam) {
   row.className = 'kf-row';
   const sc = shooterTeam === 0 ? 'kf-name-blue' : 'kf-name-red';
   const vc = victimTeam === 0 ? 'kf-name-blue' : 'kf-name-red';
-  const splat = shooterTeam === 0 ? 'kf-fill-blue' : 'kf-fill-red';
+  const mark = shooterTeam === 0 ? 'kf-fill-blue' : 'kf-fill-red';
   row.innerHTML =
     `<span class="${sc}">${_kfEsc(shooterName)}</span>` +
-    `<svg class="kf-splat ${splat}"><use href="#kf-splat-ico"/></svg>` +
+    `<svg class="kf-mark ${mark}"><use href="#kf-flame-ico"/></svg>` +
     `<svg class="kf-gun"><use href="#kf-gun-ico"/></svg>` +
     `<span class="${vc}">${_kfEsc(victimName)}</span>`;
   killfeedRowsEl.prepend(row); // newest on top
@@ -536,9 +329,9 @@ function pushKill(shooterName, shooterTeam, victimName, victimTeam) {
   setTimeout(() => { row.classList.add('kf-out'); setTimeout(() => row.remove(), 320); }, KF_TTL_MS);
 }
 function clearKillFeed() { if (killfeedRowsEl) killfeedRowsEl.innerHTML = ''; }
-const paintHitEl = document.getElementById('paint-hit');
-const paintDripsEl = paintHitEl.querySelector('.ph-drips');
-let paintHitTimer = null;
+const hitVignetteEl = document.getElementById('hit-vignette');
+const hitDirEl = document.getElementById('hit-dir');
+let hitVignetteTimer = null, hitDirTimer = null;
 
 const hpFillEl = document.getElementById('hp-fill');
 const hpNumEl = document.getElementById('hp-num');
@@ -637,69 +430,97 @@ function updateCountdown(dt) {
   }
 }
 
-// Flash a colored edge vignette in the shooter's team color — no paint drips.
-function paintHit(hex) {
+// ---- Damage feedback -------------------------------------------------------
+// Edge vignette in the attacker's team colour, a directional arc around the
+// reticle pointing at whoever hit you, and a short render-only view punch.
+const viewPunch = { p: 0, y: 0, r: 0, vp: 0, vy: 0, vr: 0 }; // damped spring (radians)
+function kickView(pitch, yaw = 0, roll = 0) {
+  viewPunch.vp += pitch; viewPunch.vy += yaw; viewPunch.vr += roll;
+}
+function updateViewPunch(dt) {
+  const k = 160, c = 16, h = Math.min(dt, 0.05);
+  for (const [x, v] of [['p', 'vp'], ['y', 'vy'], ['r', 'vr']]) {
+    viewPunch[v] += (-k * viewPunch[x] - c * viewPunch[v]) * h;
+    viewPunch[x] += viewPunch[v] * h;
+  }
+}
+const _hitTo = new THREE.Vector3(), _hitFwd = new THREE.Vector3();
+function damageFeedback(hex, fromPos, heavy = false) {
   const col = '#' + ((hex >>> 0) & 0xffffff).toString(16).padStart(6, '0');
-  paintHitEl.style.setProperty('--hit-color', col);
-  paintHitEl.classList.add('show');
-  clearTimeout(paintHitTimer);
-  paintHitTimer = setTimeout(() => paintHitEl.classList.remove('show'), 850);
+  hitVignetteEl.style.setProperty('--hit-color', col);
+  hitVignetteEl.classList.remove('show'); void hitVignetteEl.offsetWidth;
+  hitVignetteEl.classList.add('show');
+  clearTimeout(hitVignetteTimer);
+  hitVignetteTimer = setTimeout(() => hitVignetteEl.classList.remove('show'), heavy ? 900 : 650);
+  if (fromPos && hitDirEl) {
+    // screen-space bearing of the attacker relative to where we're looking
+    camera.getWorldDirection(_hitFwd); _hitFwd.y = 0; _hitFwd.normalize();
+    _hitTo.set(fromPos.x - camera.position.x, 0, fromPos.z - camera.position.z).normalize();
+    const ang = Math.atan2(_hitFwd.x * _hitTo.z - _hitFwd.z * _hitTo.x, _hitFwd.dot(_hitTo));
+    hitDirEl.style.setProperty('--hit-angle', `${ang}rad`);
+    hitDirEl.style.setProperty('--hit-color', col);
+    hitDirEl.classList.remove('show'); void hitDirEl.offsetWidth;
+    hitDirEl.classList.add('show');
+    clearTimeout(hitDirTimer);
+    hitDirTimer = setTimeout(() => hitDirEl.classList.remove('show'), 1100);
+    kickView(heavy ? 0.9 : 0.45, Math.sign(ang) * 0.25 * (heavy ? 2 : 1), (Math.random() - 0.5) * 0.6);
+  } else {
+    kickView(heavy ? 0.9 : 0.45, 0, (Math.random() - 0.5) * 0.6);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Bots. Player fills one FIRE slot; bots use the shared hit pipeline.
 // ---------------------------------------------------------------------------
-// One enemy hit: splat the screen, drain HP, report whether it was lethal.
-function hurtPlayer(hex, dmg = 50, isHeadshot = false) {
+// One enemy hit: flash the screen, drain HP, report whether it was lethal.
+function hurtPlayer(hex, dmg = 50, isHeadshot = false, fromPos = null) {
   playerHp -= dmg;
   lastHurtAt = performance.now();
   updateHpBar();
-  paintHit(hex);
-  if (isHeadshot) audio.play('countdownBeep', { volume: 0.9, rate: 1.5 });
+  damageFeedback(hex, fromPos, isHeadshot || dmg >= 60);
+  // a physical jolt away from the hit — small enough not to steal your aim
+  if (fromPos) {
+    const dx = camera.position.x - fromPos.x, dz = camera.position.z - fromPos.z;
+    const d = Math.hypot(dx, dz) || 1, jolt = Math.min(2.4, dmg * 0.032);
+    player.knockback.x += (dx / d) * jolt;
+    player.knockback.z += (dz / d) * jolt;
+  }
+  audio.play(isHeadshot ? 'hitHead' : 'hitTaken', { volume: 0.9, rate: 0.95 + Math.random() * 0.1 });
   return playerHp <= 0;
 }
 
 function onPlayerTagged(shooterTeamId, hex = 0xf4f6f8, shooterName = '') {
-  paintHit(hex); // border turns the color that tagged us
+  damageFeedback(hex, null, true);
   if (playerDead) return; // already down, waiting to respawn
   playerStats.deaths++;
   playerDead = true;
   playerRespawnMs = RESPAWN_MS; // counts down only while in-game (never in a menu)
   _respawnShown = -1;          // so the first tick beeps
-  playerPaintHits = 0;
   playerHp = 0; updateHpBar(); // bar sits empty through the respawn countdown
   stopFiring();
-  setWeaponsVisible(false); // hide the first-person gun/body while you're down
+  cancelReload();
+  setWeaponsVisible(false); // hide the first-person gun while you're down
   showKilledBy(shooterName);
   respawnEl.classList.remove('hidden');
-  if (jetMode) {
-    // shot down while flying: the jet breaks apart, then you respawn on foot
-    jetMode = false;
-    document.body.classList.remove('flying-jet');
-    if (jetHudEl) { jetHudEl.classList.add('hidden'); jetWarnEl.classList.add('hidden'); }
-    camera.fov = settings.get('fov'); camera.updateProjectionMatrix();
-    jet.explode();
-    audio.play('tankExplode', { volume: 0.9 });
-    busterPaintBurst(jet.pos.clone(), COLORS[colorIndex].hex);
-  } else {
-    explodePlayer(camera.position); // pop into paint where you fell
-  }
+  bodyDown(camera.position);
+}
+
+// A combatant going down: a dull thud and a little dust where they fell.
+function bodyDown(pos) {
+  audio.playAt('bodyFall', pos, { volume: 0.6, rate: 0.9 + Math.random() * 0.15 });
+  spawnPuff(pos.x, 0.5, pos.z, { size: 0.5, opacity: 0.22 });
+  spawnPuff(pos.x, 0.4, pos.z, { size: 0.4, opacity: 0.18 });
 }
 
 function respawnPlayer() {
   playerDead = false;
-  // never respawn still flying — always come back on foot as a player
-  if (jetMode) { jetMode = false; document.body.classList.remove('flying-jet'); }
-  jet.hide();
-  jetWarnT = 0;
-  if (jetHudEl) { jetHudEl.classList.add('hidden'); jetWarnEl.classList.add('hidden'); }
-  camera.fov = settings.get('fov'); camera.updateProjectionMatrix(); // in case we died flying/zoomed
+  camera.fov = settings.get('fov'); camera.updateProjectionMatrix(); // in case we died zoomed
   respawnEl.classList.add('hidden');
-  setWeaponsVisible(true); // restore the gun (an in-tank death hides it)
-  camera.position.copy(playerSpawnPoint()); // always your own side
-  player.velocityY = 0;
+  setWeaponsVisible(true);
+  refillAmmo();
+  camera.position.copy(playerSpawnPoint(true)); // respawns scatter around the ring
+  player.velocityY = 0; player.moveVel.set(0, 0, 0);
   player.resetStance();   // stand up — don't carry a crouch/slide into respawn
-  playerPaintHits = 0;
   playerHp = HP_MAX; updateHpBar();
   audio.play('countdownGo', { volume: 0.6 }); // back in — "go" tone
   bots._playerInvulnUntil = performance.now() + 1500; // brief spawn protection
@@ -708,23 +529,24 @@ function respawnPlayer() {
 const bots = new BotSystem(scene, arena, {
   spawnProjectile,
   onPlayerTagged,
-  onPlayerHit: (teamId, hex, shooter, dmg, isHeadshot) => hurtPlayer(hex, dmg, isHeadshot),
+  onPlayerHit: (teamId, hex, shooter, dmg, isHeadshot) => hurtPlayer(hex, dmg, isHeadshot, shooter && shooter.pos),
   onFire: (pos, hex, dir, teamId) => {
-    audio.playAt('single', pos, {
-      volume: 0.5, rate: 0.9 + Math.random() * 0.14, refDistance: 5, maxDistance: 80,
+    audio.playAt('rifleShot', pos, {
+      volume: 0.55, rate: 0.92 + Math.random() * 0.12, refDistance: 5, maxDistance: 80,
     });
-    // host: replicate bot shots so clients see the paintballs
+    // host: replicate bot shots so clients see the tracers
     if (dir && netplay.isHost && netplay.active) netplay.sendShot(pos, dir, hex, teamId);
   },
   onTag: ({ shooter, victimName, victimIsPlayer, pos, wounded, headshot }) => {
-    // wet splat on a body: full volume when it's us, positional otherwise
-    if (victimIsPlayer) {
-      audio.play('bodyHit', { volume: 1.0, rate: 0.96 + Math.random() * 0.08 });
-    } else {
-      audio.playAt('bodyHit', pos, {
-        volume: 0.9, rate: 0.96 + Math.random() * 0.08, refDistance: 6, maxDistance: 70,
+    // armour hit on someone else (your own hits have their own sound in hurtPlayer)
+    if (!victimIsPlayer) {
+      const mine = shooter === playerStats;
+      audio.playAt(headshot ? 'hitHead' : 'hitArmor', pos, {
+        volume: mine ? 0.9 : 0.6, rate: 0.95 + Math.random() * 0.1, refDistance: 6, maxDistance: 70,
       });
+      if (mine) showHitmarker(!wounded);
     }
+    if (!wounded && !victimIsPlayer) bodyDown(pos);
     if (wounded) return;
     if (shooter === playerStats && !victimIsPlayer) showKill(victimName, headshot);
     // kill feed row: you only ever tag enemies, so the victim's team is the
@@ -735,26 +557,18 @@ const bots = new BotSystem(scene, arena, {
     const vName = victimIsPlayer ? getPlayerName() : victimName;
     pushKill(sName, sTeam, vName, 1 - sTeam);
   },
-  paint,
-  fireInterval: 90,
+  fireInterval: 240, // matches the player's battle rifle cadence
 });
-
-bots.onPlayerPaintHit = (threshold) => {
-  playerPaintHits++;
-  if (playerPaintHits >= threshold) {
-    bots.scores[1]++;
-    onPlayerTagged();
-  }
-};
+// Rigged suits + clips load in the background; bots spawned before they land
+// (fast Play click) get upgraded in place.
+initLiquidGlass(); // edge-lensed glass on every .glass panel (Chromium)
+preloadAvatars().then(() => {
+  bots.refreshAvatars();
+  weapon.attachArms(TEAM_HEX[PLAYER_TEAM]); // first-person gloves from the team suit
+});
 
 // set world after bots exists so dynamic bot collision works
 player.setWorld(arena.blockers, arena.groundMeshes, arena.ceilings, bots.bots, arena.size);
-
-// Nuke easter egg (press N): a bomb falls, detonates in a blinding flash + a
-// towering mushroom cloud, and the shockwave flings the player, ragdolls nearby
-// bots, and blows destructible cover apart. Self-contained in nuke.js.
-const nuke = new Nuke(scene, audio);
-nuke.setRefs({ player, arena, bots });
 
 // `active` = game is being played (mouse locked OR gamepad session started)
 let active = false;
@@ -842,8 +656,6 @@ function enterGame() {
   scoreboard.classList.toggle('hidden', !(bots.enabled || netplay.active));
 }
 
-const TEAM_HEX = [0xff6000, 0xf4f6f8]; // FIRE, WHITE
-
 // Render report rows [{name, teamId, kills, deaths, shots, you?}] into the table.
 function renderReportRows(rows) {
   rows.sort((a, b) => b.kills - a.kills || a.deaths - b.deaths || b.shots - a.shots);
@@ -921,9 +733,6 @@ function resetMatch() {
   matchStartMs = performance.now(); // reset the elapsed clock
   clearKillFeed();
   playerDead = false;
-  // never carry a flight into a fresh match
-  if (jetMode) { jetMode = false; document.body.classList.remove('flying-jet'); jetHudEl.classList.add('hidden'); jetWarnEl.classList.add('hidden'); }
-  jet.hide(); jetWarnT = 0;
   setWeaponsVisible(true); // a prior death hides the gun — always restore it on a new match
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
@@ -934,54 +743,29 @@ function resetMatch() {
   camera.position.copy(playerSpawnPoint()); // always your own side
   // face the arena centre (also undoes the menu's orbit camera)
   camera.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(camera.position.x, camera.position.z), 0, 'YXZ'));
-  player.velocityY = 0;
+  player.velocityY = 0; player.moveVel.set(0, 0, 0);
   player.resetStance();
-  playerPaintHits = 0;
   playerHp = HP_MAX; updateHpBar();
-  nuke.reset();                        // clear any live blast + restore blown-up cover
+  refillAmmo();
   startCountdown();                    // "get ready" freeze before the match
 }
 
-// --- Title / cover screen: Start splatters, then reveals the main menu ---
+// --- Title / cover screen: Enter Arena cross-fades into the main menu ---
 const titleEl = document.getElementById('title');
-const titleSplatEl = document.getElementById('title-splat');
 const startBtn = document.getElementById('start-btn');
 let started = false;
-
-function titleSplatBurst() {
-  const r = startBtn.getBoundingClientRect();
-  const cx = r.left + r.width / 2;
-  const cy = r.top + r.height / 2;
-  const n = 7;
-  for (let i = 0; i < n; i++) {
-    const b = document.createElement('div');
-    b.className = 'title-blob';
-    const hex = COLORS[(Math.random() * COLORS.length) | 0].hex;
-    const size = 60 + Math.random() * 150;
-    // first, biggest blob lands dead-center on the button; rest scatter around it
-    const ang = Math.random() * Math.PI * 2;
-    const dist = i === 0 ? 0 : 30 + Math.random() * 90;
-    b.style.background = '#' + hex.toString(16).padStart(6, '0');
-    b.style.width = b.style.height = (i === 0 ? size * 1.4 : size) + 'px';
-    b.style.left = (cx + Math.cos(ang) * dist) + 'px';
-    b.style.top = (cy + Math.sin(ang) * dist) + 'px';
-    b.style.setProperty('--rot', (Math.random() * 40 - 20) + 'deg');
-    b.style.animationDelay = (i === 0 ? 0 : Math.random() * 0.12) + 's';
-    titleSplatEl.appendChild(b);
-  }
-}
 
 function startGame() {
   if (started) return;
   started = true;
   audio.resume();                 // Start is a user gesture — unlock audio here
   startBtn.classList.add('hit');
-  titleSplatBurst();
+  // short beat for the press, then cross-fade (the logo stays pinned)
   setTimeout(() => {
     titleEl.classList.add('title-out');
     showStart();                  // reveal the main menu
     setTimeout(() => { titleEl.style.display = 'none'; }, 500);
-  }, 620);
+  }, 120);
 }
 startBtn.addEventListener('click', startGame);
 
@@ -1039,21 +823,16 @@ function setMap(mapId) {
   mapId = Math.max(1, Math.min(MAPS.length, mapId | 0));
   if (mapId === arena.mapId) return;
   if (netplay.active) { refreshMapPicker(); return; } // free play only for now (MP map sync is a follow-up)
-  try { localStorage.setItem('wo.map', String(mapId)); } catch {}
-  paint.clear();                                    // drop paint from the old map
+  try { localStorage.setItem('ffa.map', String(mapId)); } catch {}
   scene.remove(arena.group);                        // dispose the old arena
   arena.group.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
   for (const m of arena.materials) m.dispose();
   arena = buildArena(scene, mapId);                 // build + re-wire everything holding an arena ref
+  captureArenaReflections();
+  setupFloorReflection();
   setArenaSize(arena.size);
-  JET_BOUND = arena.size + 32;
-  jet.arenaBlockers = arena.blockers;
   player.setWorld(arena.blockers, arena.groundMeshes, arena.ceilings, bots.bots, arena.size);
   bots.arena = arena;
-  for (const t of tanks) t.arena = arena;
-  nuke.reset();                 // drop any live blast; new arena, nothing to restore
-  nuke._downed = null;          // the old arena's downed props are gone with it
-  nuke.setRefs({ arena });      // re-point the nuke at the freshly built arena
   refreshMapPicker();
 }
 const mapPickerEl = document.getElementById('map-picker');
@@ -1069,7 +848,7 @@ function refreshMapPicker() {
   // reflect the active map in the Featured Arena card
   const m = MAPS.find((x) => x.id === arena.mapId);
   if (lcArenaName && m) lcArenaName.textContent = m.name;
-  if (lcArenaSub) lcArenaSub.textContent = '50M · OPEN OCTAGON';
+  if (lcArenaSub) lcArenaSub.textContent = '38M · OCTAGON';
 }
 if (mapPickerEl) {
   for (const m of MAPS) {
@@ -1117,15 +896,11 @@ document.getElementById('mode-custom').addEventListener('click', (e) => {
 document.getElementById('nav-settings').addEventListener('click', () => document.getElementById('open-settings-btn').click());
 document.getElementById('lc-top-settings').addEventListener('click', () => document.getElementById('open-settings-btn').click());
 document.getElementById('lc-howto').addEventListener('click', () => document.getElementById('open-howto-btn').click());
-// Splats (custom splat designer) is kept for a future update — surface a toast
-// rather than opening the unfinished designer.
-document.getElementById('nav-splats').addEventListener('click', () => showToast('Splats'));
 
 // EXIT → back to the title / cover screen
 document.getElementById('nav-exit').addEventListener('click', () => {
   hideAllMenus();
   started = false;
-  titleSplatEl.innerHTML = '';
   startBtn.classList.remove('hit');
   titleEl.style.display = '';
   titleEl.classList.remove('title-out');
@@ -1248,7 +1023,7 @@ const netplay = new NetPlay(net, {
   scene,
   camera,
   spawnProjectile,
-  onTagged: (shooterTeamId, hex, name) => { if (hurtPlayer(hex)) onPlayerTagged(shooterTeamId, hex, name); },
+  onTagged: (shooterTeamId, hex, name, fromPos) => { if (hurtPlayer(hex, 50, false, fromPos)) onPlayerTagged(shooterTeamId, hex, name); },
   showKill,
   onRosterChange: () => { updateNetHud(); renderLobby(); refreshNightToggle(); refreshMapPicker(); },
   onStart: () => startNetMatchLocal(),  // clients: (re)start — fresh scoreline
@@ -1257,10 +1032,9 @@ const netplay = new NetPlay(net, {
   getLocalStats: () => ({ kills: playerStats.kills, deaths: playerStats.deaths, shots: playerStats.shots }),
   getPlayerName: () => getPlayerName(),
   getBotSnapshot: () => bots.netSnapshot(),
+  moveFlags: () => (player.onGround ? 0 : 1) | (player.diving ? 2 : 0) | (player.sliding ? 4 : 0),
   tagBot: (idx, team) => bots.tagBotByIndex(idx, team),
-  onGhostBotDied: (pos) => explodePlayer(pos), // client: enemy ghost bots pop into paint too
-  onMoonSplat: (p, hex) => nightSky.hitMoonLocal(p, hex), // a peer painted the moon
-  onMoonWake: () => { nightSky.wake(); audio.play('countdownGo', { volume: 0.6, rate: 0.6 }); }, // the moon woke for everyone
+  onGhostBotDied: (pos) => bodyDown(pos),
   onEnded: (reason) => {
     netHudEl.classList.add('hidden');
     bots.setEnabled(false);   // menus stay frozen; Play starts a fresh match
@@ -1387,7 +1161,7 @@ function startNetMatchLocal() {
   killedbyEl.classList.add('hidden');
   const s = netplay.mySpawn();
   camera.position.set(s.x, 1.7, s.z);
-  player.velocityY = 0;
+  player.velocityY = 0; player.moveVel.set(0, 0, 0);
   player.resetStance();
   setNetStatusHud();
   startCountdown();                    // "get ready" freeze before the match
@@ -1531,181 +1305,179 @@ controls.addEventListener('unlock', () => {
   else showStart();
 });
 
-// ---------------------------------------------------------------------------
-// Direct number-key color selection (movement keys handled by InputManager)
-// ---------------------------------------------------------------------------
-const DIGIT_TO_COLOR = { Digit1: 0, Digit2: 1, Digit3: 2, Digit4: 3, Digit5: 4, Digit6: 5 };
-document.addEventListener('keydown', (e) => {
-  if (e.code in DIGIT_TO_COLOR) setColor(DIGIT_TO_COLOR[e.code]);
-});
+// ===========================================================================
+// Combat: weapons, ammo + reloads, projectiles, rockets + explosions, FX
+// ===========================================================================
+const PLAYER_TEAM = 0; // free play: the player fights on the FIRE team
+function myTeamId() { return (netplay.active && netplay.me) ? netplay.me.team : PLAYER_TEAM; }
 
-// ---------------------------------------------------------------------------
-// Shooting / projectiles
-// ---------------------------------------------------------------------------
-const projectiles = [];
-const projGeo = new THREE.SphereGeometry(0.13, 12, 12);
+// Loadout. `interval` is the minimum ms between shots; `mag` rounds per reload.
+const WEAPONS = [
+  { name: 'BATTLE RIFLE', mag: 20, reloadMs: 1500, interval: 210, speed: 260 },
+  { name: 'TWIN ROCKET', mag: 2, reloadMs: 2300, interval: 480, speed: 34 },
+];
+const ammo = WEAPONS.map((w) => w.mag);
+const reload = { active: false, slot: 0, t0: 0, dur: 0, stage: 0 };
+const lastShotAt = [0, 0];
+let pendingShotUntil = 0;      // buffered trigger press (fires as soon as the gun is up)
+let shootWasHeld = false;
+let crossBloom = 0;            // reticle bloom 0..1, kicked by each shot
+
 const raycaster = new THREE.Raycaster();
 const _forward = new THREE.Vector3();
 const _camUp = new THREE.Vector3();
 const _camRight = new THREE.Vector3();
 const _aimPt = new THREE.Vector3();
 const _aimDir = new THREE.Vector3();
-// World point directly under the screen-centre crosshair — raycast against the
-// arena and any live enemy tank, with a far fallback. Player rounds are aimed at
-// this point (and flown flat) so they land exactly where the crosshair sits,
-// with no muzzle/parallax offset on foot or in the tank.
-function crosshairAimPoint() {
-  camera.getWorldDirection(_aimDir);
-  const eye = camera.getWorldPosition(_aimPt); // _aimPt now holds the eye pos
-  raycaster.set(eye, _aimDir);
-  raycaster.far = 500;
-  let best = null, bestD = Infinity;
-  const wall = raycaster.intersectObjects(arena.paintTargets, false)[0];
-  if (wall) { best = wall.point; bestD = wall.distance; }
-  for (const tk of tanks) {
-    if (!tk.alive || tk === currentTank) continue;
-    const th = raycaster.intersectObject(tk.root, true)[0];
-    if (th && th.distance < bestD) { best = th.point; bestD = th.distance; }
-  }
-  if (best) return _aimPt.copy(best);
-  return _aimPt.addScaledVector(_aimDir, 300); // _aimPt still = eye
-}
 const _wpnRay = new THREE.Raycaster();
 const _wpnDir = new THREE.Vector3();
 const _wpnHit = new THREE.Vector3();
-const PLAYER_TEAM = 0; // player fights on the FIRE team
-const FIRE_INTERVAL = 360; // precision battle rifle cadence
-let lastShot = 0;
+const _segEnd = new THREE.Vector3();
+const _tmpV = new THREE.Vector3();
 
-// Generic projectile spawner shared by the player and bots. `kind` picks the
-// round: 'bullet' is a stretched tracer bolt, 'rocket' a finned warhead with a
-// lit exhaust, 'spark' a fast-fading ember for blasts, 'ball' the legacy shell.
-const _zAxis = new THREE.Vector3(0, 0, 1);
-const tracerGeo = new THREE.CylinderGeometry(0.045, 0.045, 1.05, 6).rotateX(Math.PI / 2);
-const sparkGeo = new THREE.TetrahedronGeometry(0.055); // angular ember shard, not a ball
-const rocketBodyGeo = new THREE.CylinderGeometry(0.1, 0.12, 0.6, 10).rotateX(Math.PI / 2);
-const rocketNoseGeo = new THREE.ConeGeometry(0.1, 0.26, 10).rotateX(Math.PI / 2);
-const rocketFinGeo = new THREE.BoxGeometry(0.02, 0.17, 0.24);
-const rocketFlameGeo = new THREE.ConeGeometry(0.09, 0.3, 8).rotateX(-Math.PI / 2);
-const rocketShellMat = new THREE.MeshStandardMaterial({ color: 0x2b3038, metalness: 0.55, roughness: 0.35 });
-const rocketNoseMat = new THREE.MeshStandardMaterial({ color: 0xff6000, emissive: 0xff6000, emissiveIntensity: 0.7 });
-const rocketFinMat = new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 0.6 });
-const rocketFlameMat = new THREE.MeshBasicMaterial({ color: 0xff6000, transparent: true, opacity: 0.95 });
-const glowMats = new Map(); // hex -> shared unlit material; tracers + embers stay full-bright
-function glowMat(hex) {
-  let m = glowMats.get(hex);
-  if (!m) { m = new THREE.MeshBasicMaterial({ color: hex }); glowMats.set(hex, m); }
-  return m;
-}
-function makeRocketMesh() {
-  const g = new THREE.Group();
-  const nose = new THREE.Mesh(rocketNoseGeo, rocketNoseMat); nose.position.z = 0.43;
-  const flame = new THREE.Mesh(rocketFlameGeo, rocketFlameMat); flame.position.z = -0.42;
-  g.add(new THREE.Mesh(rocketBodyGeo, rocketShellMat), nose, flame);
-  for (let k = 0; k < 4; k++) {
-    const fin = new THREE.Mesh(rocketFinGeo, rocketFinMat);
-    const a = k * Math.PI / 2;
-    fin.position.set(Math.cos(a) * 0.13, Math.sin(a) * 0.13, -0.22);
-    fin.rotation.z = a;
-    g.add(fin);
-  }
-  g.userData.flame = flame;
-  return g;
-}
-function spawnProjectile(origin, dir, hex, team, speed = 70, isPlayer = false, shooter = null, opts = {}) {
-  const kind = opts.kind || (opts.rocket ? 'rocket' : 'bullet');
-  let mesh;
-  if (kind === 'rocket') mesh = makeRocketMesh();
-  else if (kind === 'ball') {
-    const mat = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.4 });
-    if (nightMode) { mat.emissive.setHex(hex); mat.emissiveIntensity = 2.4; mat.toneMapped = false; } // full-bright neon
-    mesh = new THREE.Mesh(projGeo, mat);
-    const r = opts.radius || 0.13;      // projGeo is r=0.13
-    if (r !== 0.13) mesh.scale.setScalar(r / 0.13);
-  } else mesh = new THREE.Mesh(kind === 'spark' ? sparkGeo : tracerGeo, glowMat(hex));
-  mesh.position.copy(origin);
-  if (kind === 'bullet' || kind === 'rocket') mesh.quaternion.setFromUnitVectors(_zAxis, dir);
-  if (kind === 'bullet') flashes.flash(origin, hex, 5, 6, 0.07);
-  else if (kind === 'rocket') flashes.flash(origin, 0xff6000, 9, 9, 0.14);
-  scene.add(mesh);
-  const proj = {
-    mesh,
-    vel: dir.clone().multiplyScalar(speed),
-    prev: origin.clone(),
-    born: performance.now(),
-    hex,
-    team,
-    isPlayer,
-    shooter,
-    kind,
-    radius: opts.radius || 0.13,
-    ttl: opts.ttl || 4000,
-    splatScale: opts.splatScale || 1,
-    gravity: (opts.gravity != null) ? opts.gravity : null,
-    rocket: !!opts.rocket,
-  };
-  projectiles.push(proj);
-  return proj; // callers (e.g. the tank buster) can tag on extra behaviour
+// World point under the screen-centre reticle; player rounds fly flat to it so
+// they land exactly where you aim (no muzzle parallax).
+function crosshairAimPoint() {
+  camera.getWorldDirection(_aimDir);
+  const eye = camera.getWorldPosition(_aimPt);
+  raycaster.set(eye, _aimDir);
+  raycaster.far = 500;
+  const wall = raycaster.intersectObjects(arena.losBlockers, false)[0];
+  if (wall) return _aimPt.copy(wall.point);
+  return _aimPt.addScaledVector(_aimDir, 300);
 }
 
-// Returns true if a projectile was actually spawned this call (respects the
-// fire-rate limit). Sound is handled by updateShooting() so single taps and
-// held fire can use different clips.
-function shoot() {
-  const now = performance.now();
-  if (now - lastShot < FIRE_INTERVAL) return false; // fire-rate limit
-  lastShot = now;
-
+// muzzle position in world space: rifle fires from the top barrel, rockets
+// alternate the two lower tubes
+let rocketSide = 1;
+function muzzleOrigin(slot) {
   camera.getWorldDirection(_forward);
-  const hex = COLORS[colorIndex].hex;
-  // spawn from the viewmodel's TOP barrel (rifle), right of the sight line
   _camUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
   _camRight.crossVectors(_forward, _camUp).normalize();
-  const origin = camera.getWorldPosition(new THREE.Vector3())
-    .add(_forward.clone().multiplyScalar(0.6))
-    .addScaledVector(_camRight, 0.22)
-    .addScaledVector(_camUp, -0.14);
-  // aim straight at the crosshair point and fly flat, so the round lands dead-on
+  const o = camera.getWorldPosition(new THREE.Vector3());
+  if (slot === 0) return o.addScaledVector(_forward, 0.6).addScaledVector(_camRight, 0.2).addScaledVector(_camUp, -0.13);
+  rocketSide = -rocketSide;
+  return o.addScaledVector(_forward, 0.8).addScaledVector(_camRight, 0.2 + rocketSide * 0.06).addScaledVector(_camUp, -0.24);
+}
+
+// ---- HUD: ammo, reload bar, low-ammo prompt, reticle ring/bloom -------------
+const weapModeEl = document.getElementById('weap-mode-label');
+const weapAmmoEl = document.getElementById('weap-ammo');
+const weapReloadEl = document.getElementById('weap-reload-bar');
+const weapReloadFillEl = document.getElementById('weap-reload-fill');
+const reloadPromptEl = document.getElementById('reload-prompt');
+const reloadPromptKeyEl = document.getElementById('reload-prompt-key');
+const chReloadEl = document.getElementById('ch-reload');
+function updateWeaponHud() {
+  const w = WEAPONS[currentWeapon];
+  if (weapModeEl) weapModeEl.textContent = w.name;
+  if (weapAmmoEl) {
+    weapAmmoEl.innerHTML = reload.active
+      ? 'RELOADING'
+      : `<b>${ammo[currentWeapon]}</b> / ${w.mag}`;
+    weapAmmoEl.classList.toggle('low', !reload.active && ammo[currentWeapon] <= Math.max(1, Math.floor(w.mag * 0.25)));
+  }
+  weapReloadEl?.classList.toggle('hidden', !reload.active);
+  const low = !reload.active && ammo[currentWeapon] <= Math.max(0, Math.floor(w.mag * 0.25));
+  if (reloadPromptEl) {
+    reloadPromptEl.classList.toggle('show', low && active && !playerDead);
+    reloadPromptEl.classList.toggle('empty', ammo[currentWeapon] === 0);
+    if (reloadPromptKeyEl) reloadPromptKeyEl.textContent = input.gamepadConnected ? 'X' : 'R';
+  }
+}
+
+// ---- reloads ---------------------------------------------------------------
+function refillAmmo() {
+  for (let i = 0; i < WEAPONS.length; i++) ammo[i] = WEAPONS[i].mag;
+  cancelReload();
+  updateWeaponHud();
+}
+function startReload() {
+  const slot = currentWeapon, w = WEAPONS[slot];
+  if (reload.active || ammo[slot] >= w.mag || playerDead) return;
+  Object.assign(reload, { active: true, slot, t0: performance.now(), dur: w.reloadMs, stage: 0 });
+  audio.play('reloadOut', { volume: 0.8 });
+  updateWeaponHud();
+}
+function cancelReload() {
+  if (!reload.active) return;
+  reload.active = false;
+  if (chReloadEl) chReloadEl.style.setProperty('--p', 0);
+  updateWeaponHud();
+}
+function updateReload() {
+  if (!reload.active) return;
+  const k = Math.min(1, (performance.now() - reload.t0) / reload.dur);
+  if (weapReloadFillEl) weapReloadFillEl.style.width = `${k * 100}%`;
+  if (chReloadEl) chReloadEl.style.setProperty('--p', k);
+  if (reload.stage === 0 && k >= 0.55) { reload.stage = 1; audio.play('reloadIn', { volume: 0.8 }); }
+  if (reload.stage === 1 && k >= 0.8) { reload.stage = 2; audio.play('reloadRack', { volume: 0.75 }); }
+  if (k >= 1) {
+    ammo[reload.slot] = WEAPONS[reload.slot].mag;
+    reload.active = false;
+    if (chReloadEl) chReloadEl.style.setProperty('--p', 0);
+    updateWeaponHud();
+  }
+}
+
+// ---- firing ----------------------------------------------------------------
+// The gun must be up (not mid sprint-lower or mid swap) to fire; a press made
+// while it's coming up is buffered briefly and fires the moment it's ready.
+function gunReady() { return weapon.sprintT < 0.3 && weapon.swapT >= 1 && !reload.active; }
+
+function fireCurrent() {
+  const slot = currentWeapon, w = WEAPONS[slot];
+  const now = performance.now();
+  if (now - lastShotAt[slot] < w.interval) return false;
+  if (ammo[slot] <= 0) { audio.play('dryFire', { volume: 0.6 }); startReload(); return false; }
+  lastShotAt[slot] = now;
+  ammo[slot]--;
+  const origin = muzzleOrigin(slot);
   const dir = crosshairAimPoint().sub(origin).normalize().clone();
-  const p = spawnProjectile(origin, dir, hex, PLAYER_TEAM, 190, true, playerStats, { gravity: 0 });
-  // easter egg: a round aimed at the moon (night) homes to it
-  if (p && nightMode && nightSky.aimHitsMoon(origin, _forward)) p.moonBound = true;
+  if (slot === 0) {
+    spawnProjectile(origin, dir, TEAM_HEX[myTeamId()], myTeamId(), w.speed, true, playerStats, { gravity: 0 });
+    weapon.kick(1);
+    audio.play('rifleShot', { volume: 0.9, rate: 0.97 + Math.random() * 0.06 });
+    netplay.sendShot(origin, dir, TEAM_HEX[myTeamId()], myTeamId(), { speed: w.speed });
+  } else {
+    spawnProjectile(origin, dir, 0xff6000, myTeamId(), w.speed, true, playerStats, { kind: 'rocket', gravity: 0 });
+    weapon.kick(1.8);
+    kickView(0.5, 0, (Math.random() - 0.5) * 0.3);
+    audio.play('rocketLaunch', { volume: 0.9, rate: 0.95 + Math.random() * 0.1 });
+    netplay.sendShot(origin, dir, 0xff6000, myTeamId(), { kind: 'rocket', speed: w.speed });
+  }
   playerStats.shots++;
-  weapon.kick();
-  netplay.sendShot(origin, dir, hex, PLAYER_TEAM, { speed: 190 }); // no-op unless online
+  crossBloom = 1;
+  if (ammo[slot] === 0) setTimeout(() => { if (ammo[slot] === 0 && currentWeapon === slot) startReload(); }, 180);
+  updateWeaponHud();
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Firing sound logic:
-//  - the gun always fires at FIRE_INTERVAL while held (no stutter on hold)
-//  - each shot plays the crisp one-shot clip until a sustained hold hands off
-//    to the looping gun sound, so the two never leave a gap between them
-//  - the loop stops the instant the trigger is released
-// ---------------------------------------------------------------------------
-let shootWasHeld = false;
-let firePressStart = 0;
-let autoEngaged = false;
-let gunLoop = null;
-const AUTO_DELAY = 200; // ms the trigger must be held before the loop takes over
-
-function updateShooting() {
+function updateShooting(ready) {
   const held = input.shootHeld;
-  if (held && !shootWasHeld && shoot()) {
-    audio.play('single', { volume: 1, rate: 0.72 + Math.random() * 0.04 });
-  }
+  const now = performance.now();
+  if (held && !shootWasHeld) pendingShotUntil = now + 200; // press edge: buffer it
   shootWasHeld = held;
+  if (!ready) return;
+  if (input.consumeReload()) startReload();
+  if (pendingShotUntil > now) {
+    if (reload.active) {
+      // Halo-style: pulling the trigger on a partial mag doesn't cancel the
+      // reload; an empty mag just clicks
+      if (ammo[currentWeapon] === 0) { pendingShotUntil = 0; audio.play('dryFire', { volume: 0.5 }); }
+    } else if (gunReady() && fireCurrent()) {
+      pendingShotUntil = 0;
+    }
+  }
 }
 
-// Silence the gun loop and reset press state (release, pause, or match end).
 function stopFiring() {
-  if (gunLoop) { audio.stopLoop(gunLoop); gunLoop = null; }
-  autoEngaged = false;
   shootWasHeld = false;
+  pendingShotUntil = 0;
 }
 
 // Aim-down-sights zoom: blend the FOV toward the weapon's aim FOV and slow the
-// mouse a touch while zoomed, so aiming actually feels like aiming.
+// mouse while zoomed.
 let _lastFov = -1;
 function activeWeapon() { return weapon; }
 function applyAimZoom() {
@@ -1721,313 +1493,8 @@ function applyAimZoom() {
   controls.pointerSpeed = sens * THREE.MathUtils.lerp(1, 0.55, w.aimT);
 }
 
-// ==========================================================================
-// TANK BUSTER — lock-on, top-attack anti-tank launcher (on-foot, free play + MP)
-// ==========================================================================
-const BUSTER = {
-  range: 155, coneCos: Math.cos(0.11), // TIGHT cone (~6°): tank must be on the reticle
-  lockTime: 1.5, fireInterval: 2600,   // s to lock, ms between busts
-  ascendSpeed: 55, cruiseSpeed: 72, plungeSpeed: 95,
-  apex: 55, damage: 20,                 // metres up, armour per hit
-  turnRadius: 12,                       // m — radius of the rounded flight-path corners (bigger = more sweeping)
-};
-const buster = { target: null, lockT: 0, locked: false, lastShot: 0 };
-const _bv = new THREE.Vector3(), _bEye = new THREE.Vector3();
-const _bDes = new THREE.Vector3(), _bCur = new THREE.Vector3();
-const _bLosDir = new THREE.Vector3(), _bLosHit = new THREE.Vector3();
-const _bLosRay = new THREE.Raycaster();
-
-// true when nothing solid is between the eye and the tank (tank actually visible)
-function busterLOS(eye, tk) {
-  _bLosDir.set(tk.pos.x, tk.pos.y + 1.2, tk.pos.z).sub(eye);
-  const dist = _bLosDir.length();
-  _bLosDir.multiplyScalar(1 / dist);
-  _bLosRay.set(eye, _bLosDir); _bLosRay.far = dist;
-  for (const box of arena.blockers) {
-    if (_bLosRay.ray.intersectBox(box, _bLosHit) && _bLosHit.distanceTo(eye) < dist - 2.4) return false;
-  }
-  return true;
-}
-
-// true when no static wall blocks a tank muzzle's shot at a ground target point.
-// Bot tanks use this so they never fire at an enemy they can't actually see.
-function tankAiLOS(origin, tx, tz) {
-  _bLosDir.set(tx - origin.x, 1.4 - origin.y, tz - origin.z);
-  const dist = _bLosDir.length();
-  if (dist < 1e-3) return true;
-  _bLosDir.multiplyScalar(1 / dist);
-  _bLosRay.set(origin, _bLosDir); _bLosRay.far = dist;
-  for (const box of arena.blockers) {
-    if (_bLosRay.ray.intersectBox(box, _bLosHit) && _bLosHit.distanceTo(origin) < dist - 1.0) return false;
-  }
-  return true;
-}
-
-// smoke-trail pool (dark puffs, no contour outline)
-const _busterSmokeTex = (() => {
-  const c = document.createElement('canvas'); c.width = c.height = 64;
-  const x = c.getContext('2d');
-  const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
-  g.addColorStop(0, 'rgba(255,255,255,0.95)'); g.addColorStop(0.5, 'rgba(255,255,255,0.45)');
-  g.addColorStop(1, 'rgba(255,255,255,0)');
-  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
-  return new THREE.CanvasTexture(c);
-})();
-const busterSmoke = [];
-for (let i = 0; i < 220; i++) {
-  const mat = new THREE.SpriteMaterial({ map: _busterSmokeTex, color: 0x8c929b, transparent: true, opacity: 0, depthWrite: false });
-  const s = new THREE.Sprite(mat); s.visible = false; s.layers.set(NO_OUTLINE_LAYER); scene.add(s);
-  busterSmoke.push({ sprite: s, age: 0, life: 1, size0: 0.6, vel: new THREE.Vector3() });
-}
-// drop one smoke puff at a point (jittered), reused by the trail + impact burst
-function spawnBusterPuff(x, y, z, opts = {}) {
-  const p = busterSmoke.find((s) => !s.sprite.visible); if (!p) return;
-  p.sprite.position.set(x + (Math.random() - .5) * 0.25, y + (Math.random() - .5) * 0.2, z + (Math.random() - .5) * 0.25);
-  p.vel.set((Math.random() - .5) * 0.5, 0.3 + Math.random() * 0.4, (Math.random() - .5) * 0.5);
-  p.age = 0; p.life = 0.75 + Math.random() * 0.4; p.size0 = (opts.size || 0.42) + Math.random() * 0.18;
-  p.maxOp = opts.opacity != null ? opts.opacity : 0.4;
-  p.grow = opts.grow != null ? opts.grow : 1.5;
-  p.sprite.scale.setScalar(p.size0); p.sprite.material.opacity = p.maxOp; p.sprite.visible = true;
-}
-// a puff burst at one spot (impact smoke)
-function emitBusterSmoke(pos) { spawnBusterPuff(pos.x, pos.y, pos.z); spawnBusterPuff(pos.x, pos.y, pos.z); }
-// lay a thin, wispy ribbon of puffs along the path the warhead actually
-// travelled this frame — spaced out so the trail reads as a light contrail
-// rather than a solid smoke wall, regardless of frame rate or speed.
-const _smkStep = 1.1; // metres between puffs
-const _smkSeg = new THREE.Vector3();
-function emitBusterTrail(p, pos) {
-  if (!p._smokePrev) { p._smokePrev = pos.clone(); p._smokeCarry = 0; spawnBusterPuff(pos.x, pos.y, pos.z, { size: 0.28, opacity: 0.32 }); return; }
-  _smkSeg.subVectors(pos, p._smokePrev);
-  let dist = _smkSeg.length();
-  if (dist < 1e-4) return;
-  _smkSeg.multiplyScalar(1 / dist);
-  let carry = p._smokeCarry || 0;
-  // walk from the last puff forward along the segment at fixed spacing
-  let d = _smkStep - carry;
-  while (d <= dist) {
-    spawnBusterPuff(p._smokePrev.x + _smkSeg.x * d, p._smokePrev.y + _smkSeg.y * d, p._smokePrev.z + _smkSeg.z * d, { size: 0.28, opacity: 0.32 });
-    d += _smkStep;
-  }
-  p._smokeCarry = dist - (d - _smkStep); // leftover distance carried to next frame
-  p._smokePrev.copy(pos);
-}
-function updateBusterSmoke(dt) {
-  for (const p of busterSmoke) {
-    if (!p.sprite.visible) continue;
-    p.age += dt; if (p.age >= p.life) { p.sprite.visible = false; continue; }
-    p.sprite.position.addScaledVector(p.vel, dt);
-    p.vel.multiplyScalar(1 - 0.4 * dt); p.vel.y += 0.35 * dt;
-    const t = p.age / p.life;
-    const maxOp = p.maxOp != null ? p.maxOp : 0.85;
-    const grow = p.grow != null ? p.grow : 2.6;
-    p.sprite.scale.setScalar(p.size0 * (1 + t * grow));
-    p.sprite.material.opacity = (1 - t) * maxOp;
-  }
-}
-
-// the best enemy tank the player is aiming at, within range + cone
-function busterAcquire() {
-  camera.getWorldDirection(_forward);
-  camera.getWorldPosition(_bEye);
-  let best = null, bestDot = BUSTER.coneCos;
-  for (const tk of tanks) {
-    if (!tk.alive || tk.teamId === myTeamId()) continue; // enemy tanks only
-    _bv.set(tk.pos.x, tk.pos.y + 1.4, tk.pos.z).sub(_bEye);
-    const d = _bv.length();
-    if (d > BUSTER.range) continue;
-    _bv.multiplyScalar(1 / d);
-    const dot = _bv.dot(_forward);
-    if (dot > bestDot) { bestDot = dot; best = tk; }
-  }
-  if (best && !busterLOS(_bEye, best)) return null; // must have clear line of sight
-  return best;
-}
-
-const rocketState = { ammo: 2, reloading: false, reloadAt: 0, held: false, lastShot: 0, side: 1 };
-const weapModeEl = document.getElementById('weap-mode-label');
-const weapAmmoEl = document.getElementById('weap-ammo');
-const weapReloadEl = document.getElementById('weap-reload-bar');
-const weapReloadFillEl = document.getElementById('weap-reload-fill');
-
-function updateWeaponHud() {
-  if (!weapModeEl || !weapAmmoEl) return;
-  if (currentWeapon === 0) {
-    weapModeEl.textContent = 'BATTLE RIFLE';
-    weapAmmoEl.textContent = 'SEMI-AUTO · 1 HEAD / 2 BODY';
-    weapReloadEl?.classList.add('hidden');
-  } else {
-    weapModeEl.textContent = 'TWIN ROCKET';
-    weapAmmoEl.textContent = rocketState.reloading ? 'RELOADING' : `${rocketState.ammo} / 2 ROCKETS`;
-    weapReloadEl?.classList.toggle('hidden', !rocketState.reloading);
-  }
-}
-
-function updateBuster(dt, ready) {
-  const now = performance.now();
-  if (rocketState.reloading) {
-    const remain = Math.max(0, rocketState.reloadAt - now);
-    if (weapReloadFillEl) weapReloadFillEl.style.width = `${(1 - remain / 2400) * 100}%`;
-    if (remain <= 0) {
-      rocketState.reloading = false;
-      rocketState.ammo = 2;
-      audio.play('tankReload', { volume: 0.65, rate: 1.15 });
-    }
-  }
-
-  if (currentWeapon !== 1) {
-    rocketState.held = input.shootHeld;
-    updateWeaponHud();
-    return;
-  }
-
-  if (ready && input.shootHeld && !rocketState.held && !rocketState.reloading && now - rocketState.lastShot >= 450) {
-    rocketState.lastShot = now;
-    fireRocket();
-  }
-  rocketState.held = input.shootHeld;
-
-  if (rocketState.ammo <= 0 && !rocketState.reloading) {
-    rocketState.reloading = true;
-    rocketState.reloadAt = now + 2400;
-    if (weapReloadFillEl) weapReloadFillEl.style.width = '0%';
-  }
-  updateWeaponHud();
-}
-
-function fireRocket() {
-  camera.getWorldDirection(_forward);
-  // launch from the LOWER twin barrels, alternating sides each shot
-  rocketState.side = -rocketState.side;
-  _camUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
-  _camRight.crossVectors(_forward, _camUp).normalize();
-  const origin = camera.getWorldPosition(new THREE.Vector3())
-    .addScaledVector(_forward, 0.8)
-    .addScaledVector(_camRight, 0.22 + rocketState.side * 0.07)
-    .addScaledVector(_camUp, -0.26);
-  const dir = crosshairAimPoint().sub(origin).normalize();
-  spawnProjectile(origin, dir, 0xff6000, PLAYER_TEAM, 54, true, playerStats, {
-    radius: 0.3, gravity: 0, splatScale: 3.2, rocket: true,
-  });
-  rocketState.ammo--;
-  playerStats.shots++;
-  weapon.kick(1.5);
-  audio.play('tankFire', { volume: 0.9, rate: 1.25 });
-  netplay.sendShot(origin, dir, 0xff6000, PLAYER_TEAM, { kind: 'rocket', radius: 0.3, speed: 54 });
-}
-
-function fireBuster(tk) {
-  const hex = COLORS[colorIndex].hex;
-  const origin = tankBuster.getMuzzle();
-  const p = spawnProjectile(origin, new THREE.Vector3(0, 1, 0), hex, PLAYER_TEAM, BUSTER.ascendSpeed, true, playerStats, { radius: 0.5, gravity: 0 });
-  p.tankBuster = true; p.phase = 'ascend'; p.target = tk;
-  p.apexY = origin.y + BUSTER.apex; p.lastX = tk.pos.x; p.lastZ = tk.pos.z;
-  p._smokePrev = origin.clone(); p._smokeCarry = 0; // seed the continuous smoke ribbon
-  tankBuster.kick();
-  playerStats.shots++;
-  audio.play('tankFire', { volume: 0.85, rate: 1.2 }); // launch
-}
-
-// drives a buster warhead through ascend -> transit -> plunge; returns true when
-// it has impacted (and been removed)
-function updateBusterProjectile(p, i, dt) {
-  const pos = p.mesh.position;
-  const tk = p.target;
-  const live = tk && tk.alive;
-  const tx = live ? tk.pos.x : p.lastX;
-  const tz = live ? tk.pos.z : p.lastZ;
-  if (live) { p.lastX = tk.pos.x; p.lastZ = tk.pos.z; }
-
-  if (!p.vel) p.vel = new THREE.Vector3(0, 1, 0); // heading (unit); launches straight up
-
-  // --- desired heading + speed for the current phase ---
-  const des = _bDes;
-  let speed;
-  if (p.phase === 'ascend') {
-    des.set(0, 1, 0); speed = BUSTER.ascendSpeed;
-    // start arcing over BEFORE the apex so the top rounds into a smooth dome
-    if (pos.y >= p.apexY - BUSTER.turnRadius) p.phase = 'transit';
-  } else if (p.phase === 'transit') {
-    const dx = tx - pos.x, dz = tz - pos.z, hd = Math.hypot(dx, dz);
-    // fly toward the point over the target, easing height back toward the apex
-    des.set(dx, (p.apexY - pos.y) * 0.5, dz);
-    if (des.lengthSq() < 1e-6) des.set(0, -1, 0);
-    des.normalize();
-    speed = BUSTER.cruiseSpeed;
-    // begin the dive a turn-radius out so the descent corner is a smooth arc
-    if (hd <= BUSTER.turnRadius + 1.5) p.phase = 'plunge';
-  } else { // plunge — curve over and home down onto the target
-    const dx = tx - pos.x, dz = tz - pos.z;
-    des.set(dx, -Math.max(2, BUSTER.turnRadius), dz).normalize(); // mostly down, still homing
-    speed = BUSTER.plungeSpeed;
-    const onTank = live && Math.hypot(pos.x - tk.pos.x, pos.z - tk.pos.z) < tk.hitRadius && pos.y <= tk.pos.y + 2.6;
-    if (onTank || pos.y <= 0.25) { busterImpact(p, live ? tk : null, i); return true; }
-  }
-
-  // steer the current heading toward the desired one, capped so the turn traces
-  // a fixed radius (arc length / radius). That fillets every corner into a curve
-  // instead of a hard 90° break — and the smoke ribbon follows the same path.
-  const cur = _bCur.copy(p.vel).normalize();
-  const maxTurn = (speed * dt) / BUSTER.turnRadius; // radians allowed this frame
-  const ang = Math.acos(THREE.MathUtils.clamp(cur.dot(des), -1, 1));
-  const dir = (ang <= maxTurn || ang < 1e-4) ? des : cur.lerp(des, maxTurn / ang).normalize();
-  p.vel.copy(dir);
-  pos.addScaledVector(p.vel, speed * dt);
-
-  emitBusterTrail(p, pos); // continuous ribbon along the whole flight path
-  return false;
-}
-
-function busterImpact(p, tk, i) {
-  const pos = p.mesh.position.clone();
-  if (tk && Math.hypot(pos.x - tk.pos.x, pos.z - tk.pos.z) < tk.hitRadius + 1.2) {
-    // a MASSIVE conformal splat on the hull
-    raycaster.set(_bv.set(pos.x, tk.pos.y + 4, pos.z), _forward.set(0, -1, 0));
-    raycaster.far = 14;
-    const th = raycaster.intersectObject(tk.root, true)[0];
-    if (th && th.face) {
-      const n = th.face.normal.clone().transformDirection(th.object.matrixWorld).normalize();
-      const decal = paint.buildDecal(th.object, th.point, n, p.hex, 4.8);
-      if (decal) tk.addSplat(decal, th.object); // stick to the exact part (turret/barrel/hull)
-    }
-    if (!netplay.active || netplay.isHost) {
-      for (let d = 0; d < BUSTER.damage && tk.alive; d++) {
-        if (tk.takeHit(1)) { // destroyed
-          tk.respawnAt = performance.now() + TANK_RESPAWN_MS;
-          if (currentTank === tk) exitTank(true);
-          playerStats.kills++; showKill('TANK');
-          pushKill(getPlayerName(), myTeamId(), (tk.teamId === 0 ? 'FIRE' : 'WHITE') + ' TANK', tk.teamId);
-          break;
-        }
-      }
-    } else {
-      for (let d = 0; d < BUSTER.damage; d++) netplay.sendTankHit(tk.teamId);
-    }
-    showTankHitmarker(true);
-  }
-  busterPaintBurst(pos, p.hex);
-  audio.play('tankRoundImpact', { volume: 1.3 });
-  removeProjectile(i);
-}
-
-// a huge multi-colour paint blast that coats the ground, walls and the tank
-function busterPaintBurst(pos, hex) {
-  const origin = new THREE.Vector3(pos.x, Math.max(0.6, pos.y), pos.z);
-  const dir = new THREE.Vector3();
-  for (let n = 0; n < 46; n++) {
-    const col = (Math.random() < 0.55) ? hex : EXPLOSION_COLORS[(Math.random() * EXPLOSION_COLORS.length) | 0];
-    const a = Math.random() * Math.PI * 2, el = 0.03 + Math.random() * 0.75;
-    dir.set(Math.cos(a) * Math.cos(el), Math.sin(el), Math.sin(a) * Math.cos(el)).normalize();
-    const speed = 12 + Math.random() * 22;
-    spawnProjectile(origin.clone().addScaledVector(dir, 0.6), dir.clone(), col, PLAYER_TEAM, speed, false, { netGhost: true }, { kind: 'spark', ttl: 1000 });
-  }
-  for (let n = 0; n < 6; n++) emitBusterSmoke(origin); // impact smoke puff
-}
-
-// show/hide the whole viewmodel set based on the active weapon
 function setWeaponsVisible(show) {
   weapon.root.visible = show;
-  tankBuster.root.visible = false;
   weapon.setMode(currentWeapon);
 }
 function switchWeapon(slot) {
@@ -2035,617 +1502,126 @@ function switchWeapon(slot) {
   if (gameConfig.rule === 'rifle') slot = 0;
   if (gameConfig.rule === 'rocket') slot = 1;
   if (slot === currentWeapon) return;
+  cancelReload();
   currentWeapon = slot;
-  weapon.setMode(currentWeapon);
-  setWeaponsVisible(active && !playerDead && !tankMode && !jetMode);
+  weapon.swap(() => weapon.setMode(currentWeapon)); // dips out, swaps, comes back up
+  audio.play('weaponSwap', { volume: 0.7 });
   updateWeaponHud();
-  audio.play('single', { volume: 0.3, rate: 1.5 });
 }
 
-// lock-on brackets that track the target tank on screen
-const busterHudEl = document.getElementById('buster-hud');
-const busterLockPctEl = document.getElementById('buster-lock-pct');
-const busterScopeEl = document.getElementById('buster-scope');
-const busterScopeStatusEl = document.getElementById('buster-scope-status');
-const bsTgtEl = document.getElementById('bs-tgt');
-const bsRngEl = document.getElementById('bs-rng');
-const bsBrgEl = document.getElementById('bs-brg');
-const bsSysEl = document.getElementById('bs-sys');
-const bsLockFillEl = document.getElementById('bs-lockfill');
-const _bsDir = new THREE.Vector3();
-function updateBusterHud() {
-  if (!busterHudEl) return;
-  const zoomed = tankBuster.aimT > 0.5;
-
-  // scope overlay HUD state (its opacity is driven from the render loop so it
-  // resets cleanly when you die / switch away); here we set the reticle status
-  busterScopeEl.classList.toggle('locked', buster.locked);
-  busterScopeStatusEl.textContent = buster.locked ? 'TARGET LOCKED'
-    : (buster.target ? `ACQUIRING ${Math.round(buster.lockT * 100)}%` : 'SEEKING');
-
-  // technical solution readouts (range / bearing / target designation)
-  const tgt = buster.target;
-  if (bsLockFillEl) bsLockFillEl.style.width = `${Math.round(buster.lockT * 100)}%`;
-  if (bsSysEl) bsSysEl.textContent = buster.locked ? 'LOCK' : 'ARMED';
-  if (tgt) {
-    camera.getWorldPosition(_bEye);
-    const rng = Math.hypot(tgt.pos.x - _bEye.x, tgt.pos.z - _bEye.z);
-    if (bsRngEl) bsRngEl.textContent = String(Math.round(rng)).padStart(3, '0');
-    camera.getWorldDirection(_bsDir);
-    let brg = Math.atan2(_bsDir.x, -_bsDir.z) * 180 / Math.PI; // 0 = north (-Z)
-    if (brg < 0) brg += 360;
-    if (bsBrgEl) bsBrgEl.textContent = String(Math.round(brg)).padStart(3, '0');
-    if (bsTgtEl) bsTgtEl.textContent = (tgt.teamId === 0 ? 'FIRE' : 'WHITE') + '-ARMOR';
-  } else {
-    if (bsRngEl) bsRngEl.textContent = '----';
-    if (bsBrgEl) bsBrgEl.textContent = '---';
-    if (bsTgtEl) bsTgtEl.textContent = 'NO CONTACT';
-  }
-
-  // world-space tracking brackets only at the hip (the scope reticle owns it while zoomed)
-  if (currentWeapon !== 1 || !buster.target || playerDead || !active || zoomed) { busterHudEl.classList.add('hidden'); return; }
-  const tk = buster.target;
-  _bv.set(tk.pos.x, tk.pos.y + 1.7, tk.pos.z).project(camera);
-  if (_bv.z > 1) { busterHudEl.classList.add('hidden'); return; } // behind us
-  busterHudEl.style.left = ((_bv.x * 0.5 + 0.5) * window.innerWidth) + 'px';
-  busterHudEl.style.top = ((-_bv.y * 0.5 + 0.5) * window.innerHeight) + 'px';
-  busterHudEl.classList.remove('hidden');
-  busterHudEl.classList.toggle('locked', buster.locked);
-  busterLockPctEl.textContent = buster.locked ? 'LOCKED' : `${Math.round(buster.lockT * 100)}%`;
-}
-
-// --- Tank driving (free play). T toggles in/out; mouse aims the turret, WASD
-// drives, click fires big paintballs, right-click is the gunner zoom view. ---
-let tankEngineLoop = null, tankTrackLoop = null, tankTurretLoop = null;
-function stopTankSound() {
-  if (tankEngineLoop) { audio.stopLoop(tankEngineLoop); tankEngineLoop = null; }
-  if (tankTrackLoop) { audio.stopLoop(tankTrackLoop); tankTrackLoop = null; }
-  if (tankTurretLoop) { audio.stopLoop(tankTurretLoop); tankTurretLoop = null; }
-}
-function myTeamId() { return (netplay.active && netplay.me) ? netplay.me.team : PLAYER_TEAM; }
-function enterTank() {
-  const t = tanks[myTeamId()];
-  if (!t || !t.alive) return; // your team's tank is destroyed / respawning
-  if (netplay.active) {
-    const myId = netplay.me && netplay.me.id;
-    if (netplay.tankDriver[t.teamId] && netplay.tankDriver[t.teamId] !== myId) return; // someone else is in it
-    if (netplay.isHost) netplay.tankDriver[t.teamId] = 'host';
-    else netplay.sendTankEnter(t.teamId);
-  }
-  currentTank = t;
-  tankMode = true;
-  tankZoomT = 0;
-  setWeaponsVisible(false);
-  if (gunLoop || shootWasHeld) stopFiring();
-  stopSlideSound();      // entering mid-slide must not leave the slide loop playing
-  player.resetStance();  // and clear any lingering slide/crouch state on foot
-  // face the view along the hull so you start behind the tank looking forward
-  camera.rotation.order = 'YXZ';
-  camera.rotation.set(0, currentTank.heading + Math.PI, 0);
-  audio.resume(); // engine/track loops lazy-start in updateTank (survives pause/resume)
-}
-// `dead` = the tank was destroyed under you. Then the player dies WITH it: the
-// camera stays put where the tank blew up, the player isn't stepped out on foot
-// (and stays hidden/untargetable), and the normal respawn countdown runs.
-function exitTank(dead = false) {
-  const tank = currentTank;
-  if (netplay.active && tank) {
-    if (netplay.isHost) netplay.tankDriver[tank.teamId] = null;
-    else netplay.sendTankExit(tank.teamId);
-  }
-  tankMode = false;
-  currentTank = null;
-  stopTankSound();
-  tankSightEl.classList.add('hidden'); // hide the gunner HUD
-  tankSightEl.style.opacity = 0;
-  document.body.classList.remove('driving-tank', 'tank-zoomed');
-  netplay.selfPosOverride = null; // back to broadcasting the camera position
-  camera.fov = settings.get('fov');
-  camera.updateProjectionMatrix();
-
-  if (dead) {
-    setWeaponsVisible(false); // no floating gun while we watch the wreck
-    if (!playerDead) {           // go into the standard respawn countdown
-      playerStats.deaths++;
-      playerDead = true;
-      playerRespawnMs = RESPAWN_MS;
-      _respawnShown = -1;
-      playerPaintHits = 0;
-      playerHp = 0; updateHpBar();
-      stopFiring();
-      respawnEl.classList.remove('hidden');
-    }
-    return; // leave the camera exactly where it is (watching the explosion)
-  }
-
-  setWeaponsVisible(true);
-  if (tank) { // step out to the side of the tank
-    const rx = Math.cos(tank.heading), rz = -Math.sin(tank.heading);
-    camera.position.set(tank.pos.x + rx * 4, 1.7, tank.pos.z + rz * 4);
-  }
-  player.velocityY = 0;
-  player.resetStance();
-}
-
-// ---------------------------------------------------------------------------
-// Jet (free-play air support). G launches you into the fighter above your spot;
-// G again ejects. 3rd-person chase view; mouse steers (nose follows your look),
-// W/S trims throttle, left-click strafes the arena with paint MG fire, Space
-// drops a cluster paint bomb. Straying past the battlefield boundary starts an
-// 8-second return timer — run it out and the jet breaks apart.
-// ---------------------------------------------------------------------------
-function enterJet() {
-  if (netplay.active) return;                 // free-play only for now
-  if (jetMode || tankMode || !active || playerDead) return;
-  jetMode = true;
-  jetWarnT = 0;
-  setWeaponsVisible(false);
-  if (gunLoop || shootWasHeld) stopFiring();
-  stopSlideSound();
-  player.resetStance();
-  camera.getWorldDirection(_jetLook);
-  if (_jetLook.lengthSq() < 1e-4) _jetLook.set(0, 0, 1);
-  jet.setColor(COLORS[colorIndex].hex);
-  jet.spawn(camera.position.x - _jetLook.x * 6, Math.max(26, camera.position.y + 22),
-    camera.position.z - _jetLook.z * 6, _jetLook);
-  document.body.classList.add('flying-jet');
-  jetHudEl.classList.remove('hidden');
-  audio.resume();
-  audio.play('tankFire', { volume: 0.5, rate: 1.7 }); // launch whoosh
-}
-function exitJet(dead = false) {
-  jetMode = false;
-  document.body.classList.remove('flying-jet');
-  jetHudEl.classList.add('hidden');
-  jetWarnEl.classList.add('hidden');
-  camera.fov = settings.get('fov');
-  camera.updateProjectionMatrix();
-  if (dead) {
-    jet.explode();
-    audio.play('tankExplode', { volume: 0.9 });
-    busterPaintBurst(jet.pos.clone(), COLORS[colorIndex].hex); // paint splatter where it broke up
-    if (!playerDead) {
-      playerStats.deaths++;
-      playerDead = true;
-      playerRespawnMs = RESPAWN_MS;
-      _respawnShown = -1;
-      playerPaintHits = 0;
-      playerHp = 0; updateHpBar();
-      stopFiring();
-      respawnEl.classList.remove('hidden');
-    }
-    return; // camera stays put, watching the debris fall
-  }
-  jet.hide();
-  setWeaponsVisible(true);
-  // step down to the ground under the jet (clamped inside the arena)
-  const A = 57;
-  camera.position.set(THREE.MathUtils.clamp(jet.pos.x, -A, A), 1.7, THREE.MathUtils.clamp(jet.pos.z, -A, A));
-  player.velocityY = 0;
-  player.resetStance();
-}
-
-// Jet enter/exit is handled by a keydown listener HERE in main.js (not routed
-// through input.js) so it works even if a stale-cached input.js is loaded — the
-// same reason movement broke. G launches/ejects while on foot or flying.
-window.addEventListener('keydown', (e) => {
-  if (e.code !== 'KeyG' || e.repeat) return;
-  if (!LEGACY_VEHICLES || !active || playerDead) return;
-  if (jetMode) exitJet(false);
-  else if (!tankMode) enterJet();
-});
-
-// Nuke easter egg (press N): drop a bomb on the spot you're looking at (clamped
-// to the arena), then let nuke.js run the whole flash / mushroom / shockwave show.
-// Registered here (like the jet key) so a stale-cached input.js can't disable it.
-window.addEventListener('keydown', (e) => {
-  if (e.code !== 'KeyN' || e.repeat) return;
-  if (!LEGACY_VEHICLES || !active || nuke.active) return;
-  audio.resume();
-  const aim = crosshairAimPoint();               // world point under the crosshair
-  const lim = arena.size - 6;
-  const tx = Math.max(-lim, Math.min(lim, aim.x));
-  const tz = Math.max(-lim, Math.min(lim, aim.z));
-  nuke.trigger(new THREE.Vector3(tx, 0, tz));
-});
-
-function updateJet(dt, ready) {
-  camera.getWorldDirection(_jetLook);
-  jet.update(dt, _jetLook, ready ? input.move.forward : 0);
-  jet.updateCamera(camera, dt);
-
-  const now = performance.now();
-  // machine guns — rapid paint rounds forward from the wing roots
-  if (ready && input.shootHeld && jet.canFireMg(now)) {
-    jet.markMg(now);
-    const { origin, dir } = jet.getMuzzle();
-    const d = dir.clone();
-    d.x += (Math.random() - 0.5) * 0.02; d.y += (Math.random() - 0.5) * 0.02; d.z += (Math.random() - 0.5) * 0.02;
-    d.normalize();
-    spawnProjectile(origin, d, COLORS[colorIndex].hex, PLAYER_TEAM, jet.mgSpeed, true, playerStats,
-      { radius: 0.15, splatScale: 1.1, gravity: -4 });
-    playerStats.shots++;
-    audio.play('single', { volume: 0.22, rate: 1.5 });
-  }
-  // cluster paint bomb on Space
-  const drop = input.consumeJump();
-  if (ready && drop && jet.canDropBomb(now)) { jet.markBomb(now); dropClusterBomb(); }
-
-  // boundary: warn + self-destruct if you leave the battlefield
-  const out = Math.abs(jet.pos.x) > JET_BOUND || Math.abs(jet.pos.z) > JET_BOUND || jet.pos.y > JET_CEILING;
-  if (out) { jetWarnT += dt; if (jetWarnT >= JET_RETURN_SECS) { exitJet(true); return; } }
-  else jetWarnT = 0;
-
-  updateJetHud();
-  updateSun();
-}
-
-function dropClusterBomb() {
-  const origin = jet.getBombPoint();
-  // lob it forward with the jet's momentum; gravity pulls it down onto the arena
-  const vel = jet.dir.clone().multiplyScalar(jet.speed * 0.45);
-  vel.y -= 3;
-  const spd = vel.length() || 1;
-  const p = spawnProjectile(origin, vel.multiplyScalar(1 / spd), COLORS[colorIndex].hex, PLAYER_TEAM, spd,
-    true, playerStats, { radius: 0.32, gravity: -22, splatScale: 1.6 });
-  p.clusterBomb = true;
-  p.armMs = performance.now() + 300; // brief arm delay before it can burst
-  audio.play('single', { volume: 0.4, rate: 0.7 });
-}
-function updateClusterBomb(p, i, dt) {
-  p.vel.y += -22 * dt;
-  p.mesh.position.addScaledVector(p.vel, dt);
-  const now = performance.now();
-  if (now >= p.armMs && (p.mesh.position.y <= 1.3 || now - p.born > 4500)) {
-    clusterBurst(p.mesh.position, p.hex);
-    removeProjectile(i);
-  }
-}
-function clusterBurst(pos, hex) {
-  audio.playAt('tankRoundImpact', pos, { volume: 1.0, refDistance: 16, maxDistance: 160 });
-  const origin = new THREE.Vector3(pos.x, Math.max(1.6, pos.y), pos.z);
-  const dir = new THREE.Vector3();
-  for (let n = 0; n < 28; n++) {
-    const col = (Math.random() < 0.5) ? hex : EXPLOSION_COLORS[(Math.random() * EXPLOSION_COLORS.length) | 0];
-    const a = Math.random() * Math.PI * 2, el = 0.05 + Math.random() * 0.6;
-    dir.set(Math.cos(a) * Math.cos(el), Math.sin(el), Math.sin(a) * Math.cos(el)).normalize();
-    const speed = 10 + Math.random() * 16;
-    spawnProjectile(origin.clone().addScaledVector(dir, 0.5), dir.clone(), col, PLAYER_TEAM, speed,
-      true, playerStats, { kind: 'spark', ttl: 900 });
-  }
-  for (let n = 0; n < 4; n++) emitBusterSmoke(origin);
-}
-
-// ---------------------------------------------------------------------------
-// Lights Out moon easter egg: rounds aimed at the moon home up and splat it;
-// enough splats wake the angry moon, which spews paintballs onto the arena.
-// ---------------------------------------------------------------------------
-const _moonC = new THREE.Vector3(), _moonDir = new THREE.Vector3(), _moonMouth = new THREE.Vector3();
-const _mbSeg = new THREE.Vector3(), _mbDir = new THREE.Vector3(), _mbEnd = new THREE.Vector3();
-let _moonFireAcc = 0;
-let _moonWasActive = false; // edge-detect the egg finishing (to re-arm in MP)
-
-// A barrage round: real ballistics, but it kills EVERYONE it catches (the moon
-// is on no team). The on-foot player dies "by ANGRY MOON"; bots die neutrally.
-function updateMoonBarrageProjectile(p, i, dt) {
-  p.prev.copy(p.mesh.position);
-  p.vel.y += (p.gravity != null ? p.gravity : -12) * dt;
-  p.mesh.position.addScaledVector(p.vel, dt);
-  const seg = _mbSeg.subVectors(p.mesh.position, p.prev);
-  const dist = seg.length();
-  if (dist > 1e-5) {
-    const dir = _mbDir.copy(seg).multiplyScalar(1 / dist);
-    // resolve a wall first so it can't pass through geometry
-    raycaster.set(p.prev, dir);
-    raycaster.far = dist + 0.13;
-    const wallHit = raycaster.intersectObjects(arena.paintTargets, false)[0];
-    const reach = wallHit ? Math.min(dist + 0.13, wallHit.distance) : dist + 0.13;
-    const segEnd = wallHit ? _mbEnd.copy(p.prev).addScaledVector(dir, reach) : p.mesh.position;
-
-    // caught the on-foot player? (respects spawn protection; safe in a vehicle)
-    if (active && !playerDead && !tankMode && !jetMode && performance.now() >= bots._playerInvulnUntil
-        && segHitsSphere(p.prev, segEnd, camera.position, 0.7)) {
-      onPlayerTagged(1, p.hex, 'ANGRY MOON');
-      removeProjectile(i); return;
-    }
-    // caught a bot? (host / free play own the bots)
-    if (!netplay.active || netplay.isHost) {
-      for (let bi = 0; bi < bots.bots.length; bi++) {
-        const b = bots.bots[bi];
-        if (!b.alive) continue;
-        _tankHit.set(b.pos.x, b.pos.y + 1.1, b.pos.z);
-        if (segHitsSphere(p.prev, segEnd, _tankHit, 0.7)) {
-          bots.moonKill(bi);
-          audio.playAt('bodyHit', _tankHit, { volume: 0.55, rate: 0.85, refDistance: 6, maxDistance: 70 });
-          removeProjectile(i); return;
-        }
-      }
-    }
-    // otherwise splat on the wall it reached
-    if (wallHit) {
-      const n = wallHit.face
-        ? wallHit.face.normal.clone().transformDirection(wallHit.object.matrixWorld).normalize()
-        : new THREE.Vector3(0, 1, 0);
-      paint.splat(wallHit.object, wallHit.point, n, p.hex, p.splatScale || 1, false);
-      const k = Math.max(0, 1 - camera.position.distanceTo(wallHit.point) / 45);
-      audio.play('splat', { volume: 0.7 * k * k, rate: 0.94 + Math.random() * 0.12 });
-      removeProjectile(i); return;
-    }
-  }
-  if (performance.now() - p.born > 4000) removeProjectile(i);
-}
-function updateMoonProjectile(p, i, dt) {
-  nightSky.getMoonWorld(_moonC);
-  _moonDir.subVectors(_moonC, p.mesh.position);
-  const dist = _moonDir.length();
-  _moonDir.multiplyScalar(1 / Math.max(dist, 1e-4));
-  if (dist <= nightSky.moonRadius + 0.4) {                 // reached the surface
-    const surface = _moonC.clone().addScaledVector(_moonDir, -nightSky.moonRadius);
-    const local = nightSky.hitMoon(surface, p.hex); // splat locally, get the moon-local point
-    audio.play('splat', { volume: 0.5, rate: 0.85 + Math.random() * 0.1 });
-    if (netplay.active) {
-      netplay.sendMoonHit(local, p.hex);   // MP: peers splat too; the host tallies + wakes it
-    } else if (nightSky.registerHit()) {
-      audio.play('countdownGo', { volume: 0.6, rate: 0.6 }); // SP: local trigger cue
-    }
-    removeProjectile(i);
-    return;
-  }
-  p.mesh.position.addScaledVector(_moonDir, 170 * dt);      // home straight up to the moon, fast
-  if (performance.now() - p.born > 3000) removeProjectile(i); // safety net
-}
-
-// While the moon's mouth is open, rain paintballs down onto the arena (visual
-// paint only — netGhost, so nobody is unfairly killed from the sky).
-function updateMoonBarrage(dt) {
-  if (!nightMode || !nightSky.firing) { _moonFireAcc = 0; return; }
-  _moonFireAcc += dt;
-  const interval = 0.06; // ~2 rounds every 0.06s (~33/s) raining down
-  while (_moonFireAcc >= interval) {
-    _moonFireAcc -= interval;
-    nightSky.mouthWorld(_moonMouth);
-    for (let n = 0; n < 2; n++) {
-      const col = EXPLOSION_COLORS[(Math.random() * EXPLOSION_COLORS.length) | 0];
-      // aim at a random spot on the ARENA floor (world-fixed, ±55) so it actually
-      // lands on the map — the moon itself sits well outside the arena bounds
-      const span = (arena.size - 8) * 2; // rain across the whole arena floor
-      const tx = (Math.random() - 0.5) * span, tz = (Math.random() - 0.5) * span;
-      _moonDir.set(tx - _moonMouth.x, 0.5 - _moonMouth.y, tz - _moonMouth.z).normalize();
-      const mb = spawnProjectile(_moonMouth.clone(), _moonDir.clone(), col, PLAYER_TEAM, 95 + Math.random() * 45,
-        false, null, { splatScale: 1.5, gravity: -6 }); // light gravity so it reaches
-      mb.moonBarrage = true; // lethal to anyone caught under it (see updateMoonBarrageProjectile)
-    }
-  }
-}
-
-// Push the on-foot player out of any tank hull (oriented box, follows heading).
-function pushOutOfTank() {
-  const pr = player.radius;
-  const halfX = 1.4 + pr, halfZ = 2.35 + pr;
-  for (const tank of tanks) {
-    if (!tank.alive || tank === currentTank) continue;
-    const c = Math.cos(tank.heading), s = Math.sin(tank.heading);
-    const dx = camera.position.x - tank.pos.x, dz = camera.position.z - tank.pos.z;
-    let lx = dx * c - dz * s, lz = dx * s + dz * c; // world -> tank-local
-    if (Math.abs(lx) < halfX && Math.abs(lz) < halfZ) {
-      if (halfX - Math.abs(lx) < halfZ - Math.abs(lz)) lx = Math.sign(lx) * halfX;
-      else lz = Math.sign(lz) * halfZ;
-      camera.position.x = tank.pos.x + lx * c + lz * s; // local -> world
-      camera.position.z = tank.pos.z - lx * s + lz * c;
-    }
-  }
-}
-// Tank simulation. Free play: local AI + respawn. Online: the HOST owns the
-// tanks (AI for undriven, client pose for client-driven, armor + destruction +
-// respawn) and broadcasts snapshots; clients just follow the snapshots.
-function simulateTanks(dt) {
-  const now = performance.now();
-  if (!netplay.active) {
-    for (const t of tanks) if (t.alive && t !== currentTank) updateTankAI(t, dt);
-    for (const t of tanks) if (!t.alive && t.respawnAt && now >= t.respawnAt) t.respawn();
-    return;
-  }
-  if (netplay.isHost) {
-    for (let team = 0; team < 2; team++) {
-      while (netplay.tankHits[team] > 0) {          // client-reported hits
-        netplay.tankHits[team]--;
-        const tk = tanks[team];
-        if (tk && tk.alive && tk.takeHit(1)) { tk.respawnAt = now + TANK_RESPAWN_MS; if (currentTank === tk) exitTank(true); }
-      }
-    }
-    for (const tk of tanks) {
-      if (!tk.alive || tk === currentTank) continue; // host drives its own in updateTank
-      const drv = netplay.tankDriver[tk.teamId];
-      if (drv && drv !== 'host') {
-        const pose = netplay.clientTankPose[tk.teamId];
-        if (pose) tk.applyNetState(pose.x, pose.z, pose.ry, pose.ty, pose.bp, tk.hp, true);
-      } else {
-        updateTankAI(tk, dt);                        // no driver -> bot crew
-      }
-    }
-    for (const t of tanks) if (!t.alive && t.respawnAt && now >= t.respawnAt) t.respawn();
-    netplay._tankSendT += dt;
-    if (netplay._tankSendT >= 1 / 12) {
-      netplay._tankSendT = 0;
-      netplay.broadcastTankSync(tanks.map((tk) => [tk.teamId,
-        +tk.pos.x.toFixed(2), +tk.pos.z.toFixed(2), +tk.heading.toFixed(3),
-        +tk.turretYaw.toFixed(3), +tk.barrelPitch.toFixed(3),
-        Math.round(tk.hp), tk.alive ? 1 : 0, netplay.tankDriver[tk.teamId] || '',
-        +tk.pos.y.toFixed(2)]));
-    }
-  } else {
-    for (const tk of tanks) {                        // client: follow the host
-      const st = netplay.tankNet[tk.teamId];
-      if (!st) continue;
-      if (tk === currentTank) { tk.hp = st.hp; if (!st.alive) exitTank(true); }
-      else tk.applyNetState(st.x, st.z, st.ry, st.ty, st.bp, st.hp, st.alive, st.y);
-    }
-  }
-}
-
-// Bot-driven tank: aims its turret at the nearest enemy, drives to a standoff,
-// and fires when lined up. Runs for any tank not driven by the local player.
-function updateTankAI(tank, dt) {
-  let tx = 0, tz = 0, best = Infinity, found = false;
-  const consider = (x, z, team) => {
-    if (team === tank.teamId) return;
-    const dx = x - tank.pos.x, dz = z - tank.pos.z, d = dx * dx + dz * dz;
-    if (d < best) { best = d; tx = x; tz = z; found = true; }
+// Reticle: bloom on each shot, red over an enemy in range (like Halo).
+const _rtTo = new THREE.Vector3();
+function aimOnEnemy() {
+  camera.getWorldDirection(_aimDir);
+  const eye = camera.position;
+  const test = (pos, y = 1.3, r = 0.8) => {
+    _rtTo.set(pos.x - eye.x, pos.y + y - eye.y, pos.z - eye.z);
+    const along = _rtTo.dot(_aimDir);
+    if (along <= 0 || along > 70) return false;
+    return _rtTo.lengthSq() - along * along < r * r;
   };
-  if (active && !playerDead && !tankMode && !jetMode) consider(camera.position.x, camera.position.z, myTeamId());
-  if (currentTank && currentTank !== tank) consider(currentTank.pos.x, currentTank.pos.z, currentTank.teamId);
-  for (const b of bots.bots) if (b.alive) consider(b.group.position.x, b.group.position.z, b.team.id);
-
-  let forward = 0, turn = 0, aim = null;
-  if (found) {
-    const dx = tx - tank.pos.x, dz = tz - tank.pos.z, dist = Math.sqrt(best);
-    aim = _aiAim.set(dx, -1.2, dz).normalize();
-    let hd = ((Math.atan2(dx, dz) - tank.heading + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    turn = THREE.MathUtils.clamp(-hd * 1.2, -1, 1);   // update() applies heading -= turn*...
-    forward = dist > 32 ? 1 : (dist < 16 ? -0.4 : 0);  // keep a standoff distance
-  }
-  tank.update(dt, forward, turn, aim);
-
-  if (found && tank.canFire(performance.now())) {
-    const m = tank.getMuzzle();
-    const tdx = tx - m.origin.x, tdz = tz - m.origin.z, tl = Math.hypot(tdx, tdz) || 1;
-    if ((m.dir.x * tdx + m.dir.z * tdz) / tl > 0.985 && Math.sqrt(best) < 130 &&
-        tankAiLOS(m.origin, tx, tz)) { // never fire through a wall at a hidden target
-      const { origin, dir } = tank.fire(performance.now());
-      spawnProjectile(origin, dir, tank.hex, tank.teamId, tank.projSpeed, false,
-        { name: 'Tank' }, { radius: tank.projRadius, splatScale: tank.splatScale, gravity: tank.projGravity });
-      if (netplay.active) netplay.sendShot(origin, dir, tank.hex, tank.teamId,
-        { radius: tank.projRadius, speed: tank.projSpeed, splatScale: tank.splatScale });
-      audio.playAt('tankFire', origin, { volume: 0.7 });
-    }
-  }
+  const me = myTeamId();
+  for (const b of bots.bots) if (b.alive && b.team.id !== me && test(b.pos)) return true;
+  if (netplay.active) for (const t of netplay.getBotTargets()) if (t.alive && t.team !== me && test(t.pos, -0.4)) return true;
+  return false;
 }
-function updateTank(dt, ready) {
-  const tank = currentTank;
-  if (!tank) return;
-  // gamepad aim: mouse look goes through PointerLockControls, but the right
-  // stick doesn't — rotate the camera here so the turret can aim on a pad
-  if (input.gamepadConnected && (input.look.x || input.look.y)) {
-    const sp = settings.get('padLookSpeed');
-    camera.rotation.order = 'YXZ';
-    camera.rotation.y -= input.look.x * sp * dt;
-    camera.rotation.x = THREE.MathUtils.clamp(camera.rotation.x - input.look.y * sp * dt, -1.4, 1.4);
-    camera.rotation.z = 0;
-  }
-  camera.getWorldDirection(_tankAim);
-  tank.update(dt, ready ? input.move.forward : 0, ready ? input.move.strafe : 0, _tankAim,
-    ready && input.sprint); // Shift / L3 = speed boost
-
-  // --- engine + tracks + turret audio ride the tank's motion ---
-  if (!tankEngineLoop) tankEngineLoop = audio.playLoop('tankEngine', { volume: 0.4, rate: 0.8 });
-  if (!tankTrackLoop) tankTrackLoop = audio.playLoop('tankTracks', { volume: 0.0, rate: 1.0 });
-  const spd = Math.min(1, Math.abs(tank.speed) / tank.driveSpeed); // 0..1 throttle
-  if (tankEngineLoop) {
-    tankEngineLoop.src.playbackRate.value = 0.8 + spd * 0.8;  // revs up with speed
-    tankEngineLoop.gain.gain.value = 0.4 + spd * 0.3;
-  }
-  if (tankTrackLoop) {
-    tankTrackLoop.gain.gain.value = spd * 0.6;                // only clatters while moving
-    tankTrackLoop.src.playbackRate.value = 0.85 + spd * 0.5;
-  }
-  // turret servo loop: on while the turret/barrel is actually traversing
-  if (tank.turretMoving) {
-    if (!tankTurretLoop) tankTurretLoop = audio.playLoop('tankTurret', { volume: tank.turretVolume, rate: 1.0 });
-    else tankTurretLoop.gain.gain.value = tank.turretVolume; // live volume slider
-  } else if (tankTurretLoop) {
-    audio.stopLoop(tankTurretLoop); tankTurretLoop = null;
-  }
-
-  // online: broadcast the tank's position as mine so peers see me at the tank
-  if (netplay.active) { _tankSelfPos.set(tank.pos.x, 3.4, tank.pos.z); netplay.selfPosOverride = _tankSelfPos; }
-  else netplay.selfPosOverride = null;
-
-  // online: a client driver streams its tank pose to the host, reads its armor
-  // back, and drops out if the host reassigned the tank
-  if (netplay.active && !netplay.isHost) {
-    netplay.sendTankDrive(tank.teamId, tank.pos.x, tank.pos.z, tank.heading, tank.turretYaw, tank.barrelPitch);
-    const st = netplay.tankNet[tank.teamId];
-    if (st) tank.hp = st.hp;
-    const drv = netplay.tankDriver[tank.teamId];
-    if (drv && netplay.me && drv !== netplay.me.id) { exitTank(); return; } // host gave it to someone else
-  }
-
-  // right-click / LT eases into the gunner zoom view + a narrower FOV
-  const zTarget = (ready && input.aimHeld) ? 1 : 0;
-  tankZoomT += (zTarget - tankZoomT) * Math.min(1, dt * 8);
-  camera.fov = THREE.MathUtils.lerp(settings.get('fov'), tank.zoomFov, tankZoomT);
-  camera.updateProjectionMatrix();
-  tank.updateCamera(camera, _tankAim, tankZoomT, dt);
-
-  // status panels (armor/boost/speed) show the whole time you're driving;
-  // the gunsight (compass/reticle/range) fades in only with the zoom
-  tankSightEl.classList.remove('hidden');
-  tankSightEl.style.opacity = 1;
-  tsZoomEl.style.opacity = tankZoomT;
-  document.body.classList.add('driving-tank');
-  document.body.classList.toggle('tank-zoomed', tankZoomT > 0.5);
-  updateTankHud();
-
-  // fire large paintballs from the barrel
-  if (ready && input.shootHeld && tank.canFire(performance.now())) {
-    const { origin } = tank.fire(performance.now()); // recoil + muzzle smoke + marks fired
-    const hex = COLORS[colorIndex].hex;
-    // shell converges on the crosshair point and flies flat — perfectly sighted,
-    // regardless of where the barrel is mid-traverse
-    const dir = crosshairAimPoint().sub(origin).normalize().clone();
-    spawnProjectile(origin, dir, hex, tank.teamId, tank.projSpeed, true, playerStats,
-      { radius: tank.projRadius, splatScale: tank.splatScale, gravity: 0 });
-    if (netplay.active) netplay.sendShot(origin, dir, hex, tank.teamId,
-      { radius: tank.projRadius, speed: tank.projSpeed, splatScale: tank.splatScale });
-    playerStats.shots++;
-    audio.play('tankFire', { volume: 1.0 });            // cannon boom
-    setTimeout(() => { if (tankMode) audio.play('tankReload', { volume: 0.7 }); }, 350); // reload clunk
-  }
-}
-// Tank enter/exit is proximity-based (run up to your team's tank, press E / Y).
-// Prompt element + a distance test drive it from the main loop.
-const tankPromptEl = document.getElementById('tank-prompt');
-const tankPromptKeyEl = document.getElementById('tank-prompt-key');
-function updateTankPrompt() {
-  const interact = input.consumeInteract();
-  if (!active || playerDead) { tankPromptEl.classList.add('hidden'); return; }
-  if (tankMode) {
-    tankPromptEl.classList.add('hidden');
-    if (interact) exitTank();
-    return;
-  }
-  const myTank = tanks[myTeamId()];
-  if (!myTank) { tankPromptEl.classList.add('hidden'); return; } // no vehicles in FFA
-  const dx = camera.position.x - myTank.pos.x, dz = camera.position.z - myTank.pos.z;
-  const near = myTank.alive && (dx * dx + dz * dz) < 42; // ~6.5m
-  if (near) {
-    tankPromptKeyEl.textContent = input.gamepadConnected ? 'Y' : 'E';
-    tankPromptEl.classList.remove('hidden');
-    if (interact) enterTank();
-  } else {
-    tankPromptEl.classList.add('hidden');
-  }
+function updateReticle(dt) {
+  crossBloom = Math.max(0, crossBloom - dt * 6);
+  crosshair.style.setProperty('--bloom', (1 + crossBloom * 0.28).toFixed(3));
+  crosshair.classList.toggle('on-enemy', active && !playerDead && aimOnEnemy());
 }
 
-// Slide sound: a seamless loop held for exactly as long as the slide lasts, so
-// it covers whatever Slide Duration is set in the dev panel.
+// ---- movement sounds ----------------------------------------------------------
 let slideLoop = null;
 function updateSlideSound() {
   const scraping = player.sliding || player.diving;
-  if (scraping && !slideLoop) {
-    slideLoop = audio.playLoop('slide', { volume: 0.6 });
-  } else if (!scraping && slideLoop) {
-    audio.stopLoop(slideLoop);
-    slideLoop = null;
-  }
+  if (scraping && !slideLoop) slideLoop = audio.playLoop('slide', { volume: 0.6 });
+  else if (!scraping && slideLoop) { audio.stopLoop(slideLoop); slideLoop = null; }
 }
 function stopSlideSound() {
   if (slideLoop) { audio.stopLoop(slideLoop); slideLoop = null; }
 }
 
-// shooting is driven from the loop via input.shootHeld (mouse + gamepad RT)
+// ---- projectiles -------------------------------------------------------------
+// 'bullet' = stretched tracer bolt, 'rocket' = finned warhead with a lit
+// exhaust + contrail, 'spark' = fast-fading ember for impacts and blasts.
+const projectiles = [];
+const _zAxis = new THREE.Vector3(0, 0, 1);
+const tracerGeo = new THREE.CylinderGeometry(0.035, 0.035, 1.4, 6).rotateX(Math.PI / 2);
+const sparkGeo = new THREE.TetrahedronGeometry(0.05);
+const rocketBodyGeo = new THREE.CylinderGeometry(0.09, 0.11, 0.62, 12).rotateX(Math.PI / 2);
+const rocketNoseGeo = new THREE.ConeGeometry(0.09, 0.26, 12).rotateX(Math.PI / 2);
+const rocketBandGeo = new THREE.CylinderGeometry(0.113, 0.113, 0.05, 12).rotateX(Math.PI / 2);
+const rocketFinGeo = new THREE.BoxGeometry(0.018, 0.16, 0.22);
+const rocketFlameGeo = new THREE.ConeGeometry(0.085, 0.42, 10).rotateX(-Math.PI / 2);
+const rocketShellMat = new THREE.MeshStandardMaterial({ color: 0xe9ebee, metalness: 0.2, roughness: 0.35 });
+const rocketNoseMat = new THREE.MeshStandardMaterial({ color: 0x1b1e23, metalness: 0.4, roughness: 0.4 });
+const rocketBandMat = new THREE.MeshStandardMaterial({ color: 0xff6000, emissive: 0xff6000, emissiveIntensity: 1.2 });
+const rocketFinMat = new THREE.MeshStandardMaterial({ color: 0x1b1e23, roughness: 0.6 });
+const rocketFlameMat = new THREE.MeshBasicMaterial({ color: 0xffb24a, transparent: true, opacity: 0.95, toneMapped: false });
+const glowMats = new Map(); // hex -> shared unlit material; tracers + embers stay full-bright
+function glowMat(hex) {
+  let m = glowMats.get(hex);
+  if (!m) { m = new THREE.MeshBasicMaterial({ color: hex, toneMapped: false }); glowMats.set(hex, m); }
+  return m;
+}
+const _radialTex = (() => { // soft round sprite for glows, smoke and fireballs
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.45, 'rgba(255,255,255,0.5)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
+function makeRocketMesh() {
+  const g = new THREE.Group();
+  const nose = new THREE.Mesh(rocketNoseGeo, rocketNoseMat); nose.position.z = 0.44;
+  const band = new THREE.Mesh(rocketBandGeo, rocketBandMat); band.position.z = 0.2;
+  const flame = new THREE.Mesh(rocketFlameGeo, rocketFlameMat); flame.position.z = -0.5;
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: _radialTex, color: 0xffa040, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, toneMapped: false,
+  }));
+  glow.scale.setScalar(1.1); glow.position.z = -0.45; glow.layers.set(NO_OUTLINE_LAYER);
+  g.add(new THREE.Mesh(rocketBodyGeo, rocketShellMat), nose, band, flame, glow);
+  for (let k = 0; k < 4; k++) {
+    const fin = new THREE.Mesh(rocketFinGeo, rocketFinMat);
+    const a = k * Math.PI / 2 + Math.PI / 4;
+    fin.position.set(Math.cos(a) * 0.12, Math.sin(a) * 0.12, -0.24);
+    fin.rotation.z = a;
+    g.add(fin);
+  }
+  g.userData.flame = flame; g.userData.glow = glow;
+  return g;
+}
+function spawnProjectile(origin, dir, hex, team, speed = 70, isPlayer = false, shooter = null, opts = {}) {
+  const kind = opts.kind || (opts.rocket ? 'rocket' : 'bullet');
+  let mesh;
+  if (kind === 'rocket') mesh = makeRocketMesh();
+  else mesh = new THREE.Mesh(kind === 'spark' ? sparkGeo : tracerGeo, glowMat(hex));
+  mesh.position.copy(origin);
+  if (kind !== 'spark') mesh.quaternion.setFromUnitVectors(_zAxis, dir);
+  if (kind === 'bullet') flashes.flash(origin, hex, 5, 6, 0.06);
+  else if (kind === 'rocket') flashes.flash(origin, 0xff8a30, 10, 9, 0.12);
+  scene.add(mesh);
+  const proj = {
+    mesh, kind, hex, team, isPlayer, shooter,
+    dir: dir.clone(),
+    vel: dir.clone().multiplyScalar(speed),
+    // rockets leave the tube slow and accelerate to cruise
+    speed, cruise: kind === 'rocket' ? speed * 2.1 : speed,
+    prev: origin.clone(),
+    born: performance.now(),
+    ttl: opts.ttl || (kind === 'rocket' ? 5000 : 3000),
+    gravity: opts.gravity != null ? opts.gravity : (kind === 'spark' ? -18 : 0),
+  };
+  projectiles.push(proj);
+  return proj;
+}
 
-// Does the segment a->b pass within radius r of a sphere centered at c?
+// Does the segment a->b pass within radius r of a sphere centred at c?
 function segHitsSphere(a, b, c, r) {
   const abx = b.x - a.x, aby = b.y - a.y, abz = b.z - a.z;
   const ab2 = abx * abx + aby * aby + abz * abz;
@@ -2656,202 +1632,268 @@ function segHitsSphere(a, b, c, r) {
 }
 
 function updateProjectiles(dt) {
-  const PROJ_GRAV = -12;
+  const now = performance.now();
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
-    // tank-buster warhead flies its own guided top-attack arc, not ballistics
-    if (p.tankBuster) { updateBusterProjectile(p, i, dt); continue; }
-    if (p.clusterBomb) { updateClusterBomb(p, i, dt); continue; }
-    if (p.moonBound) { updateMoonProjectile(p, i, dt); continue; }
-    if (p.moonBarrage) { updateMoonBarrageProjectile(p, i, dt); continue; }
     p.prev.copy(p.mesh.position);
-    p.vel.y += (p.gravity != null ? p.gravity : PROJ_GRAV) * dt;
-    p.mesh.position.addScaledVector(p.vel, dt);
-    // rockets drag a smoke ribbon behind them and flicker their exhaust
     if (p.kind === 'rocket') {
-      emitBusterTrail(p, p.mesh.position);
+      p.speed = Math.min(p.cruise, p.speed + 150 * dt);
+      p.vel.copy(p.dir).multiplyScalar(p.speed);
+      emitTrail(p, p.mesh.position);
       const f = p.mesh.userData.flame;
-      if (f) f.scale.set(1, 1, 0.7 + Math.random() * 0.7);
+      if (f) f.scale.set(1, 1, 0.75 + Math.random() * 0.6);
+      p.mesh.userData.glow.material.opacity = 0.75 + Math.random() * 0.25;
+    } else {
+      p.vel.y += p.gravity * dt;
+    }
+    p.mesh.position.addScaledVector(p.vel, dt);
+
+    if (p.kind === 'spark') { // embers: bounce off the floor, fade by age
+      if (p.mesh.position.y < 0.04 && p.vel.y < 0) { p.mesh.position.y = 0.04; p.vel.y *= -0.35; p.vel.x *= 0.6; p.vel.z *= 0.6; }
+      const life = (now - p.born) / p.ttl;
+      p.mesh.scale.setScalar(Math.max(0.05, 1 - life));
+      p.mesh.rotation.x += dt * 9; p.mesh.rotation.y += dt * 7;
+      if (life >= 1) removeProjectile(i);
+      continue;
     }
 
-    const seg = new THREE.Vector3().subVectors(p.mesh.position, p.prev);
+    const seg = _tmpV.subVectors(p.mesh.position, p.prev);
     const dist = seg.length();
     if (dist > 1e-5) {
-      const dir = seg.clone().normalize();
-
-      // Resolve a blocking wall FIRST. Anything solid between p.prev and the
-      // segment end stops the shot, so NOTHING (player, bot or tank) can be
-      // tagged through a wall. `reach` caps every hit test at the wall, and
-      // `segEnd` is the clamped end of the travelled segment for the tank test.
-      // (At tank-shell speed a single frame spans metres, which is exactly how
-      // enemies behind thin walls used to get hit "through" them.)
+      const dir = seg.clone().multiplyScalar(1 / dist);
+      // the first solid surface along this step caps every hit test, so
+      // nothing is ever hit through a wall
       raycaster.set(p.prev, dir);
       raycaster.far = dist + 0.13;
-      const wallHit = raycaster.intersectObjects(arena.paintTargets, false)[0];
+      const wallHit = raycaster.intersectObjects(arena.losBlockers, false)[0];
       const reach = wallHit ? Math.min(dist + 0.13, wallHit.distance) : dist + 0.13;
       const segEnd = wallHit ? _segEnd.copy(p.prev).addScaledVector(dir, reach) : p.mesh.position;
+      const isNetGhost = p.shooter && p.shooter.netGhost; // relayed shots are visual only
 
-      // Relayed shots from other players are visual only — the authoritative
-      // shooter already resolved their hits. Skip combatant detection; still
-      // let them splat on walls below.
-      const isNetGhost = p.shooter && p.shooter.netGhost;
-
-      if (p.rocket) {
-        let blast = wallHit ? wallHit.point.clone() : null;
-        for (const bot of bots.bots) {
-          if (!bot.alive || bot.team.id === p.team) continue;
-          _tankHit.copy(bot.pos); _tankHit.y += 1.3;
-          if (segHitsSphere(p.prev, segEnd, _tankHit, 0.95)) { blast = _tankHit.clone(); break; }
+      if (p.kind === 'rocket') {
+        let blast = wallHit ? wallHit.point.clone().addScaledVector(dir, -0.15) : null;
+        if (!isNetGhost) {
+          for (const bot of bots.bots) {
+            if (!bot.alive || bot.team.id === p.team) continue;
+            _tmpV.copy(bot.pos); _tmpV.y += 1.2;
+            if (segHitsSphere(p.prev, segEnd, _tmpV, 0.9)) { blast = _tmpV.clone(); break; }
+          }
         }
-        if (blast) {
-          rocketImpact(p, i, blast);
-          continue;
-        }
-      }
-
-      // online: MY shots test against remote players + the host's ghost bots
-      if (p.isPlayer && netplay.active) {
-        const victim = netplay.testHit(p.prev, dir, reach);
-        if (victim) {
-          audio.play('bodyHit', { volume: 0.9, rate: 0.96 + Math.random() * 0.08 });
-          showKill(victim.name);
-          showTankHitmarker(true); // player/bot tag → larger marker
-          playerStats.kills++;
-          if (victim.kind === 'bot') netplay.sendBotHit(victim.index);
-          else netplay.sendTag(victim.id, p.hex);
-          removeProjectile(i);
-          continue;
-        }
-      }
-
-      // host: my bots' paintballs can tag remote human players
-      if (!isNetGhost && !p.isPlayer && netplay.isHost && netplay.active) {
-        const rv = netplay.hostTestRemoteHit(p.prev, dir, reach, p.team);
-        if (rv) {
-          netplay.broadcastTag(rv.id, p.hex, p.team, p.shooter && p.shooter.name);
-          removeProjectile(i);
-          continue;
-        }
-      }
-
-      if (isNetGhost) {
-        // fall through to wall-splat only
-      } else if (guiState.invisibleMode) {
-        // In invisible mode, track paint hits instead of instant kills
-        const hitResult = bots.hitscanPaint(p.prev, dir, reach, p.team, guiState.paintKillThreshold, p.hex);
-        if (hitResult) {
-          removeProjectile(i);
-          continue;
-        }
+        if (blast) { rocketImpact(p, i, blast, isNetGhost); continue; }
       } else {
-        // Normal mode: instant tag on hit
-        if (bots.hitscan(p.prev, dir, reach, p.team, p.hex, p.shooter)) {
-          if (p.isPlayer) showTankHitmarker(true); // player/bot tag → larger marker
+        // online: MY shots test remote players + the host's ghost bots
+        if (p.isPlayer && netplay.active) {
+          const victim = netplay.testHit(p.prev, dir, reach);
+          if (victim) {
+            audio.play('hitArmor', { volume: 0.9 });
+            showHitmarker(true);
+            showKill(victim.name);
+            playerStats.kills++;
+            if (victim.kind === 'bot') netplay.sendBotHit(victim.index);
+            else netplay.sendTag(victim.id, p.hex);
+            removeProjectile(i);
+            continue;
+          }
+        }
+        // host: my bots' rounds can hit remote human players
+        if (!isNetGhost && !p.isPlayer && netplay.isHost && netplay.active) {
+          const rv = netplay.hostTestRemoteHit(p.prev, dir, reach, p.team);
+          if (rv) { netplay.broadcastTag(rv.id, p.hex, p.team, p.shooter && p.shooter.name); removeProjectile(i); continue; }
+        }
+        if (!isNetGhost && bots.hitscan(p.prev, dir, reach, p.team, p.hex, p.shooter)) {
           removeProjectile(i);
           continue;
         }
-      }
-
-      // tank armor: paintballs damage the ENEMY team's tank
-      let hitTank = false;
-      for (const tk of tanks) {
-        if (!tk.alive || tk.teamId === p.team) continue;
-        tk.hitCenter(_tankHit);
-        if (segHitsSphere(p.prev, segEnd, _tankHit, tk.hitRadius)) {
-          // real projected decal on the hull, baked into tank-local so it moves with it
-          raycaster.set(p.prev, dir);
-          raycaster.far = dist + (p.radius || 0.13) + 0.6;
-          const th = raycaster.intersectObject(tk.root, true)[0];
-          if (th && th.face) {
-            const n = th.face.normal.clone().transformDirection(th.object.matrixWorld).normalize();
-            const decal = paint.buildDecal(th.object, th.point, n, p.hex, (p.radius > 0.2 ? 2.4 : 1.2));
-            if (decal) tk.addSplat(decal, th.object); // stick to the exact part (turret/barrel/hull)
-          }
-          if (p.isPlayer) showTankHitmarker();
-          if (!isNetGhost) { // relayed ghost shells only splat; they never damage
-            if (!netplay.active || netplay.isHost) {
-              if (tk.takeHit(1)) {                   // destroyed
-                tk.respawnAt = performance.now() + TANK_RESPAWN_MS;
-                if (currentTank === tk) exitTank(true); // you die with your tank
-                if (p.isPlayer) { playerStats.kills++; showKill('TANK'); unlockAchievement('TANK_COMMANDER'); pushKill(getPlayerName(), myTeamId(), (tk.teamId === 0 ? 'FIRE' : 'WHITE') + ' TANK', tk.teamId); }
-              }
-            } else {
-              netplay.sendTankHit(tk.teamId);        // host applies the armor damage
-            }
-          }
-          // a tank SHELL slamming a tank gets the heavy impact clip; small
-          // paintballs just wet-splat on the armor
-          if (p.radius > 0.2) audio.playAt('tankRoundImpact', _tankHit, { volume: 1.3, refDistance: 16, maxDistance: 150 });
-          else audio.playAt('bodyHit', _tankHit, { volume: 0.5, rate: 0.8 });
-          removeProjectile(i);
-          hitTank = true;
-          break;
-        }
-      }
-      if (hitTank) continue;
-
-      // splat on the blocking wall we found up top (nothing got hit before it)
-      if (wallHit) {
-        const h = wallHit;
-        const n = h.face
-          ? h.face.normal.clone().transformDirection(h.object.matrixWorld).normalize()
-          : new THREE.Vector3(0, 1, 0);
-        // rounds spark and stop on the arena shell without leaving paint decals
-        // impact sound, quieter with distance (squared falloff; skipped when far)
-        const k = Math.max(0, 1 - camera.position.distanceTo(h.point) / 45);
-        audio.play('splat', { volume: 0.85 * k * k, rate: 0.94 + Math.random() * 0.12 });
-        removeProjectile(i);
-        continue;
+        if (wallHit) { bulletImpact(wallHit, p.hex); removeProjectile(i); continue; }
       }
     }
-
-    if (performance.now() - p.born > p.ttl) removeProjectile(i);
+    if (now - p.born > p.ttl) removeProjectile(i);
   }
-}
-
-function rocketImpact(p, i, point) {
-  bots.applyBlast(point, 6.5, 110, p.team, p.shooter);
-  flashes.flash(point, 0xff6000, 30, 16, 0.35);
-  busterPaintBurst(point, 0xff6000);
-  audio.play('tankRoundImpact', { volume: 1.1, rate: 1.08 });
-  showTankHitmarker(true);
-  removeProjectile(i);
 }
 
 function removeProjectile(i) {
   const p = projectiles[i];
-  // a tracer that stopped early hit something: brief glow where it landed
-  if (p.kind === 'bullet' && performance.now() - p.born < p.ttl) flashes.flash(p.mesh.position, p.hex, 3, 4, 0.1);
   scene.remove(p.mesh);
-  if (p.kind === 'ball') p.mesh.material.dispose(); // only 'ball' owns a per-shot material
+  if (p.kind === 'rocket') p.mesh.userData.glow.material.dispose();
   projectiles.splice(i, 1);
 }
 
-// ---------------------------------------------------------------------------
-// Player physics now lives in PlayerController (player.js).
+// ---- impact + explosion FX ----------------------------------------------------
+// smoke / dust puffs (pooled sprites, tinted per puff)
+const puffs = [];
+for (let i = 0; i < 260; i++) {
+  const mat = new THREE.SpriteMaterial({ map: _radialTex, color: 0x9aa0a8, transparent: true, opacity: 0, depthWrite: false });
+  const s = new THREE.Sprite(mat); s.visible = false; s.layers.set(NO_OUTLINE_LAYER); scene.add(s);
+  puffs.push({ sprite: s, age: 0, life: 1, size0: 0.6, vel: new THREE.Vector3(), maxOp: 0.4, grow: 1.5 });
+}
+function spawnPuff(x, y, z, opts = {}) {
+  const p = puffs.find((s) => !s.sprite.visible); if (!p) return;
+  const j = opts.jitter ?? 0.25;
+  p.sprite.position.set(x + (Math.random() - .5) * j, y + (Math.random() - .5) * j * 0.8, z + (Math.random() - .5) * j);
+  const sp = opts.spread ?? 0.5;
+  p.vel.set((Math.random() - .5) * sp, (opts.rise ?? 0.35) + Math.random() * 0.4, (Math.random() - .5) * sp);
+  p.age = 0; p.life = (opts.life ?? 0.8) + Math.random() * 0.4;
+  p.size0 = (opts.size ?? 0.42) + Math.random() * 0.18;
+  p.maxOp = opts.opacity ?? 0.4;
+  p.grow = opts.grow ?? 1.5;
+  p.sprite.material.color.setHex(opts.color ?? 0x9aa0a8);
+  p.sprite.scale.setScalar(p.size0); p.sprite.material.opacity = p.maxOp; p.sprite.visible = true;
+}
+// contrail: puffs laid at fixed spacing along the path actually travelled
+const _smkSeg = new THREE.Vector3();
+function emitTrail(p, pos) {
+  const step = 0.55;
+  if (!p._smokePrev) { p._smokePrev = pos.clone(); p._smokeCarry = 0; return; }
+  _smkSeg.subVectors(pos, p._smokePrev);
+  const dist = _smkSeg.length();
+  if (dist < 1e-4) return;
+  _smkSeg.multiplyScalar(1 / dist);
+  let d = step - (p._smokeCarry || 0);
+  while (d <= dist) {
+    spawnPuff(p._smokePrev.x + _smkSeg.x * d, p._smokePrev.y + _smkSeg.y * d, p._smokePrev.z + _smkSeg.z * d,
+      { size: 0.3, opacity: 0.42, grow: 2.4, life: 1.1, rise: 0.15, spread: 0.3, jitter: 0.08, color: 0xd8dade });
+    d += step;
+  }
+  p._smokeCarry = dist - (d - step);
+  p._smokePrev.copy(pos);
+}
+
+// fireballs: additive sprites that bloom out and cool from white-hot to ember
+const fireballs = [];
+for (let i = 0; i < 40; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: _radialTex, color: 0xffffff, transparent: true, opacity: 0, depthWrite: false,
+    blending: THREE.AdditiveBlending, toneMapped: false,
+  }));
+  s.visible = false; s.layers.set(NO_OUTLINE_LAYER); scene.add(s);
+  fireballs.push({ sprite: s, age: 0, life: 0.4, size: 1, vel: new THREE.Vector3() });
+}
+const _fbCol = new THREE.Color(), _fbHot = new THREE.Color(0xfff1c4), _fbMid = new THREE.Color(0xff7a1a), _fbCool = new THREE.Color(0x5a2208);
+// ground shockwave rings + scorch marks
+const ringGeo = new THREE.RingGeometry(0.82, 1, 48).rotateX(-Math.PI / 2);
+const rings = [];
+for (let i = 0; i < 6; i++) {
+  const m = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({
+    color: 0xffe2b8, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+  }));
+  m.visible = false; m.layers.set(NO_OUTLINE_LAYER); scene.add(m);
+  rings.push({ mesh: m, age: 0, life: 0.38, r: 6 });
+}
+const scorchTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(64, 64, 4, 64, 64, 64);
+  g.addColorStop(0, 'rgba(10,8,6,0.85)'); g.addColorStop(0.55, 'rgba(20,16,12,0.45)'); g.addColorStop(1, 'rgba(20,16,12,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+})();
+const scorchGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+const scorches = [];
+for (let i = 0; i < 12; i++) {
+  const m = new THREE.Mesh(scorchGeo, new THREE.MeshBasicMaterial({ map: scorchTex, transparent: true, opacity: 0, depthWrite: false }));
+  m.visible = false; m.layers.set(NO_OUTLINE_LAYER); m.renderOrder = 2; scene.add(m);
+  scorches.push({ mesh: m, age: 0 });
+}
+let _scorchNext = 0;
+
+function spawnSparks(pos, n, { speed = [6, 16], colors = [0xffe0a0, 0xff8a30], up = 0.55, ttl = 650 } = {}) {
+  const dir = new THREE.Vector3();
+  for (let k = 0; k < n; k++) {
+    const a = Math.random() * Math.PI * 2, el = Math.random() * up + 0.05;
+    dir.set(Math.cos(a) * Math.cos(el), Math.sin(el), Math.sin(a) * Math.cos(el)).normalize();
+    const sp = speed[0] + Math.random() * (speed[1] - speed[0]);
+    spawnProjectile(pos.clone().addScaledVector(dir, 0.1), dir.clone(), colors[k % colors.length], -1, sp, false,
+      { netGhost: true }, { kind: 'spark', ttl: ttl * (0.6 + Math.random() * 0.6) });
+  }
+}
+
+// a round hitting the arena shell: a few sparks, a small puff, a ricochet tick
+function bulletImpact(hit, hex) {
+  const n = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize() : _tmpV.set(0, 1, 0);
+  const pos = hit.point.clone().addScaledVector(n, 0.05);
+  flashes.flash(pos, hex, 3, 4, 0.08);
+  spawnSparks(pos, 4, { speed: [3, 7], colors: [0xfff4dc, hex], up: 0.9, ttl: 320 });
+  spawnPuff(pos.x, pos.y, pos.z, { size: 0.16, opacity: 0.35, grow: 2.2, life: 0.45, rise: 0.2, spread: 0.2, jitter: 0.02, color: 0xc9ccd2 });
+  const k = Math.max(0, 1 - camera.position.distanceTo(pos) / 40);
+  if (k > 0) audio.playAt('impact', pos, { volume: 0.55 * k, rate: 0.9 + Math.random() * 0.25, refDistance: 4, maxDistance: 40 });
+}
+
+function explode(point) {
+  flashes.flash(point, 0xff8a30, 34, 18, 0.32);
+  for (let k = 0; k < 9; k++) {
+    const f = fireballs.find((o) => !o.sprite.visible); if (!f) break;
+    f.sprite.position.set(point.x + (Math.random() - .5) * 0.8, point.y + (Math.random() - .3) * 0.7, point.z + (Math.random() - .5) * 0.8);
+    f.vel.set((Math.random() - .5) * 3, 0.8 + Math.random() * 2.2, (Math.random() - .5) * 3);
+    f.age = 0; f.life = 0.32 + Math.random() * 0.25; f.size = 1.6 + Math.random() * 1.6;
+    f.sprite.visible = true;
+  }
+  for (let k = 0; k < 10; k++) {
+    spawnPuff(point.x, point.y + 0.3, point.z, { size: 0.9, opacity: 0.5, grow: 2.6, life: 1.4, rise: 0.9, spread: 2.2, jitter: 1.1, color: 0x5d6168 });
+  }
+  spawnSparks(point, 22, { speed: [7, 20], colors: [0xfff0c0, 0xffa040, 0xff6000], up: 0.9, ttl: 800 });
+  if (point.y < 1.6) { // ground burst: shockwave ring + scorch mark
+    const r = rings.find((o) => !o.mesh.visible);
+    if (r) { r.mesh.position.set(point.x, 0.05, point.z); r.age = 0; r.mesh.visible = true; }
+    const s = scorches[_scorchNext++ % scorches.length];
+    s.mesh.position.set(point.x, 0.012, point.z); s.mesh.scale.setScalar(3.4 + Math.random());
+    s.mesh.rotation.y = Math.random() * Math.PI * 2; s.age = 0; s.mesh.visible = true;
+  }
+  // camera shake that falls off with distance
+  const d = camera.position.distanceTo(point);
+  const k = Math.max(0, 1 - d / 20);
+  if (k > 0) kickView(1.6 * k, (Math.random() - 0.5) * 0.8 * k, (Math.random() - 0.5) * 1.2 * k);
+  audio.playAt('explosion', point, { volume: 1.2, rate: 0.95 + Math.random() * 0.1, refDistance: 10, maxDistance: 140 });
+}
+
+function rocketImpact(p, i, point, visualOnly) {
+  if (!visualOnly) {
+    const tagged = bots.applyBlast(point, 6.5, 110, p.team, p.shooter);
+    if (p.isPlayer && tagged) showHitmarker(true);
+  }
+  explode(point);
+  removeProjectile(i);
+}
+
+function updateFx(dt) {
+  for (const p of puffs) {
+    if (!p.sprite.visible) continue;
+    p.age += dt; if (p.age >= p.life) { p.sprite.visible = false; continue; }
+    p.sprite.position.addScaledVector(p.vel, dt);
+    p.vel.multiplyScalar(1 - 0.9 * dt); p.vel.y += 0.25 * dt;
+    const t = p.age / p.life;
+    p.sprite.scale.setScalar(p.size0 * (1 + t * p.grow));
+    p.sprite.material.opacity = (1 - t) * (1 - t) * p.maxOp;
+  }
+  for (const f of fireballs) {
+    if (!f.sprite.visible) continue;
+    f.age += dt; const t = f.age / f.life;
+    if (t >= 1) { f.sprite.visible = false; continue; }
+    f.sprite.position.addScaledVector(f.vel, dt);
+    f.sprite.scale.setScalar(f.size * (0.35 + Math.sqrt(t) * 1.1));
+    if (t < 0.35) _fbCol.copy(_fbHot).lerp(_fbMid, t / 0.35); else _fbCol.copy(_fbMid).lerp(_fbCool, (t - 0.35) / 0.65);
+    f.sprite.material.color.copy(_fbCol);
+    f.sprite.material.opacity = 1 - t * t;
+  }
+  for (const r of rings) {
+    if (!r.mesh.visible) continue;
+    r.age += dt; const t = r.age / r.life;
+    if (t >= 1) { r.mesh.visible = false; continue; }
+    r.mesh.scale.setScalar(0.5 + (r.r - 0.5) * (1 - (1 - t) * (1 - t)));
+    r.mesh.material.opacity = 0.7 * (1 - t);
+  }
+  for (const s of scorches) {
+    if (!s.mesh.visible) continue;
+    s.age += dt;
+    s.mesh.material.opacity = s.age < 8 ? 0.85 : Math.max(0, 0.85 * (1 - (s.age - 8) / 4));
+    if (s.age > 12) s.mesh.visible = false;
+  }
+}
+
 // Keep the sun following the player so shadows stay crisp across the arena.
-// ---------------------------------------------------------------------------
 function updateSun() {
   const p = camera.position;
   sun.target.position.set(p.x, 0, p.z);
   sun.position.set(p.x + 30, 48, p.z + 20);
-}
-
-// ---------------------------------------------------------------------------
-// UI helpers
-// ---------------------------------------------------------------------------
-const swatchEl = document.getElementById('color-swatch');
-const nameEl = document.getElementById('color-name');
-
-function setColor(i) {
-  colorIndex = ((i % COLORS.length) + COLORS.length) % COLORS.length;
-  const c = COLORS[colorIndex];
-  swatchEl.style.background = '#' + c.hex.toString(16).padStart(6, '0');
-  nameEl.textContent = c.name;
-  weapon.setPaintColor(c.hex); // hopper balls match the selected paint
-  tankBuster.setPaintColor(c.hex);
-  guiState.paintColor = c.name;
-  if (colorCtrl) colorCtrl.updateDisplay();
 }
 
 // ---------------------------------------------------------------------------
@@ -2864,20 +1906,8 @@ const guiState = {
   outlineGray: '#3a3f47',
   depthEdges: outline.uniforms.depthBias.value,
   normalEdges: outline.uniforms.normalBias.value,
-  // paint
-  paintColor: COLORS[0].name,
-  splatSize: paint.settings.size,
-  splatSizeVariation: paint.settings.sizeVariation,
-  splatOpacity: paint.settings.opacity,
-  fadeEnabled: paint.settings.fadeEnabled,
-  lifetime: paint.settings.lifetime,
-  dripsEnabled: paint.settings.dripsEnabled,
-  dripAmount: paint.settings.dripAmount,
-  dripLength: paint.settings.dripLength,
-  dripSpeed: paint.settings.dripSpeed,
-  clearPaint: () => paint.clear(),
   // environment
-  environmentContrast: 0.88,
+  environmentContrast: 0.74,
   shadowIntensity: 0.38,
   // movement
   moveSpeed: player.baseSpeed,
@@ -2892,7 +1922,6 @@ const guiState = {
   bots5v5: true,
   // invisible mode
   invisibleMode: false,
-  paintKillThreshold: 5,
 };
 
 function applyEnvironment() {
@@ -2946,30 +1975,6 @@ fGlow.add(guiState, 'glowPower', 0.5, 6, 0.05).name('Softness')
   .onChange(v => setGlow({ power: v }));
 fGlow.open();
 
-const fPaint = gui.addFolder('Paint');
-colorCtrl = fPaint.add(guiState, 'paintColor', COLORS.map(c => c.name)).name('Color')
-  .onChange(v => setColor(COLORS.findIndex(c => c.name === v)));
-fPaint.add(guiState, 'splatSize', 0.4, 4, 0.05).name('Splat Size')
-  .onChange(v => paint.settings.size = v);
-fPaint.add(guiState, 'splatSizeVariation', 0, 1, 0.01).name('Size Variation')
-  .onChange(v => paint.settings.sizeVariation = v);
-fPaint.add(guiState, 'splatOpacity', 0.1, 1, 0.01).name('Opacity')
-  .onChange(v => paint.settings.opacity = v);
-fPaint.add(guiState, 'fadeEnabled').name('Fade Over Time')
-  .onChange(v => paint.settings.fadeEnabled = v);
-fPaint.add(guiState, 'lifetime', 3, 60, 1).name('Fade Lifetime (s)')
-  .onChange(v => paint.settings.lifetime = v);
-fPaint.add(guiState, 'dripsEnabled').name('Paint Drips')
-  .onChange(v => paint.settings.dripsEnabled = v);
-fPaint.add(guiState, 'dripAmount', 0, 1, 0.01).name('Drip Amount')
-  .onChange(v => paint.settings.dripAmount = v);
-fPaint.add(guiState, 'dripLength', 0.5, 4, 0.05).name('Drip Length')
-  .onChange(v => paint.settings.dripLength = v);
-fPaint.add(guiState, 'dripSpeed', 0.2, 5, 0.05).name('Drip Speed')
-  .onChange(v => paint.settings.dripSpeed = v);
-fPaint.add(guiState, 'clearPaint').name('Clear All Paint');
-fPaint.open();
-
 const fEnv = gui.addFolder('Environment');
 fEnv.add(guiState, 'environmentContrast', 0.5, 1.6, 0.01).name('Contrast')
   .onChange(applyEnvironment);
@@ -3005,7 +2010,7 @@ fWeapon.add(weapon, 'hipZ', -1.0, -0.1, 0.005).name('Hip Z');
 fWeapon.add(weapon, 'aimX', -0.3, 0.3, 0.005).name('Aim X');
 fWeapon.add(weapon, 'aimY', -0.3, 0.2, 0.002).name('Aim Y');
 fWeapon.add(weapon, 'aimZ', -0.8, -0.1, 0.005).name('Aim Z');
-fWeapon.add(weapon, 'cant', -1.4, 1.4, 0.02).name('Cant (hopper tilt)');
+fWeapon.add(weapon, 'cant', -1.4, 1.4, 0.02).name('Cant');
 fWeapon.add(weapon, 'aimFov', 20, 75, 1).name('Zoom FOV');
 fWeapon.add(weapon, 'aimSpeed', 3, 30, 0.5).name('Aim Speed');
 fWeapon.add(weapon, 'recoilAmount', 0, 4, 0.1).name('Recoil');
@@ -3034,17 +2039,6 @@ fSlide.add(weapon, 'slideZ', -1.0, 0.6, 0.005).name('Pos Z');
 fSlide.add(weapon, 'slideBlend', 3, 30, 0.5).name('Blend Speed');
 fSlide.open();
 
-const fBuster = gui.addFolder('Tank Buster');
-fBuster.add(tankBuster, 'hipX', -0.6, 0.6, 0.005).name('Hip X');
-fBuster.add(tankBuster, 'hipY', -0.6, 0.3, 0.005).name('Hip Y');
-fBuster.add(tankBuster, 'hipZ', -1.0, -0.1, 0.005).name('Hip Z');
-fBuster.add(tankBuster, 'aimX', -0.4, 0.4, 0.005).name('Aim X');
-fBuster.add(tankBuster, 'aimY', -0.4, 0.2, 0.005).name('Aim Y');
-fBuster.add(tankBuster, 'aimZ', -0.8, -0.1, 0.005).name('Aim Z');
-fBuster.add(tankBuster, 'aimFov', 20, 75, 1).name('Zoom FOV');
-fBuster.add(tankBuster, 'viewScale', 0.5, 1.4, 0.01).name('Scale');
-fBuster.open();
-
 const fBots = gui.addFolder('Bots (5v5)');
 fBots.add(guiState, 'bots5v5').name('Enable 5v5')
   .onChange(v => { bots.setEnabled(v); scoreboard.classList.toggle('hidden', !v); });
@@ -3054,108 +2048,28 @@ fBots.open();
 const fInvisible = gui.addFolder('Invisible Mode');
 fInvisible.add(guiState, 'invisibleMode').name('Enable Invisible Mode')
   .onChange(applyInvisibleMode);
-fInvisible.add(guiState, 'paintKillThreshold', 1, 20, 1).name('Paint Hits to Kill');
 fInvisible.open();
-
-// Tank / Jet / Nuke dev folders only exist when the legacy vehicles are on.
-if (LEGACY_VEHICLES) {
-const fTank = gui.addFolder('Tank');
-const tk0 = tanks[0]; // tuner master; values mirror onto both tanks each frame
-fTank.add({ toggle: () => { if (active && !playerDead) { tankMode ? exitTank() : enterTank(); } } }, 'toggle').name('Enter / Exit (dev)');
-fTank.add(tk0, 'maxHp', 5, 80, 1).name('Armor (HP)');
-fTank.add(tk0, 'driveSpeed', 4, 40, 1).name('Drive Speed');
-fTank.add(tk0, 'reverseSpeed', 2, 20, 1).name('Reverse Speed');
-fTank.add(tk0, 'turnSpeed', 0.4, 3.5, 0.05).name('Turn Speed');
-fTank.add(tk0, 'turretTraverse', 0.4, 5, 0.1).name('Turret Speed');
-fTank.add(tk0, 'barrelTraverse', 0.4, 4, 0.1).name('Barrel Speed');
-fTank.add(tk0, 'barrelMin', -0.5, 0, 0.01).name('Barrel Down Limit');
-fTank.add(tk0, 'barrelMax', 0, 0.9, 0.01).name('Barrel Up Limit');
-fTank.add(tk0, 'projSpeed', 20, 160, 1).name('Shell Speed');
-fTank.add(tk0, 'projGravity', -20, 0, 0.5).name('Shell Gravity (drop)');
-fTank.add(tk0, 'projRadius', 0.15, 1.2, 0.01).name('Shell Size');
-fTank.add(tk0, 'splatScale', 1, 12, 0.5).name('Splat Size');
-fTank.add(tk0, 'fireInterval', 150, 2500, 50).name('Fire Interval (ms)');
-fTank.add(tk0, 'recoilAmount', 0, 1, 0.02).name('Recoil Jolt');
-fTank.add(tk0, 'turretVolume', 0, 1, 0.05).name('Turret/Barrel Sound');
-fTank.add(tk0, 'boostMult', 1, 3, 0.05).name('Boost Speed x');
-fTank.add(tk0, 'boostDuration', 0.5, 6, 0.1).name('Boost Duration (s)');
-fTank.add(tk0, 'boostCooldown', 1, 15, 0.5).name('Boost Cooldown (s)');
-const fTankCam = fTank.addFolder('Camera');
-fTankCam.add(tk0, 'zoomFov', 25, 100, 1).name('Zoom FOV');
-fTankCam.add(tk0, 'cam3rdDist', 4, 20, 0.5).name('3rd Person Dist');
-fTankCam.add(tk0, 'cam3rdHeight', 1, 12, 0.5).name('3rd Person Height');
-fTankCam.add(tk0, 'camZoomDist', 0, 10, 0.2).name('Zoom Dist');
-fTankCam.add(tk0, 'camZoomHeight', 0.5, 8, 0.2).name('Zoom Height');
-fTankCam.add(tk0, 'camZoomSide', -3, 3, 0.1).name('Zoom Side Offset');
-const fTankFX = fTank.addFolder('FX (Smoke / Explosion)');
-fTankFX.add(tk0, 'dmgSmokeMul', 0.2, 4, 0.1).name('Damage Smoke x');
-fTankFX.add(tankFX, 'debrisCount', 4, 48, 1).name('Explosion Debris');
-fTankFX.add(tankFX, 'smokeCount', 4, 48, 1).name('Explosion Smoke');
-fTankFX.add(fxTune, 'paintCount', 8, 140, 1).name('Explosion Embers');
-const fRamp = fTank.addFolder('Ramp Jump');
-fRamp.add(tk0, 'launchBoost', 0.5, 5, 0.1).name('Launch Boost');
-fRamp.add(tk0, 'maxLaunch', 6, 40, 1).name('Max Launch (m/s)');
-fRamp.add(tk0, 'gravity', -40, -12, 1).name('Gravity');
-fRamp.open();
-fTank.open();
-
-// --- Jet (fighter) ---
-const fJet = gui.addFolder('Jet');
-fJet.add({ toggle: () => { if (active && !playerDead) { if (jetMode) exitJet(false); else if (!tankMode) enterJet(); } } }, 'toggle').name('Launch / Eject (dev)');
-const fJetCam = fJet.addFolder('3rd-Person Camera');
-fJetCam.add(jet, 'camX', -12, 12, 0.2).name('Camera X (side)');
-fJetCam.add(jet, 'camY', -2, 14, 0.2).name('Camera Y (up)');
-fJetCam.add(jet, 'camZ', 4, 32, 0.5).name('Camera Z (behind)');
-fJetCam.add(jet, 'camEase', 1, 20, 0.5).name('Follow Ease');
-fJetCam.open();
-const fJetFly = fJet.addFolder('Flight');
-fJetFly.add(jet, 'minSpeed', 8, 40, 1).name('Min Speed');
-fJetFly.add(jet, 'cruiseSpeed', 15, 60, 1).name('Cruise Speed');
-fJetFly.add(jet, 'maxSpeed', 30, 120, 1).name('Max Speed');
-fJetFly.add(jet, 'turnRate', 0.6, 5, 0.1).name('Turn Rate');
-fJetFly.add(jet, 'bankGain', 0.5, 6, 0.1).name('Bank Into Turn');
-fJetFly.add(jet, 'maxBank', 0.2, 1.6, 0.05).name('Max Bank');
-const fJetGun = fJet.addFolder('Weapons');
-fJetGun.add(jet, 'mgSpeed', 60, 220, 5).name('MG Round Speed');
-fJetGun.add(jet, 'fireInterval', 30, 300, 5).name('MG Interval (ms)');
-fJetGun.add(jet, 'bombInterval', 300, 3000, 50).name('Bomb Interval (ms)');
-fJet.open();
-
-// --- Nuke (press N in play) ---
-const fNuke = gui.addFolder('Nuke');
-fNuke.add({ drop: () => { if (active && !nuke.active) nuke.trigger(new THREE.Vector3(camera.position.x, 0, camera.position.z - 24)); } }, 'drop').name('Detonate (dev)');
-fNuke.add(nuke, 'dropHeight', 80, 400, 10).name('Drop Height');
-fNuke.add(nuke, 'fallTime', 0.8, 5, 0.1).name('Fall Time (s)');
-fNuke.add(nuke, 'blastScale', 0.5, 2.4, 0.05).name('Blast x Map');
-fNuke.add(nuke, 'capScale', 0.3, 1.4, 0.05).name('Cap x Map');
-fNuke.add(nuke, 'heightScale', 0.6, 2.4, 0.05).name('Height x Map');
-fNuke.add(nuke, 'shockTime', 0.3, 2, 0.05).name('Shock Time (s)');
-fNuke.add(nuke, 'knockback', 10, 90, 1).name('Player Knockback');
-fNuke.add(nuke, 'maxLaunchUp', 0, 20, 0.5).name('Max Launch Up');
-fNuke.add(nuke, 'shakeAmp', 0, 3, 0.05).name('Camera Shake');
-fNuke.add(nuke, 'riseTime', 1.5, 8, 0.1).name('Rise Time (s)');
-fNuke.add(nuke, 'holdTime', 1, 14, 0.5).name('Hold Time (s)');
-fNuke.add(nuke, 'fadeTime', 1, 10, 0.5).name('Fade Time (s)');
-} // LEGACY_VEHICLES
 
 // DEV-only debug hooks (DEV is false in the shipped itch/Steam build, so this
 // never exists for players). Lets a headless/browser-pane session drive play
-// and detonate the nuke where pointer-lock isn't available.
+// where pointer-lock isn't available.
 if (DEV) window.__wo = {
   get active() { return active; },
   setActive: (v) => { active = !!v; },   // pause/resume the movement+camera loop for clean FX captures
   enterGame, resetMatch,
   skipCountdown: () => { countdownMs = COUNTDOWN_GO_MS; countdownEl.classList.add('hidden'); },
-  fire: () => shoot(), fireRocket,
+  fire: () => fireCurrent(),
+  fireRocket: () => { currentWeapon = 1; weapon.setMode(1); fireCurrent(); },
   spawn: (kind) => { // stage a frozen round in front of the camera for FX captures
     const o = camera.getWorldPosition(new THREE.Vector3())
       .addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 2.2);
     const d = camera.getWorldDirection(new THREE.Vector3());
     return spawnProjectile(o, d, 0xff6000, PLAYER_TEAM, 0, true, playerStats, { kind, gravity: 0, ttl: 60000 });
   },
-  nuke, camera, player, arena, bots,
-  drop: (x, z) => nuke.trigger(new THREE.Vector3(
-    x != null ? x : camera.position.x, 0, z != null ? z : camera.position.z - 22)),
+  camera, player, arena, bots, weapon,
+  get ammo() { return [...ammo]; }, get reload() { return { ...reload }; }, get slot() { return currentWeapon; },
+  swap: (s) => switchWeapon(s), reloadNow: () => startReload(),
+  render: () => outline.render(), // draw one frame on demand (background tabs pause rAF)
 };
 
 // keep dev panel from stealing pointer-lock clicks
@@ -3182,7 +2096,7 @@ import('./devRecorder.js').then(({ DevRecorder }) => {
     const b = document.createElement('button');
     b.textContent = text;
     b.style.cssText = 'display:block;width:100%;margin:6px 0;padding:10px;border-radius:8px;' +
-      'border:none;cursor:pointer;font:700 13px system-ui,sans-serif;background:#1c1f24;color:#fff';
+      'border:none;cursor:pointer;font:700 13px var(--font);background:#1c1f24;color:#fff';
     return b;
   };
   const vBtn = mkBtn('Record Video + Audio');
@@ -3203,7 +2117,7 @@ import('./devRecorder.js').then(({ DevRecorder }) => {
   wrap.style.cssText = 'margin-top:14px;padding-top:12px;border-top:1px solid rgba(0,0,0,.12)';
   const label = document.createElement('div');
   label.textContent = 'DEV — RECORDER';
-  label.style.cssText = 'font:700 11px/1 system-ui,sans-serif;letter-spacing:.16em;color:#8a9099;margin-bottom:8px';
+  label.style.cssText = 'font:700 11px/1 var(--font);letter-spacing:.16em;color:#8a9099;margin-bottom:8px';
   wrap.append(label, vBtn, aBtn);
   document.getElementById('settings-body').appendChild(wrap);
 
@@ -3214,7 +2128,6 @@ import('./devRecorder.js').then(({ DevRecorder }) => {
 }).catch((err) => console.warn('dev recorder unavailable:', err));
 } // end DEV
 
-setColor(0); // FIRE team accent
 // bots stay OFF until a match actually starts — no phantom battle raging
 // behind the title screen and menus
 
@@ -3225,11 +2138,6 @@ setColor(0); // FIRE team accent
 const settings = new Settings();
 settings.buildUI(document.getElementById('settings-body'));
 settings.apply({ controls, player, camera, match, audio, weapon, bots });
-
-// Custom splatter designer — kept for a future update; its menu button is
-// hidden, but any saved design still loads into the paint system.
-const splatDesigner = new SplatDesigner(paint, COLORS);
-document.getElementById('open-splat-btn').addEventListener('click', () => splatDesigner.show());
 
 // ---------------------------------------------------------------------------
 // Resize
@@ -3242,6 +2150,7 @@ window.addEventListener('resize', () => {
   outline.setSize(w, h);
   const [sw, sh] = _scopeDim();
   scopeRT.setSize(sw, sh); // keep the scope feed matched to the screen aspect
+  if (floorRefl) floorRefl.resize();
 });
 
 // ---------------------------------------------------------------------------
@@ -3305,29 +2214,6 @@ function animate() {
     nightSky.update(dt, camera); // moon/stars follow the camera + twinkle (night only)
     checkSteamAchievements();     // Steam unlocks (no-op in the browser build)
 
-    // Tank enter/exit prompt + proximity interact (E / gamepad Y)
-    updateTankPrompt();
-
-    // keep both team tanks on one set of tuned values
-    if (tanks.length > 1) for (const k of TANK_TUNE_KEYS) tanks[1][k] = tanks[0][k];
-
-    // tank death FX: catch the moment a tank is destroyed (host, free play, or a
-    // client learning it over the network) and blow it up violently
-    for (const tk of tanks) {
-      if (tk._wasAlive === undefined) tk._wasAlive = tk.alive;
-      if (tk._wasAlive && !tk.alive) explodeTank(tk);
-      tk._wasAlive = tk.alive;
-    }
-    tankFX.update(dt);
-    jet.updateDebris(dt); // tumbling wreckage after a jet breaks up (no-op when idle)
-    nuke.update(dt, camera); // falling bomb / flash / mushroom / shockwave (no-op when idle)
-
-    // seamless critical-armor alarm on the tank you're driving
-    const critTank = currentTank;
-    const critical = !!(critTank && critTank.alive && critTank.hp / critTank.maxHp <= 0.15);
-    if (critical && !tankAlarmLoop) tankAlarmLoop = audio.playLoop('tankAlarm', { volume: 0.5 });
-    else if (!critical && tankAlarmLoop) { audio.stopLoop(tankAlarmLoop); tankAlarmLoop = null; }
-
     // Gamepad Start button: begins a session without pointer lock, and pauses
     // (back to the menu/lobby) when already playing.
     if (input.consumeStart()) {
@@ -3357,40 +2243,32 @@ function animate() {
       playerHp = Math.min(HP_MAX, playerHp + HP_RATE * dt);
       updateHpBar();
     }
-    // (jet enter/exit is handled by the KeyG listener defined above, not here)
-    if (jetMode) {
-      updateJet(dt, ready);
-    } else if (tankMode) {
-      updateTank(dt, ready);
-      updateSun();
-    } else {
     // online: also collide with remote humans + ghost bots so nobody overlaps
     player.extraSolids = netplay.active ? netplay.collisionActors() : [];
     const crouchPress = ready && input.consumeCrouch();
-    // Pulling the trigger on the marker CANCELS sprint (like other shooters): the
-    // gun comes up to fire instead of swaying, and you drop to normal move speed.
-    const firing = ready && input.shootHeld && currentWeapon === 0;
+    // Pulling the trigger or raising the scope CANCELS sprint (like other
+    // shooters): the gun comes up and you drop to normal move speed.
+    const firing = ready && input.shootHeld;
+    const aiming = ready && input.aimHeld;
     player.update(
       dt,
       ready
         ? {
-            forward: input.move.forward, strafe: input.move.strafe, sprint: input.sprint && !firing,
+            forward: input.move.forward, strafe: input.move.strafe, sprint: input.sprint && !firing && !aiming,
             crouchPress, crouchHeld: input.crouchHeld,
           }
         : { forward: 0, strafe: 0, sprint: false, crouchPress: false, crouchHeld: false },
       input.look); // looking around is always allowed
-    pushOutOfTank(); // can't walk through the tank hull
     if (ready) {
       if (input.consumeJump() && player.jump()) audio.play('jump', { volume: 0.7 });
     } else {
       input.consumeJump();
     }
-    const cd = input.consumeColorDelta();
-    if (cd) setColor((colorIndex + cd + COLORS.length) % COLORS.length);
     const wsw = input.consumeWeapon();
     if (wsw !== null) switchWeapon(wsw === -1 ? (currentWeapon ^ 1) : wsw);
-    if (ready && currentWeapon === 0) updateShooting(); // marker; buster fires in updateBuster
-    else if (gunLoop || shootWasHeld) stopFiring();
+    updateShooting(ready); // fire + reload for whichever weapon is out
+    updateReload();        // progress the reload ring + finish the mag swap
+    if (!ready && shootWasHeld) stopFiring();
     updateSlideSound();
     // tuck the gun back when facing a nearby wall so the barrel doesn't clip
     // through it — test blocker boxes only (skips the floor/ramps you look at)
@@ -3405,25 +2283,22 @@ function animate() {
     }
     const wTarget = wDist >= 1.3 ? 0 : (wDist <= 0.7 ? 1 : (1.3 - wDist) / 0.6);
     weapon.wallPull += (wTarget - weapon.wallPull) * Math.min(1, dt * 14);
-    tankBuster.wallPull += (wTarget - tankBuster.wallPull) * Math.min(1, dt * 14);
     // sprint pose: holding sprint, moving, grounded, not aiming or sliding.
     // slide pose: while the player is sliding (it takes over from sprint).
     const moving = Math.hypot(input.move.forward, input.move.strafe) > 0.1;
-    const sprinting = ready && input.sprint && moving && !input.aimHeld && !firing &&
+    const sprinting = ready && input.sprint && moving && !aiming && !firing &&
       player.onGround && !player.sliding && !player.diving;
-    weapon.update(dt, ready && input.aimHeld, settings.get('fov'), sprinting, player.sliding);
-    updateBuster(dt, ready);
+    weapon.update(dt, aiming, settings.get('fov'), sprinting, player.sliding,
+      Math.hypot(player.moveVel.x, player.moveVel.z) / player.sprintSpeed, reload.active);
     applyAimZoom();
     updateSun();
-    }
   } else if (active && playerDead) {
     // frozen while the respawn timer counts down (mouse look still works).
     // The timer advances by dt so it only ticks during actual play — pausing
     // to a menu preserves it, so you always serve a full countdown.
     input.consumeJump();
     input.consumeCrouch();
-    input.consumeColorDelta();
-    if (gunLoop || shootWasHeld) stopFiring();
+    if (shootWasHeld) stopFiring();
     stopSlideSound();
     weapon.update(dt, false, settings.get('fov')); // ease the marker out of ADS
     applyAimZoom();                                 // and un-zoom the view
@@ -3435,12 +2310,9 @@ function animate() {
   } else {
     input.consumeJump();
     input.consumeCrouch();
-    input.consumeColorDelta();
-    if (gunLoop || shootWasHeld) stopFiring(); // paused / match over
+    if (shootWasHeld) stopFiring(); // paused / match over
     stopSlideSound();
   }
-  // silence the tank loops whenever we're not actively driving (pause/death/on-foot)
-  if (!(active && !playerDead && tankMode)) stopTankSound();
 
   audio.updateListener(camera); // keep 3D audio anchored to the view
 
@@ -3453,23 +2325,15 @@ function animate() {
   if (!frozen && simRunning) {
     // host: bots also hunt the remote human players (local player's team below)
     bots.extraTargets = netplay.isHost ? netplay.getBotTargets() : [];
-    bots.tankSolids = tanks.filter((t) => t.alive).map((t) => ({ x: t.pos.x, z: t.pos.z, r: 2.4 }));
     bots.update(dt, {
-      playerPos: (tankMode && currentTank) ? currentTank.pos : camera.position,
+      playerPos: camera.position,
       playerTeam: netplay.active && netplay.me ? netplay.me.team : PLAYER_TEAM,
-      playerAlive: active && !playerDead && !tankMode && !jetMode, // untargetable in a vehicle
+      playerAlive: active && !playerDead,
       now: performance.now(),
     });
-    simulateTanks(dt);
-    tankRunOver();
   }
 
   if (simRunning) updateProjectiles(dt);
-  if (simRunning) updateMoonBarrage(dt); // angry moon rains paint while its mouth is open
-  // MP: once the egg finishes (moon back to idle), let the host re-arm the tally
-  if (nightSky.active) _moonWasActive = true;
-  else if (_moonWasActive) { _moonWasActive = false; if (netplay.active) netplay.rearmMoon(); }
-  paint.update(dt);
 
   if (netplay.active) {
     // online skirmish: live team tag totals (endless — no match end in v1)
@@ -3488,17 +2352,7 @@ function animate() {
     }
   }
 
-  if (currentWeapon === 1 && tankBuster.root.visible) renderScope(); // live scope feed
-  // nuke camera shake — applied to the render only, then removed immediately so
-  // it never leaks into player physics (guards the "can't move" class of bug)
-  const shake = nuke.active ? nuke.renderShake(camera) : null;
-  if (shake && (shake.x || shake.y || shake.z)) {
-    camera.position.add(shake); camera.updateMatrixWorld();
-    outline.render();
-    camera.position.sub(shake); camera.updateMatrixWorld();
-  } else {
-    outline.render();
-  }
+  outline.render();
   drawScopeOverlay(); // full-screen scope view while zoomed
 }
 animate();

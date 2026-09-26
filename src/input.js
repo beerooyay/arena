@@ -6,10 +6,12 @@
  *   axes[0,1] left stick  -> move (strafe, forward)
  *   axes[2,3] right stick -> look
  *   button 0  A           -> jump / start
- *   button 4  LB          -> previous paint color
- *   button 5  RB          -> next paint color
+ *   button 1  B           -> crouch / slide / dive
+ *   button 2  X           -> reload
+ *   button 3  Y           -> swap weapon
  *   button 7  RT          -> shoot (analog)
- *   button 9  Start       -> start game
+ *   button 6  LT          -> aim
+ *   button 9  Start       -> start game / pause
  *   button 10 L3          -> sprint
  */
 export class InputManager {
@@ -27,10 +29,8 @@ export class InputManager {
     this._crouchQueued = false;
     this._keyCrouchDown = false;
     this._padCrouchDown = false;
-    this._colorDelta = 0;
     this._startQueued = false;
-    this._interactQueued = false; // E (kbd) / Y (pad) — enter/exit the tank
-    this._jetQueued = false;      // G (kbd) / dpad-up (pad) — launch/exit the jet
+    this._reloadQueued = false;   // R (kbd) / X (pad)
     this._weaponQueued = null;    // 0/1 = select slot, -1 = swap, null = none
 
     // per-frame outputs
@@ -66,9 +66,8 @@ export class InputManager {
     const wasDown = !!this.keys[e.code];
     this.keys[e.code] = down;
     if (down && e.code === 'Space') this._jumpQueued = true;
-    if (down && !wasDown && e.code === 'KeyE') this._interactQueued = true; // enter/exit tank
-    if (down && !wasDown && e.code === 'KeyG') this._jetQueued = true;      // launch/exit jet
-    // weapon select: 1 = paint marker, 2 = tank buster (Q also cycles)
+    if (down && !wasDown && e.code === 'KeyR') this._reloadQueued = true;
+    // weapon select: 1 = battle rifle, 2 = twin rockets (Q also cycles)
     if (down && !wasDown) {
       if (e.code === 'Digit1') this._weaponQueued = 0;
       else if (e.code === 'Digit2') this._weaponQueued = 1;
@@ -106,11 +105,10 @@ export class InputManager {
       if (pressed(0)) this._jumpQueued = true;              // A -> jump
       if (pressed(1)) this._crouchQueued = true;            // B -> crouch/slide/dive
       this._padCrouchDown = !!b[1];
+      if (pressed(2)) this._reloadQueued = true;            // X -> reload
+      if (pressed(3)) this._weaponQueued = -1;              // Y -> swap weapon
       // Start (9) OR menu (8) -> begin / pause. NOT A, so jumping never pauses.
       if (pressed(9) || pressed(8)) this._startQueued = true;
-      if (pressed(5)) this._colorDelta += 1;                // RB -> next color
-      if (pressed(4)) this._colorDelta -= 1;                // LB -> prev color
-      if (pressed(3)) this._interactQueued = true;          // Y -> enter/exit tank
 
       this._padShoot = !!b[7];                              // RT -> shoot
       this._padAim = !!b[6];                                // LT -> aim
@@ -131,8 +129,6 @@ export class InputManager {
   get crouchHeld() { return this._keyCrouchDown || this._padCrouchDown; }
   consumeCrouch() { const s = this._crouchQueued; this._crouchQueued = false; return s; }
   consumeStart() { const s = this._startQueued; this._startQueued = false; return s; }
-  consumeInteract() { const t = this._interactQueued; this._interactQueued = false; return t; }
-  consumeJet() { const j = this._jetQueued; this._jetQueued = false; return j; }
+  consumeReload() { const r = this._reloadQueued; this._reloadQueued = false; return r; }
   consumeWeapon() { const w = this._weaponQueued; this._weaponQueued = null; return w; }
-  consumeColorDelta() { const d = this._colorDelta; this._colorDelta = 0; return d; }
 }

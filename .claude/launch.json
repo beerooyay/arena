@@ -2,10 +2,25 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "whiteout-paintball",
+      "name": "arena",
       "runtimeExecutable": "python3",
-      "runtimeArgs": ["/Users/bourgeois/WhiteOutPaintball/devserver.py", "5178"],
+      "runtimeArgs": [
+        "/Users/beerooyay/dev/arena/devserver.py",
+        "5178"
+      ],
       "port": 5178
+    },
+    {
+      "name": "glb-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "5190",
+        "--directory",
+        "/private/tmp/claude-501/-Users-beerooyay-dev-arena/b5ae40b0-c9b5-4eab-be9f-9bc07899f158/scratchpad/view"
+      ],
+      "port": 5190
     }
   ]
 }

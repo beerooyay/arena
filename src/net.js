@@ -99,7 +99,7 @@ export class NetClient {
     if (fn) { this._pending.delete(type); fn(value); }
   }
 
-  async hostRoom({ isPublic = false, name = 'Paintball Match' } = {}) {
+  async hostRoom({ isPublic = false, name = 'Fire Arena' } = {}) {
     await this._connect();
     this.ws.send(JSON.stringify({ t: 'create', public: isPublic, name }));
     const code = await this._expect('created');

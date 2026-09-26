@@ -1,0 +1,13 @@
+{
+  "name": "arena-tools",
+  "private": true,
+  "type": "module",
+  "description": "Offline asset build steps (not shipped with the game)",
+  "scripts": {
+    "bake-avatars": "node bake-avatars.mjs"
+  },
+  "devDependencies": {
+    "@gltf-transform/cli": "^4.1.0",
+    "three": "0.160.0"
+  }
+}

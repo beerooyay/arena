@@ -231,8 +231,8 @@ export function buildGun(opts = {}) {
 // RR_FIT maps it into gun space: grip at the origin, muzzle down -Z, and the
 // same ~1.2 length as the procedural gun so every pose/aim value carries over.
 // ---------------------------------------------------------------------------
-const RR_SCALE = 1.2;
-const RR_GRIP = new THREE.Vector3(-0.28, 0.12, 0);
+export const RR_SCALE = 1.2;
+export const RR_GRIP = new THREE.Vector3(-0.28, 0.12, 0);
 export const RR_MUZZLES = {
   top: new THREE.Vector3(0, 0.245 * RR_SCALE - RR_GRIP.y * RR_SCALE, -(0.5 - RR_GRIP.x) * RR_SCALE - 0.01),
   tubes: [0.167, 0.114].map((y) => new THREE.Vector3(0, (y - RR_GRIP.y) * RR_SCALE, -(0.5 - RR_GRIP.x) * RR_SCALE - 0.01)),

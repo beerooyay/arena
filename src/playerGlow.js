@@ -15,6 +15,7 @@ import * as THREE from 'three';
 import { buildGun, flameTexture, makeGlowMat, ORANGE, RED, upgradeToRocketRifle } from './gunModel.js';
 import { rbox, lathe, limbGeo } from './geo.js';
 import { contactShadowTexture } from './fx.js';
+import { NO_OUTLINE_LAYER } from './outline.js';
 
 // Shipped defaults (tune live in the dev panel, then hardcode the winners here).
 // Off by default: black vs white armour carries the team read now.
@@ -68,6 +69,9 @@ export function makeNameSprite(text, hex) {
   const scale = 0.0042;
   sprite.scale.set(w * scale, h * scale, 1);
   sprite.position.y = 2.48;
+  // sprites draw as solid quads in the outline prepass (and would mirror in the
+  // floor reflection): keep tags on the no-outline layer
+  sprite.layers.set(NO_OUTLINE_LAYER);
   // the web font may still be loading: redraw once it's ready
   if (document.fonts && !document.fonts.check(NAME_FONT)) {
     document.fonts.load(NAME_FONT).then(() => {

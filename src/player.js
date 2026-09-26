@@ -28,15 +28,20 @@ export class PlayerController {
     this.onGround = true;
 
     this.gravity = -26;
-    this.jumpV = 12.5;       // tuned defaults (dev-panel sliders still adjust these live)
-    this.baseSpeed = 13;
-    this.sprintSpeed = 18;
+    this.jumpV = 9.5;        // ~1.7 m hop (dev-panel sliders still adjust these live)
+    this.baseSpeed = 9;      // tuned for the 38 m arena: readable, not twitchy
+    this.sprintSpeed = 13;
+    // horizontal velocity eases toward the input instead of snapping — Halo
+    // feel is instant acceleration, so the ease is quick, not sluggish
+    this.moveVel = new THREE.Vector3();
+    this.groundAccel = 16;   // 1/s: ~90% of target speed in ~0.14 s
+    this.airAccel = 3.2;     // a little air control for jump fights
     this.padLookSpeed = 2.6; // radians/sec at full stick deflection
 
     this.minPolar = 0;
     this.maxPolar = Math.PI;
 
-    // external horizontal impulse (nuke shockwave, etc.). Decays fast and is
+    // external horizontal impulse (rocket blast, hit jolt). Decays fast and is
     // applied through the normal collision path so you still slam into walls.
     this.knockback = new THREE.Vector3();
 
@@ -74,8 +79,8 @@ export class PlayerController {
     this.diving = false;
     this.crouchDepth = -0.78;   // camera dip when crouched
     this.proneDepth = -1.24;    // camera dip when flat on the ground
-    this.crouchSpeed = 5;       // move speed while crouched
-    this.proneSpeed = 1.8;      // crawl speed while prone
+    this.crouchSpeed = 3.8;     // move speed while crouched
+    this.proneSpeed = 1.6;      // crawl speed while prone
     this.diveHold = 0.22;       // seconds of holding before a slide becomes a dive
     this.stanceHold = 0.1;      // seconds of holding to step DOWN the stance ladder
     this.diveBoost = 1.35;      // dive launch speed vs sprint speed
@@ -128,7 +133,7 @@ export class PlayerController {
 
   /**
    * Fling the player: a horizontal shove (world x/z) plus an upward launch.
-   * Used by the nuke shockwave. Cancels any low stance so you get thrown clean.
+   * Used by blasts and heavy hits. Cancels any low stance so you get thrown clean.
    */
   applyImpulse(hx, hz, up = 0) {
     this.standUp();
@@ -287,6 +292,7 @@ export class PlayerController {
       const k = Math.max(0, this.slideT / this.slideTime); // 1 → 0 over the slide
       const spd = THREE.MathUtils.lerp(this.baseSpeed * 0.7, this.slideSpeed, k);
       pos.addScaledVector(this.slideDir, spd * dt);
+      this.moveVel.copy(this.slideDir).multiplyScalar(spd); // carry momentum out of the slide
       if (this.slideT <= 0 || !this.onGround) {
         this.sliding = false;
         this.slideCooldown = SLIDE_COOLDOWN;
@@ -295,18 +301,26 @@ export class PlayerController {
       // committed forward lunge; gravity brings us down, landing goes prone
       pos.addScaledVector(this.diveDir, this.diveSpeed * dt);
       this.diveSpeed = Math.max(this.baseSpeed * 0.5, this.diveSpeed - dt * 9);
+      this.moveVel.copy(this.diveDir).multiplyScalar(this.diveSpeed);
     } else {
       // sprint only counts with your feet on the ground — no sprinting through
       // the air after a jump
       let mag = (input.sprint && this.onGround) ? this.sprintSpeed : this.baseSpeed;
       if (this.prone) mag = this.proneSpeed;
       else if (this.crouching) mag = this.crouchSpeed;
-      const speed = mag * dt;
-      if (input.forward) this._moveForward(input.forward * speed);
-      if (input.strafe) this._moveRight(input.strafe * speed);
+      // target velocity: direction from input (diagonals no faster than straight
+      // lines; analog sticks keep their partial deflection), eased toward
+      const f = input.forward || 0, st = input.strafe || 0;
+      const amt = Math.min(1, Math.hypot(f, st));
+      this._moveDir(f, st, _dir).multiplyScalar(mag * amt);
+      const a = Math.min(1, dt * (this.onGround ? this.groundAccel : this.airAccel));
+      this.moveVel.x += (_dir.x - this.moveVel.x) * a;
+      this.moveVel.z += (_dir.z - this.moveVel.z) * a;
+      pos.x += this.moveVel.x * dt;
+      pos.z += this.moveVel.z * dt;
     }
 
-    // external knockback (nuke blast): slide the body along x/z, decaying fast.
+    // external knockback (blasts, hits): slide the body along x/z, decaying fast.
     // Runs before the blocker push-out below so you still collide with walls.
     if (this.knockback.x || this.knockback.z) {
       pos.x += this.knockback.x * dt;
@@ -436,9 +450,9 @@ export class PlayerController {
 
     // head-bob / sway while running on the ground (eased out otherwise)
     if (this.onGround && movingInput && !this.sliding && !this.prone && !this.diving) {
-      const mag = input.sprint ? this.sprintSpeed : this.baseSpeed;
+      const mag = Math.hypot(this.moveVel.x, this.moveVel.z);
       this._bobPhase += dt * mag * 0.9;
-      const amp = input.sprint ? 0.10 : 0.065;
+      const amp = 0.018 + 0.0022 * mag; // ~3.7 cm walking, ~4.4 cm sprinting
       this._bobY = Math.sin(this._bobPhase * 2) * amp;   // vertical (double freq)
       this._bobX = Math.sin(this._bobPhase) * amp * 0.7; // side-to-side rock
     } else {

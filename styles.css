@@ -50,6 +50,14 @@
   --tr-caps: .14em;      /* tracking for all-caps text */
   --tr-caps-wide: .22em;
 
+  /* brand: the logo sits at the same spot on the title and the menu */
+  --brand-mark: clamp(96px, 15vh, 190px);
+  --brand-top: clamp(56px, 22vh, 240px);
+  --below-brand: calc(var(--brand-top) + var(--brand-mark) + 28px);
+
+  /* sizing: every inline control (segments, switch, ghost buttons) shares one height */
+  --ctl-h: 38px;
+
   /* shape */
   --r-sm: 10px;
   --r-md: 14px;
@@ -77,7 +85,7 @@ h1, h2, h3, .t-label, .t-eyebrow, .t-caption, .btn, .seg-btn, .switch, th {
   text-transform: uppercase;
 }
 h2 { font-size: var(--fs-h1); font-weight: 700; letter-spacing: .04em; line-height: 1.1; }
-.t-label { font-size: var(--fs-label); font-weight: 600; letter-spacing: var(--tr-caps); color: var(--text-3); }
+.t-label { font-size: var(--fs-label); font-weight: 600; letter-spacing: var(--tr-caps); color: rgba(255,255,255,.66); }
 .t-eyebrow { font-size: var(--fs-btn); font-weight: 600; letter-spacing: var(--tr-caps-wide); color: var(--text-2); text-shadow: 0 1px 12px rgba(0,0,0,.5); }
 .t-caption { font-size: var(--fs-caption); font-weight: 500; letter-spacing: var(--tr-caps); color: var(--text-3); }
 .grad-text {
@@ -92,39 +100,43 @@ h2 { font-size: var(--fs-h1); font-weight: 700; letter-spacing: .04em; line-heig
    body, a specular rim that is brightest top-left, and a soft top sheen.
    ========================================================================== */
 .glass {
-  --glass-tint: rgba(255,255,255,.07);
-  --glass-blur: 22px;
+  /* Liquid glass: clear body, bright specular top edge, soft thickness shading
+     at the rim. Chromium also bends the backdrop through an edge lens
+     (src/liquidGlass.js); other engines fall back to this light blur. */
+  --glass-tint: rgba(255,255,255,.06);
+  --glass-blur: 8px;
   position: relative; isolation: isolate;
   border-radius: var(--r-lg);
   background:
-    linear-gradient(160deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,.03) 38%, rgba(255,255,255,0) 62%, rgba(255,255,255,.06) 100%),
+    linear-gradient(180deg, rgba(255,255,255,.14) 0%, rgba(255,255,255,.04) 45%, rgba(255,255,255,.02) 70%, rgba(255,255,255,.08) 100%),
     var(--glass-tint);
-  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(185%) brightness(1.06);
-          backdrop-filter: blur(var(--glass-blur)) saturate(185%) brightness(1.06);
-          backdrop-filter: url(#liquid-refract) blur(var(--glass-blur)) saturate(185%) brightness(1.06);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(190%) brightness(1.12);
+          backdrop-filter: blur(var(--glass-blur)) saturate(190%) brightness(1.12);
   box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.42),
-    inset 0 -1px 0 rgba(255,255,255,.06),
-    inset 0 0 0 1px rgba(255,255,255,.05),
-    inset 0 18px 32px -24px rgba(255,255,255,.35),
-    0 30px 60px -18px rgba(0,0,0,.55),
-    0 2px 8px rgba(0,0,0,.22);
+    inset 0 1.5px 0.5px rgba(255,255,255,.75),        /* specular top edge */
+    inset 0 -1px 0.5px rgba(255,255,255,.3),          /* catch-light on the bottom lip */
+    inset 0 0 0 1px rgba(255,255,255,.16),            /* hairline */
+    inset 0 14px 24px -18px rgba(255,255,255,.55),    /* light entering the top */
+    inset 0 -16px 26px -20px rgba(0,0,0,.28),         /* thickness toward the bottom */
+    0 18px 44px -20px rgba(0,0,0,.45),
+    0 2px 6px rgba(0,0,0,.12);
 }
 /* specular rim: gradient hairline border via mask */
 .glass::before {
   content: ''; position: absolute; inset: 0; border-radius: inherit; padding: 1px;
-  background: linear-gradient(135deg, rgba(255,255,255,.7) 0%, rgba(255,255,255,.14) 28%, rgba(255,255,255,0) 52%, rgba(255,255,255,.08) 76%, rgba(255,255,255,.34) 100%);
+  background: linear-gradient(170deg, rgba(255,255,255,.85) 0%, rgba(255,255,255,.25) 22%, rgba(255,255,255,.05) 50%, rgba(255,255,255,.18) 80%, rgba(255,255,255,.55) 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor; mask-composite: exclude;
   pointer-events: none; z-index: 1;
 }
-/* top sheen: light caught in the curve of the glass */
+/* soft sheen across the upper curve */
 .glass::after {
   content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 0;
-  background: radial-gradient(140% 70% at 18% -12%, rgba(255,255,255,.2), rgba(255,255,255,0) 58%);
+  background: radial-gradient(120% 60% at 30% -10%, rgba(255,255,255,.22), rgba(255,255,255,0) 60%);
   mix-blend-mode: screen;
 }
 .glass > * { position: relative; z-index: 2; }
+.glass { text-shadow: 0 1px 8px rgba(0,0,0,.35); }
 /* darker glass for in-match HUD (sits on the white arena) */
 .glass--hud {
   --glass-tint: rgba(10,12,16,.58); --glass-blur: 18px; border-radius: var(--r-md);
@@ -139,7 +151,7 @@ h2 { font-size: var(--fs-h1); font-weight: 700; letter-spacing: .04em; line-heig
   position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 10px;
   border: 0; border-radius: var(--r-md);
   font-size: var(--fs-btn); font-weight: 700; letter-spacing: var(--tr-caps); line-height: 1;
-  padding: 14px 26px;
+  padding: 14px 26px 14px calc(26px + var(--tr-caps));
   transition: transform .16s cubic-bezier(.2,.8,.2,1), box-shadow .2s ease, background .2s ease, filter .2s ease;
 }
 .btn:active { transform: translateY(1px) scale(.98); }
@@ -154,8 +166,8 @@ h2 { font-size: var(--fs-h1); font-weight: 700; letter-spacing: .04em; line-heig
 }
 .btn-primary:hover { transform: translateY(-2px); filter: brightness(1.06) saturate(1.05);
   box-shadow: 0 16px 40px -8px rgba(255,96,0,.65), 0 10px 30px -10px rgba(255,72,72,.6), inset 0 1px 0 rgba(255,255,255,.5); }
-.btn-lg { font-size: 16px; padding: 18px 44px; border-radius: 18px; }
-.btn-xl { font-size: var(--fs-btn-xl); padding: 22px 64px; border-radius: var(--r-lg); }
+.btn-lg { font-size: 16px; padding: 18px 44px 18px calc(44px + var(--tr-caps)); border-radius: 18px; }
+.btn-xl { font-size: var(--fs-btn-xl); padding: 22px 64px 22px calc(64px + var(--tr-caps)); border-radius: var(--r-lg); }
 .btn-xl svg { width: 18px; height: 18px; fill: none; stroke: #fff; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
 .btn-ghost {
   color: var(--text); background: rgba(255,255,255,.06);
@@ -165,17 +177,20 @@ h2 { font-size: var(--fs-h1); font-weight: 700; letter-spacing: .04em; line-heig
 
 /* ---------- segmented control ---------- */
 .seg {
-  display: flex; gap: 4px; padding: 4px; border-radius: var(--r-md);
-  background: rgba(0,0,0,.28);
-  box-shadow: inset 0 1px 3px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.06);
+  /* equal columns sized to the widest label, so no option overflows its pill */
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+  gap: 4px; padding: 4px; border-radius: var(--r-md);
+  background: rgba(255,255,255,.07);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.18), inset 0 0 0 1px rgba(255,255,255,.12), inset 0 -1px 0 rgba(255,255,255,.18);
 }
 .seg-btn {
-  position: relative; flex: 1; min-width: 64px; border: 0; border-radius: var(--r-sm);
-  padding: 10px 12px; background: transparent; color: var(--text-2);
+  position: relative; min-width: 64px; height: var(--ctl-h); border: 0; border-radius: var(--r-sm);
+  padding: 0 16px 0 calc(16px + var(--tr-caps)); /* tracking adds space after the last letter: balance it */
+  white-space: nowrap; background: transparent; color: rgba(255,255,255,.86);
   font-size: var(--fs-btn); font-weight: 700; letter-spacing: var(--tr-caps);
   transition: color .15s ease, background .2s ease, box-shadow .2s ease;
 }
-.seg-btn:hover { color: var(--text); background: rgba(255,255,255,.07); }
+.seg-btn:hover { color: #fff; background: rgba(255,255,255,.12); }
 .seg-btn.is-active {
   color: #fff; background: var(--grad);
   box-shadow: 0 6px 18px -6px rgba(255,96,0,.7), inset 0 1px 0 rgba(255,255,255,.4);
@@ -184,11 +199,11 @@ h2 { font-size: var(--fs-h1); font-weight: 700; letter-spacing: .04em; line-heig
 /* ---------- switch (Night arena) ---------- */
 .switch {
   display: inline-flex; align-items: center; gap: 10px; border: 0; background: transparent;
-  height: 42px; padding: 0 4px; font-size: var(--fs-btn); font-weight: 700; letter-spacing: var(--tr-caps); color: var(--text-2);
+  height: calc(var(--ctl-h) + 8px); /* matches a .seg (control + its 4px padding) */ padding: 0 4px; font-size: var(--fs-btn); font-weight: 700; letter-spacing: var(--tr-caps); color: var(--text-2);
 }
 .switch-track {
   position: relative; width: 44px; height: 26px; border-radius: var(--r-pill);
-  background: rgba(0,0,0,.3); box-shadow: inset 0 1px 3px rgba(0,0,0,.4), inset 0 0 0 1px rgba(255,255,255,.08);
+  background: rgba(255,255,255,.14); box-shadow: inset 0 1px 2px rgba(0,0,0,.22), inset 0 0 0 1px rgba(255,255,255,.18);
   transition: background .2s ease;
 }
 .switch-track i {
@@ -215,13 +230,15 @@ kbd {
    ========================================================================== */
 #title {
   position: fixed; inset: 0; z-index: 45;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 56px;
+  /* content starts just under the pinned #brand logo; same line as the menu's */
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+  gap: 32px; padding-top: var(--below-brand);
   background:
     radial-gradient(60% 50% at 50% 38%, rgba(255,96,0,.16), transparent 70%),
     radial-gradient(40% 40% at 72% 70%, rgba(255,72,72,.1), transparent 70%),
     rgba(8,9,12,.88);
-  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
-  transition: opacity .5s ease;
+  /* no backdrop blur: it re-blurs the live 3D scene every frame and stutters the fade */
+  transition: opacity .45s ease;
 }
 #title.title-out { opacity: 0; pointer-events: none; }
 #title-hero { display: flex; flex-direction: column; align-items: center; gap: 22px; }
@@ -229,20 +246,28 @@ kbd {
 #start-btn.hit { transform: scale(.94); }
 
 /* brand lockup: flame mark + white wordmark */
-.brand-lockup { --mark: clamp(96px, 12vw, 168px); display: flex; align-items: center; }
+.brand-lockup { --mark: var(--brand-mark); display: flex; align-items: center; }
+/* the shared logo: pinned above both the title (z 45) and the menu (z 40);
+   it stays put while the screens around it fade */
+#brand {
+  position: fixed; left: 50%; top: var(--brand-top); transform: translateX(-50%);
+  z-index: 46; pointer-events: none; opacity: 0; transition: opacity .45s ease;
+}
+#title:not(.title-out) ~ #brand,
+#overlay:not(.hidden) ~ #brand { opacity: 1; }
 /* both PNGs carry transparent padding; pull them together to a tight lockup */
 .brand-mark { height: var(--mark); width: auto; margin-right: calc(var(--mark) * -0.3); filter: drop-shadow(0 10px 26px rgba(255,96,0,.45)); }
 .brand-word { height: calc(var(--mark) * .84); width: auto; filter: invert(1) drop-shadow(0 8px 24px rgba(0,0,0,.4)); }
-.brand-lockup--menu { --mark: clamp(70px, 8.4vw, 120px); }
-#title-splat { display: none; }
+
 
 /* ==========================================================================
    MAIN MENU — glass over the live arena
    ========================================================================== */
 #overlay {
   position: fixed; inset: 0; z-index: 40; overflow: hidden;
+  animation: screen-in .45s ease both; /* cross-fades with the title fading out */
   background:
-    radial-gradient(70% 60% at 50% 42%, rgba(8,9,12,.42), rgba(8,9,12,.7) 70%, rgba(8,9,12,.9) 100%),
+    radial-gradient(75% 65% at 50% 42%, rgba(8,9,12,.12), rgba(8,9,12,.34) 70%, rgba(8,9,12,.62) 100%),
     radial-gradient(50% 40% at 18% 90%, rgba(255,96,0,.16), transparent 70%),
     radial-gradient(50% 40% at 85% 12%, rgba(255,72,72,.12), transparent 70%);
 }
@@ -254,7 +279,7 @@ kbd {
 .lc-profile { display: flex; align-items: center; gap: 14px; padding: 10px 18px 10px 10px; border-radius: 20px; }
 .lc-avatar {
   width: 46px; height: 46px; padding: 8px; border-radius: 14px;
-  background: rgba(0,0,0,.28); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+  background: rgba(255,255,255,.1); box-shadow: inset 0 0 0 1px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.3);
 }
 .lc-profile-info { display: flex; flex-direction: column; gap: 3px; }
 #player-name {
@@ -267,11 +292,13 @@ kbd {
 #player-name:disabled { opacity: .55; cursor: not-allowed; }
 
 .lc-main {
-  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  /* anchored to the same line as the title's content, just under the logo */
+  position: absolute; left: 0; right: 0; top: var(--below-brand); bottom: 96px;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
   gap: clamp(28px, 5vh, 56px); min-height: 0;
 }
-.lc-center { display: flex; flex-direction: column; align-items: center; gap: 20px; }
-.lc-center .btn-xl { margin-top: 12px; }
+.lc-center { display: flex; flex-direction: column; align-items: center; gap: 32px; }
+@keyframes screen-in { from { opacity: 0; } }
 
 .lc-setup {
   display: flex; align-items: flex-end; flex-wrap: wrap; justify-content: center;
@@ -280,9 +307,9 @@ kbd {
 .setup-group { display: flex; flex-direction: column; gap: 9px; }
 .setup-group .t-label { padding-left: 4px; }
 
-.lc-bottom { display: flex; justify-content: center; }
+.lc-bottom { display: flex; justify-content: center; margin-top: auto; } /* lc-main is absolute: pin nav to the bottom */
 .lc-nav-bar { display: flex; gap: 6px; padding: 6px; border-radius: 20px; }
-.lc-nav-bar .btn { padding: 13px 24px; border-radius: 14px; background: transparent; box-shadow: none; }
+.lc-nav-bar .btn { min-width: 118px; height: calc(var(--ctl-h) + 8px); padding: 0 24px 0 calc(24px + var(--tr-caps)); border-radius: 14px; background: transparent; box-shadow: none; }
 .lc-nav-bar .btn:hover { background: rgba(255,255,255,.1); }
 
 .lc-toast {
@@ -297,7 +324,7 @@ kbd {
 
 @media (max-width: 900px) {
   .lc-setup { gap: 14px 18px; padding: 16px; }
-  .seg-btn { min-width: 52px; padding: 9px 8px; }
+  .seg-btn { min-width: 52px; padding: 0 10px 0 calc(10px + var(--tr-caps)); }
 }
 
 /* ==========================================================================
@@ -448,13 +475,12 @@ kbd {
 .kf-row.kf-out { animation: kf-row-out .3s ease forwards; }
 .kf-name-blue { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; }
 .kf-name-red { color: var(--text); }
-.kf-splat { width: 16px; height: 16px; display: block; }
-.kf-splat.kf-fill-blue { fill: url(#ff-grad); }
-.kf-splat.kf-fill-red { fill: var(--text); }
+.kf-mark { width: 16px; height: 16px; display: block; }
+.kf-mark.kf-fill-blue { fill: url(#ff-grad); }
+.kf-mark.kf-fill-red { fill: var(--text); }
 .kf-gun { width: 26px; height: 13px; display: block; fill: var(--text-2); }
 @keyframes kf-row-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
 @keyframes kf-row-out { to { opacity: 0; transform: translateX(18px); } }
-body.tank-zoomed #killfeed-rows { display: none !important; }
 
 /* ---------- kill confirm / killed by ---------- */
 #killfeed, #killedby {
@@ -503,13 +529,15 @@ body.tank-zoomed #killfeed-rows { display: none !important; }
 
 /* ---------- crosshair + hitmarker ---------- */
 #crosshair {
-  position: fixed; left: 50%; top: 50%; width: 26px; height: 26px; transform: translate(-50%, -50%);
-  pointer-events: none; z-index: 20; mix-blend-mode: multiply;
+  position: fixed; left: 50%; top: 50%; width: 40px; height: 40px; transform: translate(-50%, -50%);
+  pointer-events: none; z-index: 20;
+  /* white reticle with a thin dark halo so it reads on the white arena too */
+  filter: drop-shadow(0 0 1px rgba(0,0,0,.75)) drop-shadow(0 0 3px rgba(0,0,0,.3));
 }
-.ch-line { position: absolute; background: #2b2f36; opacity: .75; }
-.ch-h { left: 0; top: 50%; width: 100%; height: 2px; transform: translateY(-50%); }
-.ch-v { top: 0; left: 50%; width: 2px; height: 100%; transform: translateX(-50%); }
-.ch-dot { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; border-radius: 50%; background: #2b2f36; transform: translate(-50%, -50%); }
+.ch-svg { width: 100%; height: 100%; overflow: visible; }
+.ch-ring { fill: none; stroke: rgba(255,255,255,.9); stroke-width: 1.4; }
+.ch-tick { fill: none; stroke: #fff; stroke-width: 1.6; stroke-linecap: round; }
+.ch-dot { fill: #fff; }
 #hitmarker {
   position: fixed; left: 50%; top: 50%; width: 26px; height: 26px; transform: translate(-50%, -50%);
   pointer-events: none; z-index: 22; opacity: 0;
@@ -534,7 +562,7 @@ body.tank-zoomed #killfeed-rows { display: none !important; }
 }
 
 /* ---------- rifle scope overlay (gradient reticle) ---------- */
-#buster-scope { position: fixed; inset: 0; z-index: 22; pointer-events: none; opacity: 0; font-family: var(--font); }
+#rifle-scope { position: fixed; inset: 0; z-index: 22; pointer-events: none; opacity: 0; font-family: var(--font); }
 .bs-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse 60% 60% at 50% 50%, transparent 54%, rgba(6,8,10,.5) 76%, rgba(3,5,7,.94) 100%); }
 .bs-grid {
   position: absolute; inset: 0; opacity: .1;
@@ -583,15 +611,49 @@ body.tank-zoomed #killfeed-rows { display: none !important; }
 }
 
 /* ---------- damage vignette (tinted by the shooter's team) ---------- */
-#paint-hit { position: fixed; inset: 0; z-index: 25; pointer-events: none; opacity: 0; transition: opacity .6s ease-out; --hit-color: #FF4848; }
-#paint-hit.show { opacity: 1; transition: opacity .04s ease-in; }
-#paint-hit .ph-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 40%, var(--hit-color) 122%); mix-blend-mode: multiply; }
-#paint-hit .ph-drips { position: absolute; inset: 0; overflow: hidden; }
-.ph-drip {
-  position: absolute; top: -6px; width: var(--w, 18px); height: 0; background: var(--hit-color);
-  border-radius: 0 0 45% 45% / 0 0 16px 16px; filter: blur(.4px); opacity: .92;
-  transition: height .55s cubic-bezier(.35,.85,.4,1);
+#hit-vignette { position: fixed; inset: 0; z-index: 25; pointer-events: none; opacity: 0; transition: opacity .6s ease-out; --hit-color: #FF4848; }
+#hit-vignette.show { opacity: 1; transition: opacity .04s ease-in; }
+#hit-vignette .ph-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 40%, var(--hit-color) 122%); mix-blend-mode: multiply; }
+
+/* directional hit arc: a glowing arc segment on the side the shot came from */
+#hit-dir {
+  position: fixed; left: 50%; top: 50%; width: 0; height: 0; z-index: 24;
+  pointer-events: none; opacity: 0; --hit-angle: 0rad; --hit-color: #FF4848;
+  transition: opacity .5s ease-out;
 }
+#hit-dir.show { opacity: 1; transition: opacity .05s ease-in; }
+#hit-dir i {
+  position: absolute; left: -90px; top: -190px; width: 180px; height: 60px;
+  border-top: 9px solid var(--hit-color); border-radius: 50%;
+  transform: rotate(var(--hit-angle)); transform-origin: 50% 190px;
+  filter: drop-shadow(0 0 10px var(--hit-color));
+}
+
+/* ---------- reload ring (around the reticle) + low-ammo prompt ---------- */
+#ch-reload {
+  position: fixed; left: 50%; top: 50%; width: 56px; height: 56px;
+  margin: -28px 0 0 -28px; z-index: 21; pointer-events: none;
+  opacity: min(1, var(--p, 0) * 999);
+}
+#ch-reload circle {
+  fill: none; stroke: #FF6000; stroke-width: 3.5; stroke-linecap: round;
+  stroke-dasharray: 151; stroke-dashoffset: calc(151 * (1 - var(--p, 0)));
+  transform: rotate(-90deg); transform-origin: center;
+}
+#reload-prompt {
+  position: fixed; left: 50%; bottom: 22%; transform: translateX(-50%); z-index: 21;
+  display: flex; align-items: center; gap: 9px; padding: 8px 15px; border-radius: 12px;
+  background: rgba(14,16,20,.58); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  color: var(--text); font: 700 var(--fs-label) var(--font); letter-spacing: var(--tr-caps);
+  pointer-events: none; opacity: 0; transition: opacity .18s ease;
+}
+#reload-prompt.show { opacity: 1; animation: reload-pulse 1s ease-in-out infinite; }
+#reload-prompt.empty { color: #ffb163; }
+#reload-prompt kbd {
+  font: 700 11px var(--font); padding: 3px 7px; border-radius: 6px;
+  background: var(--grad); color: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4);
+}
+@keyframes reload-pulse { 0%,100% { transform: translateX(-50%) scale(1); } 50% { transform: translateX(-50%) scale(1.05); } }
 
 /* ---------- online session chip ---------- */
 #net-hud {
@@ -603,16 +665,18 @@ body.tank-zoomed #killfeed-rows { display: none !important; }
 #net-count, #net-status { color: var(--text-2); font-size: var(--fs-label); }
 
 /* ---------- Lights Out: HUD picks up a gradient edge glow ---------- */
-body.lights-out #crosshair { mix-blend-mode: normal; filter: drop-shadow(0 0 5px rgba(255,96,0,.65)); }
-body.lights-out .ch-line, body.lights-out .ch-dot { background: #fff; }
+body.lights-out #crosshair { filter: drop-shadow(0 0 5px rgba(255,96,0,.65)); }
 body.lights-out .respawn-count, body.lights-out #countdown:not(.go) { color: #fff; text-shadow: 0 4px 30px rgba(255,96,0,.45); }
 body.lights-out .respawn-sub { color: var(--text-2); }
 body.lights-out .glass--hud { box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 0 26px -6px rgba(255,96,0,.45), 0 0 26px -10px rgba(255,72,72,.45); }
 
-/* ---------- legacy vehicle HUDs stay hidden (vehicles are gated off) ---------- */
-#compat, #jet-hud, #tank-sight, #tank-prompt, #buster-hud { display: none !important; }
-body.driving-tank #hud { display: none !important; }
-body.tank-zoomed #crosshair, body.tank-zoomed #scoreboard, body.tank-zoomed #net-hud { display: none !important; }
+#compat { display: none !important; }
 
 /* dev tools */
 .lil-gui { --width: 300px; z-index: 30 !important; }
+
+/* short windows: pull the logo up so the menu still fits */
+@media (max-height: 720px) {
+  :root { --brand-mark: 84px; --brand-top: 32px; }
+  .lc-main { gap: 20px; }
+}

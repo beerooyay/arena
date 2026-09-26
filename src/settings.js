@@ -4,14 +4,14 @@
  * DOM (built into #settings-body) and applies values to the live game via a set
  * of target references passed to apply().
  *
- * Deep developer tuning (outline shader, paint internals, etc.) stays in the
+ * Deep developer tuning (outline shader, combat internals, etc.) stays in the
  * lil-gui Dev Panel — this menu is only the handful of options a player expects.
  */
 
-const STORAGE_KEY = 'whiteout.settings';
+const STORAGE_KEY = 'ffa.settings';
 // Bump when a changed default should be forced onto players who already have
 // settings saved. Currently: 2 = maxed-out Field of View.
-const SETTINGS_MIGRATION = 2;
+const SETTINGS_MIGRATION = 3; // bump to re-apply the FOV default once
 
 // Schema drives both persistence and the generated UI. `apply` receives the
 // live game targets so each option knows how to push itself into the engine.
@@ -33,7 +33,7 @@ const SCHEMA = [
   },
   {
     key: 'fov', label: 'Field of View',
-    min: 60, max: 110, step: 1, default: 110, unit: '°', // maxed by default; players can lower it
+    min: 60, max: 110, step: 1, default: 80, unit: '°', // 80: the arena reads at its true scale; wide is opt-in
     apply: (v, t) => { t.camera.fov = v; t.camera.updateProjectionMatrix(); if (t.weapon) t.weapon._fovComp(v); },
   },
   {
@@ -71,7 +71,7 @@ export class Settings {
           this.values[s.key] = Math.min(s.max, Math.max(s.min, v));
         }
       }
-      // One-time migration: force the (now maxed) FOV default onto older saves.
+      // One-time migration: force the current FOV default onto older saves.
       // Runs once — after this the player is free to lower it and it sticks.
       if (saved._mig !== SETTINGS_MIGRATION) {
         const fov = SCHEMA.find((s) => s.key === 'fov');

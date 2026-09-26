@@ -49,9 +49,8 @@ export function buildArena(scene, mapId = 1) {
   const group = new THREE.Group();
   scene.add(group);
 
-  const paintTargets = [];
+  const losBlockers = [];
   const blockers = [];
-  const tankBlockers = [];
   const groundMeshes = [];
   const ceilings = [];
   const materials = [];
@@ -67,15 +66,16 @@ export function buildArena(scene, mapId = 1) {
     return m;
   }
 
-  // LED light strip: white in the day, an orange/crimson neon at night.
-  function led(night, dayI = 6, nightI = 5) {
-    const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.3, metalness: 0 });
+  // LED light strip: warm white (~3200K) in the day, orange/crimson neon at night.
+  const WARM = 0xffd6a8;
+  function led(night, dayI = 5, nightI = 5) {
+    const m = new THREE.MeshStandardMaterial({ color: WARM, roughness: 0.3, metalness: 0 });
     m.toneMapped = false;
-    m.userData.baseColor = new THREE.Color(0xffffff);
-    m.userData.day = { hex: 0xffffff, i: dayI };
+    m.userData.baseColor = new THREE.Color(WARM);
+    m.userData.day = { hex: WARM, i: dayI };
     m.userData.night = { hex: night, i: nightI };
     m.userData.accent = night;
-    m.emissive.setHex(0xffffff);
+    m.emissive.setHex(WARM);
     m.emissiveIntensity = dayI;
     materials.push(m);
     return m;
@@ -87,10 +87,10 @@ export function buildArena(scene, mapId = 1) {
   const washMats = [];
   function washMat(opacity, night) {
     const m = new THREE.MeshBasicMaterial({
-      map: washTex, color: 0xffffff, transparent: true, opacity,
+      map: washTex, color: WARM, transparent: true, opacity,
       blending: THREE.AdditiveBlending, depthWrite: false,
     });
-    m.userData.day = { hex: 0xffffff, o: opacity };
+    m.userData.day = { hex: WARM, o: opacity };
     m.userData.night = { hex: night, o: opacity * 0.8 };
     washMats.push(m);
     return m;
@@ -100,26 +100,27 @@ export function buildArena(scene, mapId = 1) {
   const floorWashB = washMat(0.16, 0xff4848);
 
   const tex = tileTexture();
-  const floorMat = mat(0xffffff, 0.16, { map: tex, envMapIntensity: 1.1 });
-  const wallMat = mat(0xb4bac2, 0.6);            // shows through panel seams
-  const panelMat = mat(0xeceef1, 0.42);
-  const ceilMat = mat(0xeef0f3, 0.55, { flatShading: true, side: THREE.DoubleSide });
-  ceilMat.userData.day = { hex: 0xffffff, i: 0.18 }; // keeps the underside of the dome bright
-  ceilMat.emissive.setHex(0xffffff); ceilMat.emissiveIntensity = 0.18;
+  const floorMat = mat(0xb4b2af, 0.12, { map: tex, envMapIntensity: 0.8 }); // light grey polish: lets reflections read (floorReflection.js)
+  const wallMat = mat(0x4a4e55, 0.6);            // shows through panel seams as dark gaps
+  const panelMat = mat(0xdcd9d4, 0.38);          // warm off-white
+  const ceilMat = mat(0xcfccc7, 0.5, { flatShading: true, side: THREE.DoubleSide });
+  ceilMat.userData.day = { hex: 0xfff2e2, i: 0.03 }; // barely self-lit: the coves light the dome
+  ceilMat.emissive.setHex(0xfff2e2); ceilMat.emissiveIntensity = 0.03;
   const pillarMat = mat(0xf4f6f8, 0.34);
   const coverMat = mat(0xe4e7eb, 0.45);
   const trimMat = mat(0x9aa1aa, 0.5);
   const darkMat = mat(0x3a3f47, 0.6);
+  const seamMat = mat(0x24272c, 0.7);            // ceiling panel gaps
   const ledA = led(0xff6000);
   const ledB = led(0xff4848);
 
-  const size = 25;
+  const size = 19;          // half-width: a tight room (was 25 — read as a hangar)
   const radius = size / Math.cos(Math.PI / 8);
-  const wallH = 10;
+  const wallH = 8.5;
   const wallT = 0.7;
-  const ceilY = 10.15;
-  const domeH = 3.4;
-  const domeTopR = 3.2;
+  const ceilY = 8.65;
+  const domeH = 3.0;
+  const domeTopR = 3.9;      // oculus a little wider than the fattened pillar
   const edgeLen = 2 * size * Math.tan(Math.PI / 8);
 
   // --- floor ---
@@ -130,7 +131,7 @@ export function buildArena(scene, mapId = 1) {
   floor.receiveShadow = true;
   floor.name = 'floor';
   group.add(floor);
-  paintTargets.push(floor);
+  losBlockers.push(floor);
   groundMeshes.push(floor);
 
   // --- walls: seamed tall panels, LED cove up top, lit kick strip at the floor ---
@@ -147,7 +148,7 @@ export function buildArena(scene, mapId = 1) {
     wall.castShadow = true;
     wall.receiveShadow = true;
     seg.add(wall);
-    paintTargets.push(wall);
+    losBlockers.push(wall);
 
     const inner = -wallT / 2;
     for (let p = 0; p < PANELS; p++) {
@@ -157,21 +158,21 @@ export function buildArena(scene, mapId = 1) {
       panel.position.set(x, -0.28, inner - 0.04);
       panel.receiveShadow = true;
       seg.add(panel);
-      paintTargets.push(panel);
+      losBlockers.push(panel);
       // upper fascia above the LED strip, slightly proud
       const fascia = new THREE.Mesh(rbox(panelW - 0.07, 0.62, 0.2), panelMat);
       fascia.position.set(x, wallH / 2 - 0.34, inner - 0.1);
       seg.add(fascia);
-      paintTargets.push(fascia);
+      losBlockers.push(fascia);
     }
     // LED cove under the fascia + kick strip along the floor
-    const cove = new THREE.Mesh(rbox(edgeLen - 0.2, 0.09, 0.05), ledA);
+    const cove = new THREE.Mesh(rbox(edgeLen - 0.2, 0.14, 0.05), ledA);
     cove.position.set(0, wallH / 2 - 0.71, inner - 0.18);
     seg.add(cove);
     const coveShelf = new THREE.Mesh(rbox(edgeLen - 0.2, 0.05, 0.24), trimMat);
     coveShelf.position.set(0, wallH / 2 - 0.66, inner - 0.12);
     seg.add(coveShelf);
-    const kick = new THREE.Mesh(rbox(edgeLen - 0.2, 0.06, 0.04), i % 2 ? ledB : ledA);
+    const kick = new THREE.Mesh(rbox(edgeLen - 0.2, 0.1, 0.04), i % 2 ? ledB : ledA);
     kick.position.set(0, -wallH / 2 + 0.2, inner - 0.08);
     seg.add(kick);
     // spill down the panels from the cove, and out across the floor from the kick strip
@@ -198,7 +199,7 @@ export function buildArena(scene, mapId = 1) {
     post.castShadow = true;
     post.receiveShadow = true;
     group.add(post);
-    paintTargets.push(post);
+    losBlockers.push(post);
   }
 
   // --- faceted dome ceiling: 8 sloped panels rising to a lit oculus ---
@@ -208,17 +209,17 @@ export function buildArena(scene, mapId = 1) {
   dome.rotation.y = Math.PI / 8;
   dome.receiveShadow = true;
   group.add(dome);
-  paintTargets.push(dome);
+  losBlockers.push(dome);
   const cap = new THREE.Mesh(new THREE.CylinderGeometry(domeTopR + 0.05, domeTopR + 0.05, 0.2, 8), ceilMat);
   cap.position.y = ceilY + domeH;
   cap.rotation.y = Math.PI / 8;
   group.add(cap);
-  paintTargets.push(cap);
+  losBlockers.push(cap);
   ceilings.push(new THREE.Box3(
     new THREE.Vector3(-radius, ceilY - 0.15, -radius),
     new THREE.Vector3(radius, ceilY + 0.15, radius)));
 
-  // ribs along each fold, each carrying a thin LED line, plus a mid ring
+  // ribs along each fold, each with a dark seam line, plus a mid ring
   const slope = Math.atan2(domeH, radius + wallT - domeTopR);
   const ribLen = Math.hypot(domeH, radius + wallT - domeTopR);
   const ribMid = (radius + wallT + domeTopR) / 2;
@@ -231,7 +232,7 @@ export function buildArena(scene, mapId = 1) {
     const beam = new THREE.Mesh(rbox(0.34, 0.18, ribLen), panelMat);
     beam.rotation.x = slope;
     rib.add(beam);
-    const line = new THREE.Mesh(rbox(0.07, 0.04, ribLen - 0.4), ledA);
+    const line = new THREE.Mesh(rbox(0.07, 0.04, ribLen - 0.4), seamMat);
     line.rotation.x = slope;
     line.position.y = -0.1;
     rib.add(line);
@@ -242,7 +243,7 @@ export function buildArena(scene, mapId = 1) {
   for (let i = 0; i < 8; i++) {
     const a = i * Math.PI / 4;
     const r = midR * Math.cos(Math.PI / 8) - 0.15;
-    const ringSeg = new THREE.Mesh(rbox(midEdge, 0.05, 0.08), ledA);
+    const ringSeg = new THREE.Mesh(rbox(midEdge, 0.05, 0.08), seamMat);
     ringSeg.position.set(Math.sin(a) * r, midY, Math.cos(a) * r);
     ringSeg.rotation.y = a;
     group.add(ringSeg);
@@ -260,12 +261,11 @@ export function buildArena(scene, mapId = 1) {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     group.add(mesh);
-    paintTargets.push(mesh);
+    losBlockers.push(mesh);
     groundMeshes.push(mesh);
     mesh.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(mesh);
     blockers.push(box);
-    tankBlockers.push(box);
     mesh.userData.blocker = box;
     mesh.userData.destructible = false;
     return mesh;
@@ -273,41 +273,41 @@ export function buildArena(scene, mapId = 1) {
 
   // --- central pillar: seamed white column meeting the oculus ---
   const pillarH = ceilY + domeH;
-  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.8, pillarH, 40), pillarMat);
+  const pillarR = 2.7;       // chunky centre column (was 1.8)
+  const pillar = new THREE.Mesh(new THREE.CylinderGeometry(pillarR, pillarR, pillarH, 48), pillarMat);
   pillar.position.y = pillarH / 2;
   pillar.castShadow = true;
   pillar.receiveShadow = true;
   group.add(pillar);
-  paintTargets.push(pillar);
+  losBlockers.push(pillar);
   pillar.updateMatrixWorld(true);
   const pillarBox = new THREE.Box3().setFromObject(pillar);
   blockers.push(pillarBox);
-  tankBlockers.push(pillarBox);
   pillar.userData.blocker = pillarBox;
   pillar.userData.destructible = false;
 
-  for (const y of [2.6, 6.4]) { // horizontal panel seams
-    const seam = new THREE.Mesh(new THREE.CylinderGeometry(1.812, 1.812, 0.035, 40, 1, true), trimMat);
+  for (const y of [2.6, 5.6]) { // horizontal panel seams
+    const seam = new THREE.Mesh(new THREE.CylinderGeometry(pillarR + 0.012, pillarR + 0.012, 0.035, 48, 1, true), trimMat);
     seam.position.y = y;
     group.add(seam);
   }
-  for (let i = 0; i < 6; i++) { // vertical seams
-    const a = i * Math.PI / 3;
+  for (let i = 0; i < 8; i++) { // vertical seams
+    const a = i * Math.PI / 4;
     const seam = new THREE.Mesh(rbox(0.03, pillarH - 0.4, 0.03), trimMat);
-    seam.position.set(Math.sin(a) * 1.8, pillarH / 2, Math.cos(a) * 1.8);
+    seam.position.set(Math.sin(a) * pillarR, pillarH / 2, Math.cos(a) * pillarR);
     group.add(seam);
   }
-  const plinth = new THREE.Mesh(new THREE.CylinderGeometry(1.95, 1.95, 0.18, 40), darkMat);
+  const plinth = new THREE.Mesh(new THREE.CylinderGeometry(pillarR + 0.15, pillarR + 0.15, 0.18, 48), darkMat);
   plinth.position.y = 0.09;
   group.add(plinth);
-  const plinthLed = new THREE.Mesh(new THREE.CylinderGeometry(1.84, 1.84, 0.05, 40, 1, true), ledA);
+  const plinthLed = new THREE.Mesh(new THREE.CylinderGeometry(pillarR + 0.04, pillarR + 0.04, 0.05, 48, 1, true), ledA);
   plinthLed.position.y = 0.22;
   group.add(plinthLed);
 
   // --- low cover: white slabs on dark plinths with a lit top edge ---
   const covers = [
-    [-8.5, -6.5, -Math.PI / 4], [8.5, 6.5, -Math.PI / 4],
-    [8.5, -6.5, Math.PI / 4], [-8.5, 6.5, Math.PI / 4],
+    [-7, -5.2, -Math.PI / 4], [7, 5.2, -Math.PI / 4],
+    [7, -5.2, Math.PI / 4], [-7, 5.2, Math.PI / 4],
   ];
   covers.forEach(([x, z, r], i) => {
     const c = addBox(4.6, 1.35, 0.75, x, 0.675, z, coverMat, r);
@@ -322,5 +322,5 @@ export function buildArena(scene, mapId = 1) {
     c.add(lip2);
   });
 
-  return { group, paintTargets, blockers, tankBlockers, groundMeshes, ceilings, materials, washMats, floor, size, mapId };
+  return { group, losBlockers, blockers, groundMeshes, ceilings, materials, washMats, floor, size, mapId };
 }

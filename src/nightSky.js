@@ -17,8 +17,8 @@ function haloTexture() {
   const x = c.getContext('2d');
   const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
   g.addColorStop(0, 'rgba(255,255,255,0.9)');
-  g.addColorStop(0.25, 'rgba(200,215,255,0.5)');
-  g.addColorStop(1, 'rgba(160,190,255,0)');
+  g.addColorStop(0.25, 'rgba(230,233,236,0.5)');
+  g.addColorStop(1, 'rgba(210,214,220,0)');
   x.fillStyle = g;
   x.fillRect(0, 0, 128, 128);
   return new THREE.CanvasTexture(c);
@@ -75,12 +75,12 @@ export function createNightSky(scene) {
 
   const moon = new THREE.Mesh(
     new THREE.SphereGeometry(MOON_R, 40, 30),
-    new THREE.MeshBasicMaterial({ color: 0xe6ecff, fog: false }));
+    new THREE.MeshBasicMaterial({ color: 0xeceef1, fog: false }));
   moon.layers.set(NO_OUTLINE_LAYER);
   moonPivot.add(moon);
 
   // a few craters on the calm (+Z) side so the idle moon isn't a blank ball
-  const craterMat = new THREE.MeshBasicMaterial({ color: 0xccd5ea, fog: false });
+  const craterMat = new THREE.MeshBasicMaterial({ color: 0xd2d6dc, fog: false });
   for (const [cx, cy, cr] of [[2.5, 3, 1.5], [-3, -1.5, 2.1], [1.5, -3.5, 1.2], [4, -2, 1.0]]) {
     const cm = new THREE.Mesh(new THREE.CircleGeometry(cr, 18), craterMat);
     const p = new THREE.Vector3(cx, cy, MOON_R).normalize().multiplyScalar(MOON_R - 0.04);
@@ -89,7 +89,7 @@ export function createNightSky(scene) {
   }
 
   const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: haloTexture(), color: 0xc4d6ff, transparent: true,
+    map: haloTexture(), color: 0xdfe3e8, transparent: true,
     opacity: 0.6, depthWrite: false, fog: false, blending: THREE.AdditiveBlending,
   }));
   halo.scale.setScalar(54);

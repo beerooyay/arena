@@ -82,9 +82,9 @@ export function createDaySky(scene, sunDir) {
     const c = document.createElement('canvas'); c.width = c.height = 128;
     const x = c.getContext('2d');
     const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
-    g.addColorStop(0, 'rgba(255,247,214,0.95)');
-    g.addColorStop(0.3, 'rgba(255,238,176,0.55)');
-    g.addColorStop(1, 'rgba(255,236,160,0)');
+    g.addColorStop(0, 'rgba(255,255,255,0.95)');
+    g.addColorStop(0.3, 'rgba(255,255,255,0.55)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
     x.fillStyle = g; x.fillRect(0, 0, 128, 128);
     return new THREE.CanvasTexture(c);
   })();
@@ -100,7 +100,7 @@ export function createDaySky(scene, sunDir) {
   group.add(glow);
 
   const core = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: glowTex, color: 0xfffdf3, transparent: true, opacity: 1,
+    map: glowTex, color: 0xffffff, transparent: true, opacity: 1,
     depthWrite: false, fog: false, blending: THREE.AdditiveBlending,
   }));
   core.scale.setScalar(34);

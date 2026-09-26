@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 /**
  * Screen-space contour outline.
@@ -100,6 +102,51 @@ const OutlineShader = {
   `,
 };
 
+const BLOOM_KEY_FRAG = /* glsl */`
+  uniform sampler2D tDiffuse;
+  uniform float luminosityThreshold;
+  uniform float smoothWidth;
+  varying vec2 vUv;
+  void main() {
+    vec4 t = texture2D(tDiffuse, vUv);
+    float mx = max(t.r, max(t.g, t.b));
+    float mn = min(t.r, min(t.g, t.b));
+    float sat = (mx - mn) / max(mx, 1e-4);
+    float lum = dot(t.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float chroma = smoothstep(0.6, 0.85, sat) * smoothstep(0.6, 1.1, mx);
+    float hot = smoothstep(luminosityThreshold, luminosityThreshold + smoothWidth, lum);
+    gl_FragColor = vec4(t.rgb * clamp(max(chroma, hot), 0.0, 1.0), 1.0);
+  }
+`;
+
+const FinishShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    time: { value: 0 },
+    vignette: { value: 0.22 },
+    grain: { value: 0.018 },
+  },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: /* glsl */`
+    uniform sampler2D tDiffuse;
+    uniform float time;
+    uniform float vignette;
+    uniform float grain;
+    varying vec2 vUv;
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec2 d = vUv - 0.5;
+      float v = 1.0 - vignette * smoothstep(0.25, 0.75, dot(d, d) * 2.2);
+      float n = (hash(vUv * 1024.0 + fract(time) * 97.0) - 0.5) * grain;
+      gl_FragColor = vec4(c.rgb * v + n, c.a);
+    }
+  `,
+};
+
 // Objects on this layer are drawn in the beauty pass but skipped by the
 // normal/depth prepass, so they get no contour outline (e.g. smoke sprites).
 export const NO_OUTLINE_LAYER = 11;
@@ -131,6 +178,23 @@ export function createOutline(renderer, scene, camera) {
   outlinePass.uniforms.cameraNear.value = camera.near;
   outlinePass.uniforms.cameraFar.value = camera.far;
   composer.addPass(outlinePass);
+
+  // HDR glow for LED strips, visors and the gun's lit rings. The threshold sits
+  // above lit white surfaces so only emissive parts bloom.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.5, 0.35, 2.6);
+  // Palette-keyed high pass: saturated brights (the #ff6000 / #ff4848 emissives)
+  // bloom at modest intensity, while lit white/grey surfaces never do — only
+  // very hot whites (LED strips) cross the luminance threshold.
+  bloom.materialHighPassFilter.fragmentShader = BLOOM_KEY_FRAG;
+  bloom.materialHighPassFilter.needsUpdate = true;
+  bloom.highPassUniforms.smoothWidth.value = 1.0;
+  composer.addPass(bloom);
+  // Tone mapping + sRGB encode — the composer renders into linear targets, so
+  // without this the whole frame would be shown as raw linear light.
+  composer.addPass(new OutputPass());
+  // Finishing pass (display space): soft vignette + fine animated grain.
+  const finish = new ShaderPass(FinishShader);
+  composer.addPass(finish);
 
   function setSize(width, height) {
     composer.setSize(width, height);
@@ -164,5 +228,6 @@ export function createOutline(renderer, scene, camera) {
   }
 
   const uniforms = outlinePass.uniforms;
-  return { render, setSize, uniforms };
+  const tick = (t) => { finish.uniforms.time.value = t; };
+  return { render, setSize, uniforms, bloom, finish, tick };
 }

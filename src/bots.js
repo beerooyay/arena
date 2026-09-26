@@ -172,11 +172,11 @@ export class BotSystem {
   _spawnBot(team, idx) {
     const namePool = team.id === 0 ? FIRE_NAMES : WHITE_NAMES;
     const name = namePool[idx % namePool.length];
-    const { group, body, head, bodyMat, teamMat, label, marker, armL, armR, legL, legR } = makeAvatar(name, team.hex);
+    const { group, body, head, bodyMat, teamMat, label, marker, armL, armR, legL, legR, blob } = makeAvatar(name, team.hex);
 
     const bot = {
       team, hex: team.hex, group, body, head, bodyMat, ringMat: teamMat,
-      name, label, marker, armL, armR, legL, legR,
+      name, label, marker, armL, armR, legL, legR, blob,
       kills: 0, deaths: 0, shots: 0,
       pos: this._spawnPoint(team, idx),
       spawn: null,
@@ -204,11 +204,12 @@ export class BotSystem {
     bot.group.scale.set(1.06, 1.1, 1.06); // matches makeAvatar's build scale
     bot.group.visible = true;
     bot.label.visible = true;
+    if (bot.blob) bot.blob.visible = true;
     bot.armL.rotation.x = 0; bot.armR.rotation.x = 0;
     bot.legL.rotation.x = 0; bot.legR.rotation.x = 0;
     bot.ragdoll = null;
     bot.bodyMat.color.copy(bot.bodyMat.userData.baseColor || bot.bodyMat.color);
-    bot.ringMat.emissiveIntensity = 0.32;
+    bot.ringMat.emissiveIntensity = bot.ringMat.userData.baseEmissive ?? 0.32;
     bot.burst = 0; bot.reloadUntil = 0; bot.lockAt = 0;
     bot.paintHits = 0;
     bot.bodyDecals = [];
@@ -219,6 +220,7 @@ export class BotSystem {
   _startRagdoll(bot) {
     bot.ragdoll = { t: 0, dur: 0.5, dir: Math.random() < 0.5 ? -1 : 1 };
     bot.label.visible = false;
+    if (bot.blob) bot.blob.visible = false; // contact shadow would stand upright on the fallen body
   }
 
   _updateRagdoll(bot, dt) {
@@ -369,7 +371,7 @@ export class BotSystem {
       // opposite leg — eased toward zero when the bot stops moving.
       const ease = Math.min(1, dt * 10);
       const legTarget = moving ? Math.sin(bot.rockPhase) * 0.55 : 0;
-      const armTarget = moving ? Math.sin(bot.rockPhase) * 0.3 : 0;
+      const armTarget = moving ? Math.sin(bot.rockPhase) * 0.06 : 0; // hands stay on the rifle
       bot.legL.rotation.x += (legTarget - bot.legL.rotation.x) * ease;
       bot.legR.rotation.x += (-legTarget - bot.legR.rotation.x) * ease;
       bot.armL.rotation.x += (-armTarget - bot.armL.rotation.x) * ease;

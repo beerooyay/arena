@@ -53,8 +53,24 @@ RT fire, LT aim, Start pause).
 
 ## Characters & combat
 
-Armored humanoid avatars — graphite FIRE, black WHITE — with team-lit visors
-and accents. Legs and arms swing through a real walk cycle, and kills topple a
+Armored soldiers with human proportions — a lathe-turned torso, tapered
+muscle-shaped limbs and curved armor shells. FIRE wears black plates with
+`#FF6000` visors; WHITE wears white plates over a graphite undersuit with
+`#FF4848` visors. Both grip the twin-tube rifle two-handed (arms are posed by a
+small IK solve) and cast soft contact shadows.
+
+## Palette
+
+Everything outside white/grey uses exactly two accents: `#FF6000` and
+`#FF4848` (scene, characters, weapons, FX, UI). `ORANGE`/`RED` live in
+`src/gunModel.js`.
+
+## Lighting & post
+
+Studio environment light, sun shadows, LED coves with fake light-spill washes,
+pooled flash lights for muzzle fire / impacts / rocket blasts, and a post chain
+of contour outline → palette-keyed bloom (saturated accents + hot LEDs only) →
+ACES tone map → vignette + grain. Legs and arms swing through a real walk cycle, and kills topple a
 ragdoll that stays down until respawn. Players have 100 HP with regen; hits
 flash a team-colored edge vignette.
 
@@ -75,8 +91,12 @@ kill feed. Signaling runs through the tiny server in `server/` (see
 - `index.html` — shell, importmap (vendored `three` + `lil-gui`), HUD/overlays
 - `styles.css` — liquid-glass UI, HUD, scoreboard, palette
 - `src/main.js` — orchestrator: renderer, lighting, match flow, projectiles, netcode wiring
-- `src/arena.js` — octagonal arena: floor, walls, ceiling, pillar, cover, colliders
-- `src/weapon.js` — first-person modular rifle/rocket viewmodel
+- `src/outline.js` — post chain: contour outline → palette-keyed bloom → tone map / sRGB → vignette + grain
+- `src/arena.js` — octagonal arena: polished tile floor, seamed wall panels, LED coves, faceted dome, pillar, cover, colliders
+- `src/gunModel.js` — rocket rifle: loads `assets/models/rr.glb` (shared by viewmodel + avatars, baked orange rings made emissive), with a procedural fallback; palette + glow material
+- `src/geo.js` — rounded boxes, filleted profiles, lathe shells, tapered limbs
+- `src/fx.js` — pooled flash lights, contact shadow + muzzle flash textures
+- `src/weapon.js` — first-person viewmodel: gloved hand, hip/ADS/sprint poses, FOV-independent framing
 - `src/playerGlow.js` — shared avatar rig (bots, remotes) with limb pivots + nameplates
 - `src/bots.js` — team AI: movement, targeting, walk cycle, ragdoll, scoring
 - `src/player.js` — movement physics, collision, slide/dive

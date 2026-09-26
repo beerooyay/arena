@@ -34,18 +34,14 @@ const SCHEMA = [
   {
     key: 'fov', label: 'Field of View',
     min: 60, max: 110, step: 1, default: 110, unit: '°', // maxed by default; players can lower it
-    apply: (v, t) => { t.camera.fov = v; t.camera.updateProjectionMatrix(); },
+    apply: (v, t) => { t.camera.fov = v; t.camera.updateProjectionMatrix(); if (t.weapon) t.weapon._fovComp(v); },
   },
   {
     key: 'aimZoom', label: 'Aim Zoom (FOV)',
     min: 20, max: 75, step: 1, default: 75, unit: '°',
     apply: (v, t) => { t.weapon.aimFov = v; },
   },
-  {
-    key: 'scoreToWin', label: 'Score to Win',
-    min: 5, max: 50, step: 5, default: 25,
-    apply: (v, t) => { t.match.target = v; },
-  },
+  // Score to win lives on the main menu's setup bar (one source of truth).
   {
     key: 'botSkill', label: 'Bot Difficulty',
     min: 0, max: 2, step: 1, default: 1, labels: ['Chill', 'Pro', 'Sweat'],

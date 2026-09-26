@@ -93,7 +93,7 @@ kill feed. Signaling runs through the tiny server in `server/` (see
 - `src/main.js` — orchestrator: renderer, lighting, match flow, projectiles, netcode wiring
 - `src/outline.js` — post chain: contour outline → palette-keyed bloom → tone map / sRGB → vignette + grain
 - `src/arena.js` — octagonal arena: polished tile floor, seamed wall panels, LED coves, faceted dome, pillar, cover, colliders
-- `src/gunModel.js` — shared twin-tube rifle model (viewmodel + avatars), flame emblem, palette + glow material
+- `src/gunModel.js` — rocket rifle: loads `assets/models/rr.glb` (shared by viewmodel + avatars, baked orange rings made emissive), with a procedural fallback; palette + glow material
 - `src/geo.js` — rounded boxes, filleted profiles, lathe shells, tapered limbs
 - `src/fx.js` — pooled flash lights, contact shadow + muzzle flash textures
 - `src/weapon.js` — first-person viewmodel: gloved hand, hip/ADS/sprint poses, FOV-independent framing

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { buildGun, ORANGE } from './gunModel.js';
+import { buildGun, ORANGE, upgradeToRocketRifle, RR_MUZZLES, RR_TOP } from './gunModel.js';
 import { muzzleFlashTexture } from './fx.js';
 
 export class Weapon {
@@ -14,7 +14,7 @@ export class Weapon {
 
     this.mode = 0; // 0 = rifle, 1 = rocket
 
-    this.hipX = 0.29; this.hipY = -0.29; this.hipZ = -0.68;
+    this.hipX = 0.3; this.hipY = -0.29; this.hipZ = -0.74;
     this.aimX = 0.00; this.aimY = -0.195; this.aimZ = -0.36;
     this.wallPull = 0;
     this.cant = 0;
@@ -55,6 +55,15 @@ export class Weapon {
     this.materials = [];
 
     this._build();
+    // swap in the authored rocket rifle once it loads (procedural gun until then)
+    upgradeToRocketRifle(this._gun, { keep: [this.arm, this.flash], castShadow: false }).then((ok) => {
+      if (!ok) return;
+      this.rr = this._gun.rr;
+      this.rr.layers.mask = this._gun.group.layers.mask; // stay on the viewmodel layer
+      this._muzzles = [RR_MUZZLES.top, ...RR_MUZZLES.tubes];
+      this._rrAimY = -(RR_TOP + 0.012) * this.viewScale; // sight along the top line
+      this.aimY = this._rrAimY;
+    });
     this.pose.scale.setScalar(this.viewScale);
     this.pose.position.set(this.hipX, this.hipY, this.hipZ);
     this.pose.rotation.set(this.hipPitch, this.hipYaw, this.hipRoll);
@@ -65,9 +74,11 @@ export class Weapon {
     this.mode = m === 1 ? 1 : 0;
     this.aimFov = this.mode === 0 ? 38 : 58;
     // rifle sights through the optic; rocket sights over the top slabs
-    this.aimY = this.mode === 0 ? -0.195 : -0.18;
-    this.rifleGroup.visible = this.mode === 0;
-    this.rocketGroup.visible = this.mode === 1;
+    this.aimY = this.rr ? this._rrAimY : (this.mode === 0 ? -0.195 : -0.18);
+    if (!this.rifleGroup.userData.retired) {
+      this.rifleGroup.visible = this.mode === 0;
+      this.rocketGroup.visible = this.mode === 1;
+    }
     this._kick = 0.6;
   }
 
@@ -99,6 +110,8 @@ export class Weapon {
     this.materials.push(glove, plate);
     const arm = new THREE.Group();
     gun.group.add(arm);
+    this.arm = arm;
+    this._gun = gun;
     const add = (geo, mat, x, y, z, rx = 0, ry = 0, rz = 0) => {
       const m = new THREE.Mesh(geo, mat);
       m.position.set(x, y, z); m.rotation.set(rx, ry, rz);

@@ -12,7 +12,7 @@
  */
 
 import * as THREE from 'three';
-import { buildGun, flameTexture, makeGlowMat, ORANGE, RED } from './gunModel.js';
+import { buildGun, flameTexture, makeGlowMat, ORANGE, RED, upgradeToRocketRifle } from './gunModel.js';
 import { rbox, lathe, limbGeo } from './geo.js';
 import { contactShadowTexture } from './fx.js';
 
@@ -83,6 +83,7 @@ export function makeNameSprite(text, hex) {
 function makeWeapon(mats) {
   const gun = buildGun({ detail: false });
   mats.push(...gun.materials);
+  upgradeToRocketRifle(gun); // authored model replaces the procedural one when loaded
   gun.group.rotation.y = Math.PI; // gun space faces -Z; avatars face +Z
   const g = new THREE.Group();
   g.add(gun.group);
@@ -306,7 +307,8 @@ export function disposeAvatar(group) {
   disposeGlow(group);
   if (u.label) { u.label.material.map.dispose(); u.label.material.dispose(); }
   for (const m of u.mats || []) m.dispose();
-  group.traverse((o) => o.geometry && o.geometry.dispose());
+  // the rifle geometry is shared by every avatar — never dispose it here
+  group.traverse((o) => o.geometry && o.name !== 'rr' && o.geometry.dispose());
 }
 
 const VERT = /* glsl */ `

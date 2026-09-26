@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { rbox, profileGeo, lathe } from './geo.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 /**
  * Free Fire twin-tube rifle — shared by the first-person viewmodel and the
@@ -219,4 +220,78 @@ export function buildGun(opts = {}) {
   box(0.03, 0.007, 0.28, glowRed, 0.24, 0.204, 0, rocketGroup, 0.003);
 
   return { group, rifleGroup, rocketGroup, materials, glowMats, muzzles, topMuzzle };
+}
+
+// ---------------------------------------------------------------------------
+// Authored rocket rifle (assets/models/rr.glb). Loaded once and shared by the
+// viewmodel and every avatar; the procedural gun above stays as the fallback
+// until it arrives (or if it fails to load).
+//
+// Source asset: 1.0 long along +X (muzzle), +Y up, grip at x≈-0.28 / y≈0.12.
+// RR_FIT maps it into gun space: grip at the origin, muzzle down -Z, and the
+// same ~1.2 length as the procedural gun so every pose/aim value carries over.
+// ---------------------------------------------------------------------------
+const RR_SCALE = 1.2;
+const RR_GRIP = new THREE.Vector3(-0.28, 0.12, 0);
+export const RR_MUZZLES = {
+  top: new THREE.Vector3(0, 0.245 * RR_SCALE - RR_GRIP.y * RR_SCALE, -(0.5 - RR_GRIP.x) * RR_SCALE - 0.01),
+  tubes: [0.167, 0.114].map((y) => new THREE.Vector3(0, (y - RR_GRIP.y) * RR_SCALE, -(0.5 - RR_GRIP.x) * RR_SCALE - 0.01)),
+};
+export const RR_TOP = (0.3 - RR_GRIP.y) * RR_SCALE; // height of the top line above the grip
+
+let _rrPromise = null;
+/** Resolves to { geometry, material } (shared), or null if the asset is unavailable. */
+export function loadRocketRifle() {
+  if (_rrPromise) return _rrPromise;
+  _rrPromise = new GLTFLoader().loadAsync('./assets/models/rr.glb').then((gltf) => {
+    let src = null;
+    gltf.scene.traverse((o) => { if (!src && o.isMesh) src = o; });
+    if (!src) return null;
+    const geometry = src.geometry.clone();
+    // bake the fit into the geometry: grip → origin, +X → -Z, scale
+    geometry.translate(-RR_GRIP.x, -RR_GRIP.y, -RR_GRIP.z);
+    geometry.rotateY(Math.PI / 2);
+    geometry.scale(RR_SCALE, RR_SCALE, RR_SCALE);
+    geometry.computeBoundingSphere();
+    const map = src.material.map || null;
+    if (map) { map.colorSpace = THREE.SRGBColorSpace; map.anisotropy = 8; }
+    const material = new THREE.MeshStandardMaterial({ map, roughness: 0.42, metalness: 0.05 });
+    // The lit rings are baked into the texture: make only strongly saturated
+    // (orange/red) texels emissive so bloom picks them up and nothing else glows.
+    material.userData.glow = { value: 1.8 };
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uGlow = material.userData.glow;
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform float uGlow;')
+        .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+          {
+            vec3 t = diffuseColor.rgb;
+            float mx = max(t.r, max(t.g, t.b)), mn = min(t.r, min(t.g, t.b));
+            float sat = (mx - mn) / max(mx, 1e-4);
+            totalEmissiveRadiance += t * smoothstep(0.55, 0.8, sat) * smoothstep(0.25, 0.5, mx) * uGlow;
+          }`);
+    };
+    return { geometry, material };
+  }).catch((err) => { console.warn('rr.glb unavailable, keeping procedural rifle', err); return null; });
+  return _rrPromise;
+}
+
+/**
+ * Swap a buildGun() result over to the authored model once it loads: hides the
+ * procedural parts (except anything listed in `keep`) and adds the RR mesh.
+ */
+export function upgradeToRocketRifle(gun, { keep = [], castShadow = true } = {}) {
+  return loadRocketRifle().then((rr) => {
+    if (!rr) return false;
+    for (const child of gun.group.children) if (!keep.includes(child)) child.visible = false;
+    gun.rifleGroup.visible = false;
+    gun.rocketGroup.visible = false;
+    gun.rifleGroup.userData.retired = gun.rocketGroup.userData.retired = true;
+    const mesh = new THREE.Mesh(rr.geometry, rr.material);
+    mesh.castShadow = castShadow; mesh.receiveShadow = true;
+    mesh.name = 'rr';
+    gun.group.add(mesh);
+    gun.rr = mesh;
+    return true;
+  });
 }

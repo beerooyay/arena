@@ -243,7 +243,12 @@ let _rrPromise = null;
 /** Resolves to { geometry, material } (shared), or null if the asset is unavailable. */
 export function loadRocketRifle() {
   if (_rrPromise) return _rrPromise;
-  _rrPromise = new GLTFLoader().loadAsync('./assets/models/rr.glb').then((gltf) => {
+  const loader = new GLTFLoader();
+  // .glb first; hosts that won't serve binary glTF (e.g. preview artifacts)
+  // get the same model as embedded JSON glTF
+  _rrPromise = loader.loadAsync('./assets/models/rr.glb')
+    .catch(() => loader.loadAsync('./assets/models/rr.gltf.json'))
+    .then((gltf) => {
     let src = null;
     gltf.scene.traverse((o) => { if (!src && o.isMesh) src = o; });
     if (!src) return null;

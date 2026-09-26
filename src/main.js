@@ -856,7 +856,7 @@ function renderReportRows(rows) {
     const nameTd = document.createElement('td');
     const dot = document.createElement('span');
     dot.className = 'cr-dot';
-    dot.style.background = col;
+    dot.style.background = r.teamId === 0 || col === '#ff6000' ? 'var(--grad)' : col; // FIRE accent is the gradient
     nameTd.append(dot, document.createTextNode(r.name));
     tr.appendChild(nameTd);
     for (const v of [r.kills, r.deaths, r.shots]) {
@@ -932,6 +932,8 @@ function resetMatch() {
   bots.setSlotBase(1, 0);              // player holds FIRE slot 0; bots fill the rest
   if (bots.enabled) bots.respawnAll(gameConfig.size - 1, gameConfig.size); // player fills one FIRE slot
   camera.position.copy(playerSpawnPoint()); // always your own side
+  // face the arena centre (also undoes the menu's orbit camera)
+  camera.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(camera.position.x, camera.position.z), 0, 'YXZ'));
   player.velocityY = 0;
   player.resetStance();
   playerPaintHits = 0;
@@ -3187,11 +3189,11 @@ import('./devRecorder.js').then(({ DevRecorder }) => {
   const aBtn = mkBtn('Record Audio Only');
   const toggleVideo = async () => {
     if (rec.recordingVideo) { rec.stopVideo(); vBtn.textContent = 'Record Video + Audio'; vBtn.style.background = '#1c1f24'; }
-    else if (await rec.startVideo()) { vBtn.textContent = 'Stop + Download Video'; vBtn.style.background = '#ff4848'; }
+    else if (await rec.startVideo()) { vBtn.textContent = 'Stop + Download Video'; vBtn.style.background = 'var(--grad)'; }
   };
   const toggleAudio = () => {
     if (rec.recordingAudio) { rec.stopAudio(); aBtn.textContent = 'Record Audio Only'; aBtn.style.background = '#1c1f24'; }
-    else if (rec.startAudio()) { aBtn.textContent = 'Stop + Download Audio'; aBtn.style.background = '#ff4848'; }
+    else if (rec.startAudio()) { aBtn.textContent = 'Stop + Download Audio'; aBtn.style.background = 'var(--grad)'; }
   };
   vBtn.onclick = toggleVideo;
   aBtn.onclick = toggleAudio;
@@ -3267,10 +3269,29 @@ function _frameWarn(where, e) {
   console.warn('[frame] non-fatal error in', where, '—', e);
 }
 
+// Fresh menu (no match underway): a slow orbit over the live arena behind the
+// glass UI. Never runs while a match is paused, so it can't move the player.
+let menuOrbitT = 0;
+let menuOrbiting = false;
+function updateMenuOrbit(dt) {
+  const idle = !active && !sessionLive && !netplay.active;
+  if (idle) {
+    menuOrbitT += dt;
+    const a = 0.7 + menuOrbitT * 0.045;
+    camera.position.set(Math.sin(a) * 15, 3.6 + Math.sin(menuOrbitT * 0.21) * 0.35, Math.cos(a) * 15);
+    camera.lookAt(0, 3.4, 0);
+    if (!menuOrbiting) { menuOrbiting = true; camera.layers.disable(VIEWMODEL_LAYER); }
+  } else if (menuOrbiting) {
+    menuOrbiting = false;
+    camera.layers.enable(VIEWMODEL_LAYER);
+  }
+}
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.05);
   flashes.update(dt);
+  updateMenuOrbit(dt);
   outline.tick(performance.now() / 1000);
 
   input.poll();

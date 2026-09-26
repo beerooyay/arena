@@ -32,31 +32,51 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-export function makeNameSprite(text, hex) {
-  const fs = 40, padX = 18, padY = 8;
-  const meas = document.createElement('canvas').getContext('2d');
-  meas.font = `800 ${fs}px Inter, system-ui, sans-serif`;
-  const w = Math.ceil(meas.measureText(text).width) + padX * 2;
+const NAME_FONT = '700 40px "Google Sans", system-ui, sans-serif';
+
+// Nameplate: dark glass pill; FIRE gets the fire-gradient rim, WHITE a white rim.
+function drawNamePlate(canvas, text, hex) {
+  const fs = 40, padX = 22, padY = 10;
+  const ctx = canvas.getContext('2d');
+  ctx.font = NAME_FONT;
+  const w = Math.ceil(ctx.measureText(text.toUpperCase()).width + text.length * 2.4) + padX * 2;
   const h = fs + padY * 2;
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-  ctx.font = `800 ${fs}px Inter, system-ui, sans-serif`;
+  canvas.width = w; canvas.height = h;
+  ctx.font = NAME_FONT;
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = 'rgba(12,16,22,0.78)';
-  roundRect(ctx, 2, 2, w - 4, h - 4, 12); ctx.fill();
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = '#' + hex.toString(16).padStart(6, '0');
-  roundRect(ctx, 3, 3, w - 6, h - 6, 11); ctx.stroke();
+  ctx.fillStyle = 'rgba(10,12,16,0.72)';
+  roundRect(ctx, 2, 2, w - 4, h - 4, h / 2 - 2); ctx.fill();
+  const fire = hex === 0xff6000;
+  let rim = 'rgba(244,246,248,0.9)';
+  if (fire) { rim = ctx.createLinearGradient(0, 0, w, h); rim.addColorStop(0, '#FF6000'); rim.addColorStop(1, '#FF4848'); }
+  ctx.lineWidth = 3; ctx.strokeStyle = rim;
+  roundRect(ctx, 3, 3, w - 6, h - 6, h / 2 - 3); ctx.stroke();
   ctx.fillStyle = '#f4f6f8';
-  ctx.fillText(text, w / 2, h / 2 + 1);
+  if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
+  ctx.fillText(text.toUpperCase(), w / 2, h / 2 + 2);
+  return { w, h };
+}
+
+export function makeNameSprite(text, hex) {
+  const c = document.createElement('canvas');
+  const { w, h } = drawNamePlate(c, text, hex);
   const tex = new THREE.CanvasTexture(c);
   tex.anisotropy = 4;
+  tex.colorSpace = THREE.SRGBColorSpace;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
   const sprite = new THREE.Sprite(mat);
   const scale = 0.0042;
   sprite.scale.set(w * scale, h * scale, 1);
   sprite.position.y = 2.48;
+  // the web font may still be loading: redraw once it's ready
+  if (document.fonts && !document.fonts.check(NAME_FONT)) {
+    document.fonts.load(NAME_FONT).then(() => {
+      const r = drawNamePlate(c, text, hex);
+      tex.dispose(); // canvas size may change → re-upload
+      tex.needsUpdate = true;
+      sprite.scale.set(r.w * scale, r.h * scale, 1);
+    }).catch(() => {});
+  }
   return sprite;
 }
 

@@ -13,6 +13,7 @@ const _fwd = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const DOWN = new THREE.Vector3(0, -1, 0);
+const _gHits = [];
 const HALF_PI = Math.PI / 2;
 
 const SLIDE_TIME = 0.55;      // seconds a slide lasts
@@ -358,7 +359,8 @@ export class PlayerController {
     const feet = pos.y - eye;
     _origin.set(pos.x, pos.y + 40, pos.z);
     this._down.set(_origin, DOWN);
-    const gHits = this._down.intersectObjects(this.groundMeshes, false);
+    _gHits.length = 0;
+    const gHits = this._down.intersectObjects(this.groundMeshes, false, _gHits);
     let groundY = 0;
     for (const g of gHits) {
       if (g.point.y <= feet + 0.65 && g.point.y > groundY - 0.001) groundY = g.point.y;

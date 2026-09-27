@@ -16,6 +16,13 @@ import { teamSpawnXZ, scatterSpawnXZ } from './spawns.js';
 // Bot display names, kept per-team so they stay stable across respawns.
 export const FIRE_NAMES = ['Flare', 'Ember', 'Bolt', 'Drift', 'Nova', 'Rook'];
 export const WHITE_NAMES = ['Ghost', 'Ivory', 'Ash', 'Frost', 'Pearl', 'Snow'];
+export const RIFLE_BODY = 50, RIFLE_HEAD = 100, RIFLE_SPEED = 260, ROCKET_RADIUS = 3;
+export const HP_MAX = 100, HP_DELAY = 4500, HP_RATE = 45;
+export function blastDamage(distance, direct = false) {
+  if (direct) return 100;
+  if (distance >= ROCKET_RADIUS) return 0;
+  return distance <= 2 ? 50 : Math.max(1, Math.round(50 * (ROCKET_RADIUS - distance)));
+}
 
 // Skill presets, indexed by the Bot Difficulty setting (0=chill, 1=pro, 2=sweat).
 // err: aim jitter in radians. fire: multiplier on the player's fireInterval.
@@ -45,14 +52,13 @@ export class BotSystem {
     this.onPlayerTagged = opts.onPlayerTagged || (() => {});
     this.onFire = opts.onFire || null; // (muzzlePos, hex, dir, teamId) for audio + net replication
     this.onTag = opts.onTag || null;   // fired whenever a combatant is tagged
-    this.onBotDown = null;             // (botIndex, byTeamId) — every bot death, any cause
+    this.onBotDown = null;             // (botIndex, byTeamId, shooter) — every bot death, any cause
     this.extraTargets = [];            // online: remote players the bots should fight
 
     this.perTeam = 5;
-    this.fireInterval = opts.fireInterval ?? 90; // ms — matches the player
+    this.fireInterval = opts.fireInterval ?? 300; // ms — matches the player
     this.skill = SKILL[1];
-    this.hitsToTag = 3; // hits needed to drop a bot in standard play
-    this.onPlayerHit = opts.onPlayerHit || null; // (teamId, hex, shooter) => lethal?
+    this.onPlayerHit = opts.onPlayerHit || null; // (teamId, hex, shooter, dmg, headshot, fromPos) => lethal?
     this._headPos = new THREE.Vector3();
 
     // First spawn slot bots take per team; human players occupy the slots below
@@ -67,11 +73,13 @@ export class BotSystem {
     this.scores = [0, 0];
     this.bots = [];
     this.enabled = false;
+    this._nextSprintAt = 0;
 
     this._player = { pos: new THREE.Vector3(), team: 0, alive: true };
     this._playerInvulnUntil = 0;
 
     this._ray = new THREE.Raycaster();
+    this._hits = [];
     this._tmp = new THREE.Vector3();
     this._chest = new THREE.Vector3();
     this._tChest = new THREE.Vector3();
@@ -100,6 +108,7 @@ export class BotSystem {
 
   respawnAll(blueBots = this.perTeam - 1, redBots = this.perTeam) {
     this._despawnAll();
+    this._nextSprintAt = 0;
     this.scores = [0, 0];
     this._counts = [blueBots, redBots];
     for (let i = 0; i < blueBots; i++) this._spawnBot(this.teams[0], i);
@@ -121,12 +130,17 @@ export class BotSystem {
     ]);
   }
 
-  /** Host-authoritative kill of a bot by index (client hits arrive as messages). */
-  tagBotByIndex(idx, byTeamId) {
+  /** Host-authoritative bot damage (client hits arrive as messages). */
+  tagBotByIndex(idx, byTeamId, dmg = RIFLE_BODY, headshot = false, shooter = null) {
     const bot = this.bots[idx];
-    if (!bot || !bot.alive) return false;
-    this._tagBot(bot, byTeamId, performance.now(), null);
-    return true;
+    if (!bot || !bot.alive || bot.team.id === byTeamId) return false;
+    const now = performance.now();
+    bot.hp -= dmg; bot.lastHurtAt = now;
+    const killed = bot.hp <= 0;
+    if (killed) this._tagBot(bot, byTeamId, now, shooter);
+    else this._flinch(bot, this._tmp.subVectors(bot.pos, this._player.pos).normalize(), now);
+    if (this.onTag) this.onTag({ shooter, victimName: bot.name, victimIsPlayer: false, pos: bot.pos, wounded: !killed, headshot });
+    return killed;
   }
 
   _despawnAll() {
@@ -181,8 +195,9 @@ export class BotSystem {
       pos: this._spawnPoint(team, idx),
       spawn: null,
       alive: true, respawnAt: 0,
-      hp: 100,
+      hp: HP_MAX, lastHurtAt: -Infinity,
       lastShot: 0, burst: 0, reloadUntil: 0, lockAt: 0,
+      moveSpeed: 5.8, sprintUntil: 0, sprintCooldown: 0, sprintFlank: false, unstuckAt: 0,
       wanderT: 0, strafeSign: Math.random() < 0.5 ? -1 : 1,
       rockPhase: Math.random() * Math.PI * 2,
       ragdoll: null,
@@ -203,7 +218,8 @@ export class BotSystem {
 
   _respawn(bot) {
     bot.alive = true;
-    bot.hp = 100;
+    bot.hp = HP_MAX; bot.lastHurtAt = -Infinity;
+    bot.moveSpeed = 5.8; bot.sprintUntil = 0; bot.sprintCooldown = 0; bot.sprintFlank = false; bot.unstuckAt = 0;
     const s = scatterSpawnXZ(this._avoidFor(bot)); // anywhere on the ring, not the same lane
     bot.pos.set(s.x, 0, s.z);
     bot.spawn.copy(bot.pos);
@@ -253,7 +269,7 @@ export class BotSystem {
     this.scores[byTeamId]++;
     bot.deaths++;
     if (shooter && typeof shooter.kills === 'number') shooter.kills++;
-    if (this.onBotDown) this.onBotDown(this.bots.indexOf(bot), byTeamId);
+    if (this.onBotDown) this.onBotDown(this.bots.indexOf(bot), byTeamId, shooter);
     this._startRagdoll(bot);
   }
 
@@ -284,7 +300,8 @@ export class BotSystem {
     dir.multiplyScalar(1 / d);
     this._ray.set(a, dir);
     this._ray.far = d - 0.5;
-    return this._ray.intersectObjects(this.arena.losBlockers, false).length === 0;
+    this._hits.length = 0;
+    return this._ray.intersectObjects(this.arena.losBlockers, false, this._hits).length === 0;
   }
 
   _collide(bot) {
@@ -321,30 +338,52 @@ export class BotSystem {
         continue;
       }
 
+      if (bot.hp < HP_MAX && now - bot.lastHurtAt >= HP_DELAY) bot.hp = Math.min(HP_MAX, bot.hp + HP_RATE * dt);
       const tgt = this._nearestEnemy(bot);
-      if (!tgt) continue;
+      if (!tgt) {
+        bot.vel.multiplyScalar(Math.max(0, 1 - dt * 8));
+        if (bot.anim) bot.anim.update(dt, bot.vel.x, bot.vel.z, bot.group.rotation.y);
+        continue;
+      }
 
       const to = this._to.set(tgt.pos.x - bot.pos.x, 0, tgt.pos.z - bot.pos.z);
       const dist = to.length() || 1;
       to.multiplyScalar(1 / dist);
+      const chest = this._chest.copy(bot.pos); chest.y += 1.45;
+      const tChest = this._tChest.copy(tgt.pos);
+      if (tgt.kind === 'player') tChest.y -= 0.45;
+      else tChest.y += 1.2;
+      const visible = dist < this.skill.engage && this._hasLOS(chest, tChest);
 
-      // steering: approach if far, back off if close, otherwise strafe
+      const relocating = !visible && dist > 12;
+      const pushing = dist > 16 && !bot.lockAt;
+      const flanking = visible && dist > 10 && dist < 18 && now < bot.reloadUntil;
+      if (now >= this._nextSprintAt && now >= bot.sprintCooldown && (relocating || pushing || flanking)) {
+        bot.sprintCooldown = now + 5000 + Math.random() * 3500;
+        if (Math.random() < (relocating ? 0.75 : pushing ? 0.5 : 0.5)) {
+          bot.sprintUntil = now + 650 + Math.random() * 450;
+          bot.sprintFlank = flanking && !pushing;
+          this._nextSprintAt = now + 1200 + Math.random() * 500;
+        }
+      }
+      const sprinting = now < bot.sprintUntil && dist > 9;
+      bot.moveSpeed += ((sprinting ? 10.2 : 5.8) - bot.moveSpeed) * Math.min(1, dt * 8);
+
+      // steering: flank around blocked sightlines, approach if far, back off if close
       const move = this._move.set(0, 0, 0);
-      if (dist > 16) move.copy(to);
+      if (sprinting && bot.sprintFlank) move.set(-to.z, 0, to.x).multiplyScalar(bot.strafeSign).addScaledVector(to, 0.25);
+      else if (dist > 16 || sprinting) move.copy(to).addScaledVector(this._tmp.set(-to.z, 0, to.x), bot.strafeSign * (sprinting ? 0.06 : visible ? 0.12 : 0.6));
       else if (dist < 7) move.copy(to).multiplyScalar(-1);
-      else move.set(-to.z, 0, to.x).multiplyScalar(bot.strafeSign);
+      else move.set(-to.z, 0, to.x).multiplyScalar(bot.strafeSign).addScaledVector(to, visible ? 0.16 : 0.55);
 
       bot.wanderT -= dt;
-      if (bot.wanderT <= 0) { bot.wanderT = 0.6 + Math.random(); bot.strafeSign = Math.random() < 0.5 ? -1 : 1; }
-      move.x += (Math.random() * 2 - 1) * 0.15;
-      move.z += (Math.random() * 2 - 1) * 0.15;
+      if (bot.wanderT <= 0) { bot.wanderT = 1.4 + Math.random() * 1.4; if (!sprinting && Math.random() < 0.6) bot.strafeSign *= -1; }
 
       const px = bot.pos.x, pz = bot.pos.z;
       if (move.lengthSq() > 0) {
         move.normalize();
-        const spd = 5.8; // a touch past the run clip's pace keeps fights moving (timeScale covers it)
-        bot.pos.x += move.x * spd * dt;
-        bot.pos.z += move.z * spd * dt;
+        bot.pos.x += move.x * bot.moveSpeed * dt;
+        bot.pos.z += move.z * bot.moveSpeed * dt;
       }
       this._collide(bot);
       const bnd = this.arena.size - 0.8, diagBnd = bnd * Math.SQRT2;
@@ -356,10 +395,14 @@ export class BotSystem {
       const bSub = bot.pos.x - bot.pos.z;
       if (bSub > diagBnd) { const d = (bSub - diagBnd) * 0.5; bot.pos.x -= d; bot.pos.z += d; }
       else if (bSub < -diagBnd) { const d = (-bSub - diagBnd) * 0.5; bot.pos.x += d; bot.pos.z += d; }
+      if (dist > 12 && now >= bot.unstuckAt && Math.hypot(bot.pos.x - px, bot.pos.z - pz) < bot.moveSpeed * dt * 0.2) {
+        bot.strafeSign *= -1; bot.wanderT = 0.8; bot.sprintUntil = 0; bot.unstuckAt = now + 700;
+      }
       bot.group.position.copy(bot.pos);
       // turn toward the target smoothly (snapping reads as twitchy on rigged avatars)
       {
-        const want = Math.atan2(to.x, to.z);
+        const face = sprinting ? move : to;
+        const want = Math.atan2(face.x, face.z);
         let d = want - bot.group.rotation.y;
         d = Math.atan2(Math.sin(d), Math.cos(d));
         bot.group.rotation.y += bot.anim ? d * Math.min(1, dt * 9) : d;
@@ -392,14 +435,11 @@ export class BotSystem {
       }
 
       // firing
-      const chest = this._chest.copy(bot.pos); chest.y += 1.45;
-      const tChest = this._tChest.copy(tgt.pos);
-      if (tgt.kind === 'player') tChest.y -= 0.45;
-      else tChest.y += 1.2;
+      chest.copy(bot.pos); chest.y += 1.45;
 
       // reaction time: the bot must hold sight on a target for `skill.react`
       // ms before its first shot — breaking line-of-sight resets the lock
-      const seen = dist < this.skill.engage && this._hasLOS(chest, tChest);
+      const seen = !sprinting && visible;
       if (!seen) bot.lockAt = 0;
       else if (!bot.lockAt) bot.lockAt = now;
 
@@ -413,7 +453,7 @@ export class BotSystem {
         aim.z += (Math.random() * 2 - 1) * this.skill.err;
         aim.normalize();
         const origin = chest.clone().addScaledVector(aim, 0.6);
-        this.spawnProjectile(origin, aim, bot.hex, bot.team.id, 190, false, bot);
+        this.spawnProjectile(origin, aim, bot.hex, bot.team.id, RIFLE_SPEED, false, bot);
         if (bot.anim) bot.anim.fire();
         bot.shots++;
         if (this.onFire) this.onFire(origin, bot.hex, aim, bot.team.id);
@@ -454,11 +494,11 @@ export class BotSystem {
       const bot = best.bot;
       // rigged avatars lean into runs and crouch, so measure from the real head
       // bone (its origin sits at the base of the skull) rather than a fixed height
-      let headY = bot.pos.y + 1.72;
-      if (bot.head && bot.anim) headY = bot.head.getWorldPosition(this._headPos).y - 0.06;
+      let headY = bot.pos.y + 1.64;
+      if (bot.head && bot.anim) headY = Math.max(headY, bot.head.getWorldPosition(this._headPos).y + 0.06);
       const headshot = this._tmp.y >= headY;
-      const dmg = headshot ? 100 : 50;
-      bot.hp -= dmg;
+      const dmg = headshot ? RIFLE_HEAD : RIFLE_BODY;
+      bot.hp -= dmg; bot.lastHurtAt = now;
       const killed = bot.hp <= 0;
       if (killed) this._tagBot(bot, shooterTeamId, now, shooter);
       else this._flinch(bot, dir, now); // non-lethal hit staggers them
@@ -466,8 +506,8 @@ export class BotSystem {
         this.onTag({ shooter, victimName: bot.name, victimIsPlayer: false, pos: this._tmp, wounded: !killed, headshot });
       }
     } else {
-      const headshot = this._tmp.y >= this._player.pos.y - 0.25;
-      const dmg = headshot ? 100 : 50;
+      const headshot = this._tmp.y >= this._player.pos.y - 0.06;
+      const dmg = headshot ? RIFLE_HEAD : RIFLE_BODY;
       const lethal = this.onPlayerHit ? this.onPlayerHit(shooterTeamId, hex, shooter, dmg, headshot) : true;
       if (this.onTag) {
         this.onTag({ shooter, victimName: 'YOU', victimIsPlayer: true, pos: this._tmp, wounded: !lethal, headshot });
@@ -485,23 +525,22 @@ export class BotSystem {
   /** Hit reaction: jolt along the shot line, an upper-body flinch, and a beat
    *  before they can shoot back. Reads like a stagger without needing a clip. */
   _flinch(bot, dir, now) {
-    bot.pos.addScaledVector(dir, 0.22);
+    bot.pos.addScaledVector(dir, 0.07);
     if (bot.anim) bot.anim.hit(); // chest whip — reads as a stagger, not a shot
     bot.reloadUntil = Math.max(bot.reloadUntil, now + 240);
   }
 
-  applyBlast(center, radius, maxDmg, shooterTeamId, shooter) {
+  applyBlast(center, shooterTeamId, shooter, directBot = null) {
     if (!this.enabled) return false;
     const now = performance.now();
     let tagged = false;
     for (const b of this.bots) {
       if (!b.alive || b.team.id === shooterTeamId) continue;
-      const d = b.pos.distanceTo(center);
-      if (d <= radius) {
+      const d = Math.hypot(b.pos.x - center.x, b.pos.y + 1 - center.y, b.pos.z - center.z);
+      const dmg = blastDamage(d, b === directBot);
+      if (dmg) {
         tagged = true;
-        const falloff = 1 - d / radius;
-        const dmg = Math.round(maxDmg * Math.max(0.3, falloff));
-        b.hp -= dmg;
+        b.hp -= dmg; b.lastHurtAt = now;
         const killed = b.hp <= 0;
         if (killed) this._tagBot(b, shooterTeamId, now, shooter);
         else this._flinch(b, this._tmp.subVectors(b.pos, center).normalize(), now);
@@ -511,12 +550,11 @@ export class BotSystem {
       }
     }
     if (this._player.alive && this._player.team !== shooterTeamId && now >= this._playerInvulnUntil) {
-      const d = this._player.pos.distanceTo(center);
-      if (d <= radius) {
+      const d = Math.hypot(this._player.pos.x - center.x, this._player.pos.y - 0.7 - center.y, this._player.pos.z - center.z);
+      const dmg = blastDamage(d);
+      if (dmg) {
         tagged = true;
-        const falloff = 1 - d / radius;
-        const dmg = Math.round(maxDmg * Math.max(0.3, falloff));
-        const lethal = this.onPlayerHit ? this.onPlayerHit(shooterTeamId, 0xff6000, shooter, dmg, false) : true;
+        const lethal = this.onPlayerHit ? this.onPlayerHit(shooterTeamId, 0xff6000, shooter, dmg, false, center) : true;
         if (this.onTag) {
           this.onTag({ shooter, victimName: 'YOU', victimIsPlayer: true, pos: this._player.pos, wounded: !lethal, blast: true });
         }

@@ -126,10 +126,8 @@ export function initLiquidGlass() {
     for (const e of entries) apply(e.target, e.target.dataset.lgTail);
   });
   for (const node of document.querySelectorAll('.glass')) {
-    // HUD glass sits on the bright arena: keep it darker for legibility
-    node.dataset.lgTail = node.classList.contains('glass--hud')
-      ? 'blur(8px) saturate(160%) brightness(.6)'
-      : 'blur(2px) saturate(190%) brightness(1.15)';
+    // Keep the same backdrop treatment on menu and HUD glass.
+    node.dataset.lgTail = 'blur(12px) saturate(135%) brightness(.55)';
     ro.observe(node);
   }
   // Pre-build the menu's filters at boot: lay the (hidden) menu out invisibly

@@ -84,10 +84,10 @@
   <div id="reload-prompt"><kbd id="reload-prompt-key">R</kbd><span>RELOAD</span></div>
 
   <!-- Kill confirmation -->
-  <div id="killfeed" class="hidden"><span class="kf-verb">ELIMINATED</span> <span id="kf-name"></span></div>
+  <div id="killfeed" class="glass glass--hud hidden"><span class="kf-verb">ELIMINATED</span> <span id="kf-name"></span></div>
 
   <!-- Killed-by banner -->
-  <div id="killedby" class="hidden"><span class="kb-verb">ELIMINATED BY</span> <span id="kb-name"></span></div>
+  <div id="killedby" class="glass glass--hud hidden"><span class="kb-verb">ELIMINATED BY</span> <span id="kb-name"></span></div>
 
   <!-- Respawn countdown -->
   <div id="respawn" class="hidden">
@@ -101,12 +101,12 @@
 
   <!-- Scoreboard -->
   <div id="scoreboard" class="hidden">
-    <div class="sb-main">
+    <div class="sb-main glass glass--hud">
       <div class="sb-team sb-blue"><span class="sb-name">FIRE</span><span class="sb-score" id="score-blue">0</span></div>
       <div class="sb-center"><span class="sb-timer" id="sb-timer">0:00</span></div>
       <div class="sb-team sb-red"><span class="sb-score" id="score-red">0</span><span class="sb-name">WHITE</span></div>
     </div>
-    <div class="sb-sub"><span class="sb-vs" id="sb-mode-title">TEAM DEATHMATCH</span></div>
+    <div class="sb-sub glass glass--hud"><span class="sb-vs" id="sb-mode-title">TEAM DEATHMATCH</span></div>
   </div>
 
   <!-- Global Kill Feed -->
@@ -158,7 +158,7 @@
       <div id="title-tag" class="t-eyebrow">Team Deathmatch</div>
     </div>
     <div id="title-actions">
-      <button id="start-btn" class="btn btn-primary btn-lg">Enter Arena</button>
+      <button id="start-btn" class="btn btn-primary btn-xl">Enter Arena</button>
       <div id="dev-credit" class="t-caption">Ceeboozwah &middot; Blaize</div>
     </div>
   </div>
@@ -286,7 +286,21 @@
     </div>
   </div>
 
-  <!-- Game Over Screen -->
+  <!-- Match menus -->
+  <div id="pause-overlay" class="menu-overlay hidden">
+    <div class="menu-card glass pause-card">
+      <div class="t-eyebrow">Match Paused</div>
+      <h2>Ready when you are.</h2>
+      <p id="pause-summary" class="t-caption"></p>
+      <div class="pause-actions">
+        <button id="pause-resume-btn" class="btn btn-primary">Resume Match</button>
+        <button id="pause-restart-btn" class="btn btn-ghost">Restart Match</button>
+        <button id="pause-settings-btn" class="btn btn-ghost">Settings</button>
+        <button id="pause-leave-btn" class="btn btn-ghost">Leave to Menu</button>
+      </div>
+    </div>
+  </div>
+
   <div id="gameover-overlay" class="menu-overlay hidden">
     <div class="menu-card glass gameover-card">
       <h2 id="gameover-result">FIRE WINS</h2>
@@ -303,6 +317,7 @@
       <div class="menu-actions">
         <button id="play-again-btn" class="btn btn-primary">Play Again</button>
         <button id="gameover-settings-btn" class="btn btn-ghost">Settings</button>
+        <button id="gameover-leave-btn" class="btn btn-ghost">Leave to Menu</button>
       </div>
     </div>
   </div>

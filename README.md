@@ -30,7 +30,7 @@ Same-network players can join via `http://<your-lan-ip>:5178`.
 | Weapon | Behavior |
 |--------|----------|
 | Battle rifle | Semi-auto tracer rounds. One-shot headshots, two body shots. Precision scope + sniper reticle on aim. Fires from the top barrel. |
-| Twin rocket | Two rockets per loadout, alternating lower barrels, then an automatic 2.4s reload. Radial blast damage, smoke trail, lit exhaust. |
+| Twin rocket | Two rockets per magazine, alternating lower barrels, then an automatic 2.3s reload. Direct hits kill; close splash takes two hits. Compact blast, smoke trail, lit exhaust. |
 
 Swap with `Q` (or the weapon HUD) in Free Fire.
 

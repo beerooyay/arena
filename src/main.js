@@ -7,7 +7,7 @@ import { buildArena } from './arena.js';
 import { createOutline, NO_OUTLINE_LAYER } from './outline.js';
 import { PlayerController } from './player.js';
 import { InputManager } from './input.js';
-import { BotSystem, FIRE_NAMES, WHITE_NAMES } from './bots.js';
+import { BotSystem, FIRE_NAMES, WHITE_NAMES, RIFLE_BODY, RIFLE_HEAD, RIFLE_SPEED, ROCKET_RADIUS, HP_MAX, HP_DELAY, HP_RATE } from './bots.js';
 import { Settings } from './settings.js';
 import { Weapon } from './weapon.js';
 import { AudioManager } from './audio.js';
@@ -277,7 +277,6 @@ function playerSpawnPoint(scatter = false) {
   return _spawnV.set(p.x, SPAWN_EYE_Y, p.z);
 }
 // Player health: stay clean for HP_DELAY ms and it refills at HP_RATE per second.
-const HP_MAX = 100, HP_HIT = 34, HP_DELAY = 4500, HP_RATE = 45;
 let playerHp = HP_MAX;
 let lastHurtAt = -Infinity;
 
@@ -315,7 +314,7 @@ const _kfEsc = (s) => { const d = document.createElement('div'); d.textContent =
 function pushKill(shooterName, shooterTeam, victimName, victimTeam) {
   if (!killfeedRowsEl) return;
   const row = document.createElement('div');
-  row.className = 'kf-row';
+  row.className = 'kf-row glass glass--hud';
   const sc = shooterTeam === 0 ? 'kf-name-blue' : 'kf-name-red';
   const vc = victimTeam === 0 ? 'kf-name-blue' : 'kf-name-red';
   const mark = shooterTeam === 0 ? 'kf-fill-blue' : 'kf-fill-red';
@@ -335,12 +334,14 @@ let hitVignetteTimer = null, hitDirTimer = null;
 
 const hpFillEl = document.getElementById('hp-fill');
 const hpNumEl = document.getElementById('hp-num');
+const hpHudEl = document.getElementById('hp-hud');
 function updateHpBar() {
   const pct = Math.max(0, playerHp) / HP_MAX;
   if (hpFillEl) {
     hpFillEl.style.width = (pct * 100) + '%';
     hpFillEl.classList.toggle('low', pct <= 0.34);
   }
+  hpHudEl?.classList.toggle('recharging', pct > 0 && pct < 1 && performance.now() - lastHurtAt >= HP_DELAY);
   if (hpNumEl) hpNumEl.textContent = Math.ceil(Math.max(0, playerHp));
 }
 
@@ -529,13 +530,13 @@ function respawnPlayer() {
 const bots = new BotSystem(scene, arena, {
   spawnProjectile,
   onPlayerTagged,
-  onPlayerHit: (teamId, hex, shooter, dmg, isHeadshot) => hurtPlayer(hex, dmg, isHeadshot, shooter && shooter.pos),
+  onPlayerHit: (teamId, hex, shooter, dmg, isHeadshot, fromPos) => hurtPlayer(hex, dmg, isHeadshot, fromPos || (shooter && shooter.pos)),
   onFire: (pos, hex, dir, teamId) => {
     audio.playAt('rifleShot', pos, {
       volume: 0.55, rate: 0.92 + Math.random() * 0.12, refDistance: 5, maxDistance: 80,
     });
     // host: replicate bot shots so clients see the tracers
-    if (dir && netplay.isHost && netplay.active) netplay.sendShot(pos, dir, hex, teamId);
+    if (dir && netplay.isHost && netplay.active) netplay.sendShot(pos, dir, hex, teamId, { speed: RIFLE_SPEED });
   },
   onTag: ({ shooter, victimName, victimIsPlayer, pos, wounded, headshot }) => {
     // armour hit on someone else (your own hits have their own sound in hurtPlayer)
@@ -557,7 +558,7 @@ const bots = new BotSystem(scene, arena, {
     const vName = victimIsPlayer ? getPlayerName() : victimName;
     pushKill(sName, sTeam, vName, 1 - sTeam);
   },
-  fireInterval: 240, // matches the player's battle rifle cadence
+  fireInterval: 300, // matches the player's battle rifle cadence
 });
 // Rigged suits + clips load in the background; bots spawned before they land
 // (fast Play click) get upgraded in place.
@@ -575,11 +576,13 @@ let active = false;
 let padSession = false;
 // `sessionLive` = a single-player match is underway (menu = pause, not reset)
 let sessionLive = false;
+let pauseStartedAt = 0;
 
 // ---------------------------------------------------------------------------
 // Screen management: start / settings / game-over overlays + in-game HUD.
 // ---------------------------------------------------------------------------
 const settingsOverlay = document.getElementById('settings-overlay');
+const pauseOverlay = document.getElementById('pause-overlay');
 const gameoverOverlay = document.getElementById('gameover-overlay');
 const howtoOverlay = document.getElementById('howto-overlay');
 const publicOverlay = document.getElementById('public-overlay');
@@ -591,6 +594,7 @@ let settingsReturnScreen = 'start';
 function hideAllMenus() {
   overlay.classList.add('hidden');
   settingsOverlay.classList.add('hidden');
+  pauseOverlay.classList.add('hidden');
   gameoverOverlay.classList.add('hidden');
   howtoOverlay.classList.add('hidden');
   publicOverlay.classList.add('hidden');
@@ -630,6 +634,18 @@ function showStart() {
   // name is editable only at a fresh menu — not when pausing mid-match
   nameInput.disabled = sessionLive;
 }
+function showPause() {
+  if (netplay.active) { showLobby(); return; }
+  if (!sessionLive || match.over) { showStart(); return; }
+  if (!pauseStartedAt) pauseStartedAt = performance.now();
+  active = false; padSession = false;
+  stopFiring(); stopSlideSound();
+  hideAllMenus();
+  pauseOverlay.classList.remove('hidden');
+  document.getElementById('pause-summary').textContent = `${gameConfig.size}v${gameConfig.size} · ${gameConfig.rule === 'free' ? 'Both Weapons' : gameConfig.rule === 'rifle' ? 'Rifle' : 'Rocket'} · First to ${match.target}`;
+  for (const el of [crosshair, hud, scoreboard, respawnEl, countdownEl, killfeedEl, killedbyEl]) el.classList.add('hidden');
+  if (controls.isLocked) controls.unlock();
+}
 function showSettings(returnTo) {
   settingsReturnScreen = returnTo;
   settings.refreshUI();
@@ -648,6 +664,10 @@ function showGameOver() {
   killedbyEl.classList.add('hidden');
 }
 function enterGame() {
+  if (pauseStartedAt && sessionLive && !netplay.active) {
+    matchStartMs += performance.now() - pauseStartedAt;
+    pauseStartedAt = 0;
+  }
   active = true;
   audio.resume(); // first gesture unlocks WebAudio
   hideAllMenus();
@@ -730,10 +750,15 @@ function resetMatch() {
   match.over = false;
   match.winner = -1;
   sessionLive = true;    // a single-player match is now underway
+  pauseStartedAt = 0;
   matchStartMs = performance.now(); // reset the elapsed clock
   clearKillFeed();
+  for (let i = projectiles.length - 1; i >= 0; i--) removeProjectile(i);
+  clearFx(); stopFiring();
   playerDead = false;
+  currentWeapon = gameConfig.rule === 'rocket' ? 1 : 0;
   setWeaponsVisible(true); // a prior death hides the gun — always restore it on a new match
+  weapon.reset();
   respawnEl.classList.add('hidden');
   killfeedEl.classList.add('hidden');
   killedbyEl.classList.add('hidden');
@@ -745,9 +770,27 @@ function resetMatch() {
   camera.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(camera.position.x, camera.position.z), 0, 'YXZ'));
   player.velocityY = 0; player.moveVel.set(0, 0, 0);
   player.resetStance();
+  lastHurtAt = -Infinity;
   playerHp = HP_MAX; updateHpBar();
-  refillAmmo();
+  refillAmmo(); lastShotAt.fill(0);
   startCountdown();                    // "get ready" freeze before the match
+}
+function restartLocalMatch() {
+  if (netplay.active) return;
+  bots.setEnabled(guiState.bots5v5);
+  resetMatch();
+  enterGame();
+  controls.lock();
+}
+function leaveLocalMatch() {
+  if (netplay.active) { showLobby(); return; }
+  active = false; sessionLive = false; pauseStartedAt = 0;
+  playerDead = false; countdownMs = 0;
+  stopFiring(); stopSlideSound(); cancelReload();
+  for (let i = projectiles.length - 1; i >= 0; i--) removeProjectile(i);
+  clearFx(); bots.setEnabled(false);
+  if (controls.isLocked) controls.unlock();
+  showStart();
 }
 
 // --- Title / cover screen: Enter Arena cross-fades into the main menu ---
@@ -780,15 +823,8 @@ nameInput.addEventListener('input', () => {
 });
 
 document.getElementById('play-btn').addEventListener('click', () => {
-  // fresh single-player match on first Play; resume if paused mid-match
-  if (!netplay.active && !sessionLive) {
-    bots.setEnabled(guiState.bots5v5);
-    resetMatch();
-  }
-  if (gameConfig.rule === 'rifle') switchWeapon(0);
-  else if (gameConfig.rule === 'rocket') switchWeapon(1);
-  enterGame();
-  controls.lock();
+  if (netplay.active) { showLobby(); return; }
+  restartLocalMatch();
 });
 // "Lights Out" mode toggle — flips night mode live (so you preview it behind the
 // menu) and it carries into whatever match you start, free play or online.
@@ -879,7 +915,7 @@ function setActiveMode(el) {
 // QUICK MATCH / PRACTICE start a local match; they differ only in whether bots
 // fill the arena. PLAY NOW keeps its own handler (bots per the current setting).
 function startLocalPlay(withBots, modeEl) {
-  if (!netplay.active && !sessionLive) guiState.bots5v5 = withBots;
+  if (!netplay.active) guiState.bots5v5 = withBots;
   if (modeEl) setActiveMode(modeEl);
   playBtn.click();
 }
@@ -932,7 +968,7 @@ let _toastEl = null, _toastTimer = 0;
 function showToast(label) {
   if (!_toastEl) {
     _toastEl = document.createElement('div');
-    _toastEl.className = 'lc-toast';
+    _toastEl.className = 'lc-toast glass glass--hud';
     document.body.appendChild(_toastEl);
   }
   _toastEl.innerHTML = `<strong>${label}</strong> &middot; coming soon`;
@@ -1023,7 +1059,16 @@ const netplay = new NetPlay(net, {
   scene,
   camera,
   spawnProjectile,
-  onTagged: (shooterTeamId, hex, name, fromPos) => { if (hurtPlayer(hex, 50, false, fromPos)) onPlayerTagged(shooterTeamId, hex, name); },
+  onHit: (team, hex, name, dmg, headshot, fromPos) => {
+    if (playerDead || performance.now() < bots._playerInvulnUntil) return false;
+    const lethal = hurtPlayer(hex, dmg, headshot, fromPos);
+    if (lethal) onPlayerTagged(team, hex, name);
+    return lethal;
+  },
+  onConfirmedKill: (team, name, victim, shooterId) => {
+    pushKill(name, team, victim, team ^ 1);
+    if (shooterId === netplay.me?.id) { playerStats.kills++; showKill(victim); showHitmarker(true); }
+  },
   showKill,
   onRosterChange: () => { updateNetHud(); renderLobby(); refreshNightToggle(); refreshMapPicker(); },
   onStart: () => startNetMatchLocal(),  // clients: (re)start — fresh scoreline
@@ -1033,7 +1078,8 @@ const netplay = new NetPlay(net, {
   getPlayerName: () => getPlayerName(),
   getBotSnapshot: () => bots.netSnapshot(),
   moveFlags: () => (player.onGround ? 0 : 1) | (player.diving ? 2 : 0) | (player.sliding ? 4 : 0),
-  tagBot: (idx, team) => bots.tagBotByIndex(idx, team),
+  isAlive: () => !playerDead,
+  tagBot: (idx, team, dmg, headshot, shooterId) => bots.tagBotByIndex(idx, team, dmg, headshot, { id: shooterId, name: netplay.roster.get(shooterId)?.name || 'Recruit', team: { id: team } }),
   onGhostBotDied: (pos) => bodyDown(pos),
   onEnded: (reason) => {
     netHudEl.classList.add('hidden');
@@ -1052,8 +1098,8 @@ const netplay = new NetPlay(net, {
 
 // host: when a real bot dies, score it for everyone (the avatar ragdolls
 // itself down in bots.js — no extra FX needed here)
-bots.onBotDown = (idx, byTeam) => {
-  if (netplay.isHost && netplay.active) netplay.hostBotDied(idx, byTeam);
+bots.onBotDown = (idx, byTeam, shooter) => {
+  if (netplay.isHost && netplay.active) netplay.hostBotDied(idx, byTeam, shooter === playerStats ? netplay.me.id : shooter?.id);
 };
 
 // ---- Lobby rendering + flow ------------------------------------------------
@@ -1284,24 +1330,32 @@ document.getElementById('private-join-btn').addEventListener('click', () => {
 document.getElementById('gameover-settings-btn').addEventListener('click', () => showSettings('gameover'));
 document.getElementById('settings-back-btn').addEventListener('click', () => {
   if (settingsReturnScreen === 'gameover') showGameOver();
+  else if (settingsReturnScreen === 'pause') showPause();
   else showStart();
 });
+document.getElementById('pause-resume-btn').addEventListener('click', () => { enterGame(); controls.lock(); });
+document.getElementById('pause-restart-btn').addEventListener('click', restartLocalMatch);
+document.getElementById('pause-settings-btn').addEventListener('click', () => showSettings('pause'));
+document.getElementById('pause-leave-btn').addEventListener('click', leaveLocalMatch);
 document.getElementById('play-again-btn').addEventListener('click', () => {
   if (onlineResultShowing) {         // online match ended → back to the same lobby
     showLobby();                     // net session stays alive; host can restart
     return;
   }
-  resetMatch();
-  enterGame();
-  controls.lock(); // this click is a user gesture, so pointer lock is allowed
+  restartLocalMatch();
+});
+document.getElementById('gameover-leave-btn').addEventListener('click', () => {
+  if (onlineResultShowing) { net.close(''); showStart(); return; }
+  leaveLocalMatch();
 });
 
 controls.addEventListener('lock', enterGame);
 controls.addEventListener('unlock', () => {
   if (devPanelOpen) return; // tuning in the dev panel — keep the game, just free the cursor
-  if (padSession || match.over) return;
+  if (padSession || match.over || (!active && !pauseOverlay.classList.contains('hidden'))) return;
   // pausing an online match returns to the lobby, not the single-player menu
   if (netplay.active) showLobby();
+  else if (sessionLive) showPause();
   else showStart();
 });
 
@@ -1313,7 +1367,7 @@ function myTeamId() { return (netplay.active && netplay.me) ? netplay.me.team : 
 
 // Loadout. `interval` is the minimum ms between shots; `mag` rounds per reload.
 const WEAPONS = [
-  { name: 'BATTLE RIFLE', mag: 20, reloadMs: 1500, interval: 210, speed: 260 },
+  { name: 'BATTLE RIFLE', mag: 20, reloadMs: 1500, interval: 300, speed: RIFLE_SPEED },
   { name: 'TWIN ROCKET', mag: 2, reloadMs: 2300, interval: 480, speed: 34 },
 ];
 const ammo = WEAPONS.map((w) => w.mag);
@@ -1333,7 +1387,9 @@ const _wpnRay = new THREE.Raycaster();
 const _wpnDir = new THREE.Vector3();
 const _wpnHit = new THREE.Vector3();
 const _segEnd = new THREE.Vector3();
+const _segDir = new THREE.Vector3();
 const _tmpV = new THREE.Vector3();
+const _projHits = [];
 
 // World point under the screen-centre reticle; player rounds fly flat to it so
 // they land exactly where you aim (no muzzle parallax).
@@ -1660,37 +1716,48 @@ function updateProjectiles(dt) {
     const seg = _tmpV.subVectors(p.mesh.position, p.prev);
     const dist = seg.length();
     if (dist > 1e-5) {
-      const dir = seg.clone().multiplyScalar(1 / dist);
+      const dir = _segDir.copy(seg).multiplyScalar(1 / dist);
       // the first solid surface along this step caps every hit test, so
       // nothing is ever hit through a wall
       raycaster.set(p.prev, dir);
       raycaster.far = dist + 0.13;
-      const wallHit = raycaster.intersectObjects(arena.losBlockers, false)[0];
+      _projHits.length = 0;
+      const wallHit = raycaster.intersectObjects(arena.losBlockers, false, _projHits)[0];
       const reach = wallHit ? Math.min(dist + 0.13, wallHit.distance) : dist + 0.13;
       const segEnd = wallHit ? _segEnd.copy(p.prev).addScaledVector(dir, reach) : p.mesh.position;
       const isNetGhost = p.shooter && p.shooter.netGhost; // relayed shots are visual only
 
       if (p.kind === 'rocket') {
         let blast = wallHit ? wallHit.point.clone().addScaledVector(dir, -0.15) : null;
+        let directBot = null, directNet = null;
+        let firstHit = wallHit?.distance ?? Infinity;
         if (!isNetGhost) {
           for (const bot of bots.bots) {
             if (!bot.alive || bot.team.id === p.team) continue;
             _tmpV.copy(bot.pos); _tmpV.y += 1.2;
-            if (segHitsSphere(p.prev, segEnd, _tmpV, 0.9)) { blast = _tmpV.clone(); break; }
+            if (!segHitsSphere(p.prev, segEnd, _tmpV, 0.9)) continue;
+            const to = _tmpV.sub(p.prev), along = to.dot(dir);
+            const entry = Math.max(0, along - Math.sqrt(Math.max(0, 0.81 - (to.lengthSq() - along * along))));
+            if (entry < firstHit) { firstHit = entry; blast = p.prev.clone().addScaledVector(dir, entry); directBot = bot; }
+          }
+          if (p.isPlayer && netplay.active) {
+            directNet = netplay.testHit(p.prev, dir, reach);
+            if (directNet && directNet.t < firstHit) {
+              blast = p.prev.clone().addScaledVector(dir, directNet.t);
+              directBot = null;
+            } else directNet = null;
           }
         }
-        if (blast) { rocketImpact(p, i, blast, isNetGhost); continue; }
+        if (blast) { rocketImpact(p, i, blast, isNetGhost, directBot, directNet); continue; }
       } else {
         // online: MY shots test remote players + the host's ghost bots
         if (p.isPlayer && netplay.active) {
           const victim = netplay.testHit(p.prev, dir, reach);
           if (victim) {
-            audio.play('hitArmor', { volume: 0.9 });
-            showHitmarker(true);
-            showKill(victim.name);
-            playerStats.kills++;
-            if (victim.kind === 'bot') netplay.sendBotHit(victim.index);
-            else netplay.sendTag(victim.id, p.hex);
+            audio.play(victim.headshot ? 'hitHead' : 'hitArmor', { volume: 0.9 });
+            showHitmarker();
+            if (victim.kind === 'bot') netplay.sendBotHit(victim.index, victim.headshot ? RIFLE_HEAD : RIFLE_BODY, victim.headshot);
+            else netplay.sendHit(victim.id, p.hex, victim.headshot ? RIFLE_HEAD : RIFLE_BODY, victim.headshot, p.prev);
             removeProjectile(i);
             continue;
           }
@@ -1698,7 +1765,7 @@ function updateProjectiles(dt) {
         // host: my bots' rounds can hit remote human players
         if (!isNetGhost && !p.isPlayer && netplay.isHost && netplay.active) {
           const rv = netplay.hostTestRemoteHit(p.prev, dir, reach, p.team);
-          if (rv) { netplay.broadcastTag(rv.id, p.hex, p.team, p.shooter && p.shooter.name); removeProjectile(i); continue; }
+          if (rv) { netplay.sendHit(rv.id, p.hex, rv.headshot ? RIFLE_HEAD : RIFLE_BODY, rv.headshot, p.prev, p.team, p.shooter?.name); removeProjectile(i); continue; }
         }
         if (!isNetGhost && bots.hitscan(p.prev, dir, reach, p.team, p.hex, p.shooter)) {
           removeProjectile(i);
@@ -1777,7 +1844,7 @@ for (let i = 0; i < 6; i++) {
     color: 0xffe2b8, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
   }));
   m.visible = false; m.layers.set(NO_OUTLINE_LAYER); scene.add(m);
-  rings.push({ mesh: m, age: 0, life: 0.38, r: 6 });
+  rings.push({ mesh: m, age: 0, life: 0.38, r: ROCKET_RADIUS });
 }
 const scorchTex = (() => {
   const c = document.createElement('canvas'); c.width = c.height = 128;
@@ -1835,23 +1902,30 @@ function explode(point) {
     const r = rings.find((o) => !o.mesh.visible);
     if (r) { r.mesh.position.set(point.x, 0.05, point.z); r.age = 0; r.mesh.visible = true; }
     const s = scorches[_scorchNext++ % scorches.length];
-    s.mesh.position.set(point.x, 0.012, point.z); s.mesh.scale.setScalar(3.4 + Math.random());
+    s.mesh.position.set(point.x, 0.012, point.z); s.mesh.scale.setScalar(2.4 + Math.random() * 0.6);
     s.mesh.rotation.y = Math.random() * Math.PI * 2; s.age = 0; s.mesh.visible = true;
   }
   // camera shake that falls off with distance
   const d = camera.position.distanceTo(point);
-  const k = Math.max(0, 1 - d / 20);
-  if (k > 0) kickView(1.6 * k, (Math.random() - 0.5) * 0.8 * k, (Math.random() - 0.5) * 1.2 * k);
+  const k = Math.max(0, 1 - d / 12);
+  if (k > 0) kickView(1.3 * k, (Math.random() - 0.5) * 0.8 * k, (Math.random() - 0.5) * 1.2 * k);
   audio.playAt('explosion', point, { volume: 1.2, rate: 0.95 + Math.random() * 0.1, refDistance: 10, maxDistance: 140 });
 }
 
-function rocketImpact(p, i, point, visualOnly) {
+function rocketImpact(p, i, point, visualOnly, directBot = null, directNet = null) {
   if (!visualOnly) {
-    const tagged = bots.applyBlast(point, 6.5, 110, p.team, p.shooter);
-    if (p.isPlayer && tagged) showHitmarker(true);
+    const tagged = bots.applyBlast(point, p.team, p.shooter, directBot);
+    if (p.isPlayer && netplay.active && netplay.applyBlast(point, p.team, directNet) && !tagged) showHitmarker();
   }
   explode(point);
   removeProjectile(i);
+}
+
+function clearFx() {
+  for (const p of puffs) p.sprite.visible = false;
+  for (const f of fireballs) f.sprite.visible = false;
+  for (const r of rings) r.mesh.visible = false;
+  for (const s of scorches) s.mesh.visible = false;
 }
 
 function updateFx(dt) {
@@ -2057,6 +2131,10 @@ if (DEV) window.__wo = {
   get active() { return active; },
   setActive: (v) => { active = !!v; },   // pause/resume the movement+camera loop for clean FX captures
   enterGame, resetMatch,
+  pause: showPause, resume: () => { enterGame(); }, restart: restartLocalMatch, leave: leaveLocalMatch,
+  get sessionLive() { return sessionLive; },
+  get matchOver() { return match.over; },
+  vis: (id) => !document.getElementById(id).classList.contains('hidden'),
   skipCountdown: () => { countdownMs = COUNTDOWN_GO_MS; countdownEl.classList.add('hidden'); },
   fire: () => fireCurrent(),
   fireRocket: () => { currentWeapon = 1; weapon.setMode(1); fireCurrent(); },
@@ -2070,6 +2148,7 @@ if (DEV) window.__wo = {
   get ammo() { return [...ammo]; }, get reload() { return { ...reload }; }, get slot() { return currentWeapon; },
   swap: (s) => switchWeapon(s), reloadNow: () => startReload(),
   render: () => outline.render(), // draw one frame on demand (background tabs pause rAF)
+  renderer,
 };
 
 // keep dev panel from stealing pointer-lock clicks
@@ -2148,8 +2227,6 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
   outline.setSize(w, h);
-  const [sw, sh] = _scopeDim();
-  scopeRT.setSize(sw, sh); // keep the scope feed matched to the screen aspect
   if (floorRefl) floorRefl.resize();
 });
 
@@ -2218,17 +2295,13 @@ function animate() {
     // (back to the menu/lobby) when already playing.
     if (input.consumeStart()) {
       if (active) {
-        // pause — mirrors what Esc does for mouse+keyboard
         padSession = false;
         if (netplay.active) showLobby();
-        else if (!match.over) showStart();
+        else if (!match.over) showPause();
+      } else if (netplay.active) {
+        if (netplay.started && !netplay.matchOver) { padSession = true; enterGame(); }
       } else {
-        if (!netplay.active && !sessionLive) {
-          bots.setEnabled(guiState.bots5v5);
-          resetMatch();
-        } else if (match.over) {
-          resetMatch();
-        }
+        if (!sessionLive || match.over) { bots.setEnabled(guiState.bots5v5); resetMatch(); }
         padSession = true;
         enterGame();
       }
@@ -2333,7 +2406,7 @@ function animate() {
     });
   }
 
-  if (simRunning) updateProjectiles(dt);
+  if (simRunning) { updateProjectiles(dt); updateFx(dt); }
 
   if (netplay.active) {
     // online skirmish: live team tag totals (endless — no match end in v1)
@@ -2344,8 +2417,8 @@ function animate() {
     scoreRedEl.textContent = bots.scores[1];
     // free-play match clock: 0:00 during the countdown, counts up in play, then
     // freezes at match end
-    if (countdownMs > 0) { matchStartMs = performance.now(); sbTimerEl.textContent = '0:00'; }
-    else if (!match.over) sbTimerEl.textContent = fmtClock((performance.now() - matchStartMs) / 1000);
+    if (countdownMs > 0) { if (active) matchStartMs = performance.now(); sbTimerEl.textContent = '0:00'; }
+    else if (active && !match.over) sbTimerEl.textContent = fmtClock((performance.now() - matchStartMs) / 1000);
     if (!match.over) {
       if (bots.scores[0] >= match.target) endMatch(0);
       else if (bots.scores[1] >= match.target) endMatch(1);

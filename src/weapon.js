@@ -17,8 +17,8 @@ export class Weapon {
 
     this.mode = 0; // 0 = rifle, 1 = rocket
 
-    this.hipX = 0.27; this.hipY = -0.31; this.hipZ = -0.52; // classic FPS hold: low right, downrange, stock off-frame
-    this.aimX = 0.00; this.aimY = -0.195; this.aimZ = -0.42; // ~ -0.44 × viewScale keeps the sight picture
+    this.hipX = 0.344; this.hipY = -0.403; this.hipZ = -0.3625; // classic FPS hold: low right, downrange, stock off-frame
+    this.aimX = 0.00; this.aimY = -0.195; this.aimZ = -0.3825; // ~ -0.44 × viewScale keeps the sight picture
     this.wallPull = 0;
     this.cant = 0;
     this.wallPullZ = 0.32;
@@ -60,10 +60,10 @@ export class Weapon {
     this._swayPhase = 0;
     this._kick = 0;
 
-    this.hipPitch = 0.10;  // stock dips out of frame
-    this.hipYaw = 0.20;    // mostly forward, a hint of the flank showing
+    this.hipPitch = 0.02;  // stock stays up near the shoulder, not dipped out of frame
+    this.hipYaw = 0.095;   // stock cants a touch inward — gun reads closer to the eye
     this.hipRoll = 0.06;
-    this.viewScale = 0.95;
+    this.viewScale = 1.20;
     this.refFov = 75;
     this.materials = [];
 
@@ -168,6 +168,13 @@ export class Weapon {
   /** Dip the gun down, run cb at the bottom (model swap), raise it again. */
   swap(cb) { if (this._swapCb) this._swapCb(); this._swapCb = cb; }
 
+  reset() {
+    this._swapCb = null;
+    this.swapT = 1; this.reloadT = 0; this.aimT = 0;
+    this.sprintT = 0; this.slideT = 0; this.wallPull = 0; this._kick = 0;
+    for (const key of Object.keys(this.recoil)) this.recoil[key] = 0;
+  }
+
   setNeon(on) {
     for (const m of this.glowMats) m.emissiveIntensity = m.userData.baseEmissive * (on ? 1.2 : 1);
   }
@@ -185,10 +192,11 @@ export class Weapon {
     // lighter while aiming down sights
     const ads = 1 - 0.7 * this.aimT;
     const R = this.recoil;
-    R.vz += 1.6 * amount * ads;
-    R.vp += 5.5 * amount * ads;
-    R.vy += (Math.random() - 0.5) * 2.4 * amount * ads;
-    R.vr += (Math.random() - 0.5) * 4.0 * amount * ads;
+    const rocket = this.mode === 1;
+    R.vz += (rocket ? 3.2 : 1.2) * amount * ads;
+    R.vp += (rocket ? 3.5 : 5.4) * amount * ads;
+    R.vy += (rocket ? (this._rocketSide % 2 ? 0.9 : -0.9) : (Math.random() - 0.5) * 0.6) * amount * ads;
+    R.vr += (rocket ? 1 : (Math.random() - 0.5) * 0.8) * amount * ads;
     // rifle fires from the top barrel; rockets alternate the lower tubes
     const m = this.mode === 0 ? this._muzzles[0] : this._muzzles[1 + (this._rocketSide++ % 2)];
     this.flash.position.copy(m);

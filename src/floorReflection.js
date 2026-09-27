@@ -7,7 +7,7 @@ import { Reflector } from 'three/addons/objects/Reflector.js';
  * it's faint looking down and strong at glancing angles (LED strips, pillar
  * and players streak across the floor like polished tile).
  *
- * Rendered at half resolution, at most once per animation frame, and only for
+ * Rendered at reduced resolution, at most 30 times per second, and only for
  * the main camera — the outline normal pass and the scope camera reuse it.
  */
 const VERT = /* glsl */`
@@ -36,7 +36,7 @@ const FRAG = /* glsl */`
   }
 `;
 
-export function createFloorReflection(renderer, camera, { radius, y = 0.004, strength = 0.55, base = 0.12, scale = 0.5, layer = null } = {}) {
+export function createFloorReflection(renderer, camera, { radius, y = 0.004, strength = 0.55, base = 0.12, scale = 0.35, layer = null } = {}) {
   const res = () => {
     const s = renderer.getSize(new THREE.Vector2()).multiplyScalar(renderer.getPixelRatio() * scale);
     return [Math.max(256, Math.round(s.x)), Math.max(256, Math.round(s.y))];
@@ -72,7 +72,7 @@ export function createFloorReflection(renderer, camera, { radius, y = 0.004, str
   refl.onBeforeRender = (r, s, c) => {
     if (c !== camera) return;
     const now = performance.now();
-    if (now - lastT < 6) return;
+    if (now - lastT < 33) return;
     lastT = now;
     render(r, s, c);
   };

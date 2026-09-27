@@ -232,8 +232,8 @@ class AvatarAnimator {
     // hit flinch: a quick backward whip of the chest, layered after IK so the
     // hands stay on the rifle and the reaction reads in the torso
     if (this.hitT > 0.001 && this.spine && !this.deathAct) {
-      this.spine.quaternion.multiply(this._hq.setFromAxisAngle(this._hx, -0.3 * this.hitT));
-      this.hitT = Math.max(0, this.hitT - dt * 4);
+      this.spine.quaternion.multiply(this._hq.setFromAxisAngle(this._hx, -0.13 * this.hitT));
+      this.hitT = Math.max(0, this.hitT - dt * 6);
     }
   }
 

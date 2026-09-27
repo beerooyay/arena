@@ -9,3 +9,4 @@ desktop/dist/
 WhiteOutPaintballVideos/
 WhiteOutPaintball-installers/
 .vercel
+.env*

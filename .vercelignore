@@ -1,0 +1,7 @@
+# bake inputs + dev files — the runtime game never fetches these
+tools/
+whiteout/
+devserver.py
+/assets/*.fbx
+/assets/*.glb
+/assets/CoverPhoto.jpg

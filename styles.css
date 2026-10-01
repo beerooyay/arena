@@ -36,6 +36,9 @@
   --text-3: rgba(244,246,248,.48);
   --line: rgba(255,255,255,.14);
 
+  /* team identity — NEVER themed: the white team stays white in every mode */
+  --team-white: #f4f6f8;
+
   /* type scale */
   --font: 'Google Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --fs-display: 168px;   /* countdown */
@@ -352,8 +355,15 @@ kbd {
 .controls > div:last-child { border-bottom: 0; }
 .controls .keys { display: inline-flex; gap: 4px; order: 2; }
 
-/* settings (rows built by settings.js) */
-#settings-body { display: flex; flex-direction: column; gap: 20px; }
+/* settings (rows built by settings.js). The GLASS card must not scroll itself:
+   Chromium renders a broken seam where the backdrop filter's coverage ends on
+   a scrolled element. The card stays fixed; only the row list scrolls. */
+#settings-overlay .menu-card { display: flex; flex-direction: column; overflow: hidden; }
+#settings-body {
+  display: flex; flex-direction: column; gap: 20px;
+  flex: 1; min-height: 0; overflow-y: auto;
+  margin: 0 -12px; padding: 2px 12px 4px; scrollbar-width: thin;
+}
 .set-row { display: flex; flex-direction: column; gap: 10px; cursor: pointer; }
 .set-head { display: flex; justify-content: space-between; align-items: baseline; }
 .set-name { font-size: var(--fs-label); font-weight: 600; letter-spacing: var(--tr-caps); text-transform: uppercase; color: var(--text-2); }
@@ -375,7 +385,7 @@ kbd {
 .gameover-card .menu-actions { justify-content: center; }
 #gameover-result { font-size: 40px; margin-bottom: 4px; }
 #gameover-result.win-blue { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; }
-#gameover-result.win-red { color: var(--text); }
+#gameover-result.win-red { color: var(--team-white); text-shadow: 0 1px 10px rgba(0,0,0,.35); }
 .tagline { color: var(--text-2); font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 18px; }
 #combat-report { margin-top: 8px; text-align: left; }
 .cr-title { display: block; margin-bottom: 10px; }
@@ -486,10 +496,10 @@ kbd {
 }
 .kf-row.kf-out { animation: kf-row-out .3s ease forwards; }
 .kf-name-blue { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; }
-.kf-name-red { color: var(--text); }
+.kf-name-red { color: var(--team-white); text-shadow: 0 0 3px rgba(0,0,0,.55); } /* stays white in both themes */
 .kf-mark { width: 16px; height: 16px; display: block; }
 .kf-mark.kf-fill-blue { fill: url(#ff-grad); }
-.kf-mark.kf-fill-red { fill: var(--text); }
+.kf-mark.kf-fill-red { fill: var(--team-white); filter: drop-shadow(0 0 2px rgba(0,0,0,.5)); }
 .kf-gun { width: 26px; height: 13px; display: block; fill: var(--text-2); }
 @keyframes kf-row-in { from { opacity: 0; transform: translateX(18px); } to { opacity: 1; transform: none; } }
 @keyframes kf-row-out { to { opacity: 0; transform: translateX(18px); } }
@@ -539,7 +549,8 @@ kbd {
 
 /* ---------- crosshair + hitmarker ---------- */
 #crosshair {
-  position: fixed; left: 50%; top: 50%; width: 40px; height: 40px; transform: translate(-50%, -50%);
+  position: fixed; left: 50%; top: 50%; width: 40px; height: 40px;
+  transform: translate(-50%, -50%) scale(var(--bloom, 1));
   pointer-events: none; z-index: 20;
   /* white reticle with a thin dark halo so it reads on the white arena too */
   filter: drop-shadow(0 0 1px rgba(0,0,0,.75)) drop-shadow(0 0 3px rgba(0,0,0,.3));
@@ -548,6 +559,11 @@ kbd {
 .ch-ring { fill: none; stroke: rgba(255,255,255,.9); stroke-width: 1.4; }
 .ch-tick { fill: none; stroke: #fff; stroke-width: 1.6; stroke-linecap: round; }
 .ch-dot { fill: #fff; }
+/* rifle: bare centre dot. rockets: bare ring. */
+#crosshair[data-weapon="rifle"] .ch-ring, #crosshair[data-weapon="rifle"] .ch-tick { display: none; }
+#crosshair[data-weapon="rocket"] .ch-tick, #crosshair[data-weapon="rocket"] .ch-dot { display: none; }
+#crosshair.on-enemy .ch-dot { fill: #ff4848; }
+#crosshair.on-enemy .ch-ring { stroke: #ff4848; }
 #hitmarker {
   position: fixed; left: 50%; top: 50%; width: 26px; height: 26px; transform: translate(-50%, -50%);
   pointer-events: none; z-index: 22; opacity: 0;
@@ -571,54 +587,11 @@ kbd {
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.5); }
 }
 
-/* ---------- rifle scope overlay (gradient reticle) ---------- */
+/* ---------- rifle scope overlay (just a centre dot + vignette) ---------- */
 #rifle-scope { position: fixed; inset: 0; z-index: 22; pointer-events: none; opacity: 0; font-family: var(--font); }
-.bs-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse 60% 60% at 50% 50%, transparent 54%, rgba(6,8,10,.5) 76%, rgba(3,5,7,.94) 100%); }
-.bs-grid {
-  position: absolute; inset: 0; opacity: .1;
-  background-image: linear-gradient(rgba(255,96,0,1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,72,72,1) 1px, transparent 1px);
-  background-size: 46px 46px;
-  -webkit-mask-image: radial-gradient(ellipse 58% 58% at 50% 50%, #000 60%, transparent 82%);
-          mask-image: radial-gradient(ellipse 58% 58% at 50% 50%, #000 60%, transparent 82%);
-}
-.bs-scan { position: absolute; left: 0; right: 0; height: 2px; top: 0; background: var(--grad); opacity: .3; animation: bs-scan 4.5s linear infinite; }
-@keyframes bs-scan { 0% { top: 8%; } 100% { top: 92%; } }
-.bs-frame { position: absolute; width: 44px; height: 44px; border: 2px solid; border-image: var(--grad) 1; opacity: .85; }
-.bs-tl { top: 5%; left: 6%; border-right: none; border-bottom: none; }
-.bs-tr { top: 5%; right: 6%; border-left: none; border-bottom: none; }
-.bs-bl { bottom: 5%; left: 6%; border-right: none; border-top: none; }
-.bs-br { bottom: 5%; right: 6%; border-left: none; border-top: none; }
-.bs-ladder { position: absolute; left: 9%; top: 0; height: 100%; }
-.bs-ladder span { position: absolute; left: 0; transform: translateY(-50%); display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; letter-spacing: var(--tr-caps); color: var(--text-2); }
-.bs-ladder i { display: inline-block; width: 12px; height: 2px; background: var(--grad); }
-.bs-data { position: absolute; top: 12%; display: flex; flex-direction: column; gap: 6px; }
-.bs-left { left: 6.5%; }
-.bs-right { right: 6.5%; text-align: right; }
-.bs-right .bs-row { justify-content: flex-end; }
-.bs-row { display: flex; align-items: baseline; gap: 8px; font-size: var(--fs-label); font-weight: 700; letter-spacing: var(--tr-caps); color: var(--text); text-shadow: 0 1px 3px rgba(0,0,0,.6); }
-.bs-row b { font-weight: 600; color: var(--text-3); }
+.bs-vignette { position: absolute; inset: 0; background: radial-gradient(ellipse 60% 60% at 50% 50%, transparent 62%, rgba(6,8,10,.28) 82%, rgba(3,5,7,.6) 100%); }
 .bs-reticle { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
-.bs-lens-ring {
-  position: absolute; left: 50%; top: 50%; width: 520px; height: 520px; transform: translate(-50%, -50%);
-  border-radius: 50%; padding: 2px; background: var(--grad); opacity: .55;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude;
-}
-.bs-h { position: absolute; left: -50vw; top: -1px; width: 100vw; height: 1.5px; background: var(--grad); opacity: .45; }
-.bs-v { position: absolute; top: -50vh; left: -1px; width: 1.5px; height: 100vh; background: var(--grad); opacity: .45; }
-.bs-tick { position: absolute; background: var(--grad); box-shadow: 0 0 4px rgba(0,0,0,.5); }
-.bs-up { left: -1.5px; top: -36px; width: 3px; height: 17px; }
-.bs-dn { left: -1.5px; top: 19px; width: 3px; height: 17px; }
-.bs-lf { top: -1.5px; left: -36px; width: 17px; height: 3px; }
-.bs-rt { top: -1.5px; left: 19px; width: 17px; height: 3px; }
-.bs-mil { position: absolute; top: -1px; width: 2px; height: 8px; background: var(--grad); opacity: .65; transform: translateY(-3px); }
-.bs-mil1 { left: -76px; } .bs-mil2 { left: -52px; } .bs-mil3 { left: 50px; } .bs-mil4 { left: 74px; }
-.bs-center-dot { position: absolute; left: 50%; top: 50%; width: 5px; height: 5px; transform: translate(-50%, -50%); border-radius: 50%; background: var(--grad); box-shadow: 0 0 8px rgba(255,96,0,.8); }
-.bs-top { position: absolute; top: 7.5%; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: var(--fs-label); font-weight: 600; letter-spacing: var(--tr-caps-wide); color: var(--text-2); }
-.bs-solution { position: absolute; bottom: 8%; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 7px; }
-.bs-status {
-  font-size: var(--fs-h2); font-weight: 700; letter-spacing: var(--tr-caps-wide);
-  background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent;
-}
+.bs-center-dot { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; transform: translate(-50%, -50%); border-radius: 50%; background: var(--grad); box-shadow: 0 0 8px rgba(255,96,0,.8), 0 0 2px rgba(0,0,0,.4); }
 
 /* ---------- damage vignette (tinted by the shooter's team) ---------- */
 #hit-vignette { position: fixed; inset: 0; z-index: 25; pointer-events: none; opacity: 0; transition: opacity .6s ease-out; --hit-color: #FF4848; }

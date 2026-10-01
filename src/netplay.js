@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { makeAvatar, disposeAvatar } from './avatarRig.js';
-import { teamSpawnXZ } from './spawns.js';
-import { blastDamage } from './bots.js';
+import { teamSpawnXZ, heading } from './spawns.js';
+import { blastDamage, exposed } from './bots.js';
 
 /**
  * NetPlay — in-game multiplayer session on top of NetClient.
@@ -37,11 +37,17 @@ function animateFromMotion(group, dt) {
   const a = Math.min(1, dt * 8);
   m.vx += ((group.position.x - m.x) / dt - m.vx) * a;
   m.vz += ((group.position.z - m.z) / dt - m.vz) * a;
+  m.stride = u.anim.dead || u.anim.airborne ? 0 : (m.stride || 0) + Math.hypot(group.position.x - m.x, group.position.z - m.z);
+  if (m.stride >= 2.5) { m.stride = 0; u.step?.(group.position); }
   m.x = group.position.x; m.z = group.position.z;
   u.anim.update(dt, m.vx, m.vz, group.rotation.y);
 }
 const SEND_HZ = 12;
 const EYE_HEIGHT = 1.7;
+function impulse(data) {
+  if (!data || data.point?.length !== 3 || data.direction?.length !== 3 || ![...data.point, ...data.direction].every(Number.isFinite)) return null;
+  return { point: new THREE.Vector3(...data.point), direction: new THREE.Vector3(...data.direction).normalize(), blast: !!data.blast };
+}
 
 // nearest positive ray-sphere hit distance, or -1
 function raySphere(origin, dir, center, radius) {
@@ -270,6 +276,7 @@ export class NetPlay {
             else if (alive && !g.alive) { // respawned: jump to the spawn, don't slide there
               anim.revive();
               g.group.position.set(x, g.group.position.y, z);
+              g.group.userData.motion = null;
             }
           }
           g.alive = !!alive;
@@ -281,7 +288,7 @@ export class NetPlay {
         if (this.isHost && !this.matchOver) {
           const shooter = this.roster.get(senderId);
           if (shooter && Number.isInteger(msg.i) && Number.isFinite(msg.d) && msg.d > 0 && msg.d <= 100) {
-            if (!this.deps.tagBot(msg.i, shooter.team, msg.d, !!msg.hs, senderId)) this.net.send({ t: 'bothurt', i: msg.i });
+            if (!this.deps.tagBot(msg.i, shooter.team, msg.d, !!msg.hs, senderId, impulse(msg.impact))) this.net.send({ t: 'bothurt', i: msg.i });
           }
         }
         break;
@@ -298,7 +305,11 @@ export class NetPlay {
         if (g) {
           if (g.alive && this.deps.onGhostBotDied) this.deps.onGhostBotDied(g.group.position);
           const anim = g.group.userData.anim;
-          if (anim) anim.die(); else g.group.visible = false;
+          if (anim) {
+            const impact = impulse(msg.impact);
+            const motion = g.group.userData.motion;
+            anim.die(impact, motion ? new THREE.Vector3(motion.vx, 0, motion.vz) : null);
+          } else g.group.visible = false;
           g.alive = false;
           if (!this.isHost) this.deps.onConfirmedKill(msg.team, this.roster.get(msg.by)?.name || 'Bot', this.botRoster[msg.i]?.name || 'Bot', msg.by);
         }
@@ -325,6 +336,7 @@ export class NetPlay {
           if (msg.alive && r.dead) {
             r.group.position.set(msg.p[0], msg.p[1] - EYE_HEIGHT, msg.p[2]);
             r.group.userData.anim?.revive();
+            r.group.userData.motion = null; r.impact = null; r._dive = false;
             r.dead = false;
           }
         }
@@ -334,7 +346,7 @@ export class NetPlay {
         const p = this.roster.get(senderId);
         const team = msg.team ?? (p ? p.team : 0);
         // netGhost: visual only — the authoritative shooter already did hits
-        this.deps.spawnProjectile(
+        if (!msg.windup && !msg.letgo && !msg.cancel) this.deps.spawnProjectile(
           new THREE.Vector3(...msg.o), new THREE.Vector3(...msg.d),
           msg.hex, team, msg.sp || 70, false, { netGhost: true },
           (msg.r || msg.k) ? { radius: msg.r, kind: msg.k } : undefined);
@@ -344,7 +356,14 @@ export class NetPlay {
         const anim = r && r.group.userData.anim;
         if (anim) {
           const dx = msg.o[0] - r.group.position.x, dz = msg.o[2] - r.group.position.z;
-          if (dx * dx + dz * dz < 6.25) anim.fire();
+          if (dx * dx + dz * dz < 6.25) {
+            if (msg.k === 'grenade') {
+              if (msg.cancel) anim.cancel();
+              else if (msg.letgo) anim.letgo();
+              else if (!msg.prepared) anim.toss(!!msg.holding);
+            }
+            else anim.fire();
+          }
         }
         break;
       }
@@ -355,17 +374,25 @@ export class NetPlay {
         if (!victim || victim.team === msg.team || (msg.shooter === null ? senderId !== 'host' : msg.shooter !== senderId || shooter?.team !== msg.team)) break;
         if (msg.victim === this.me?.id) {
           const from = msg.o && msg.o.length === 3 ? new THREE.Vector3(...msg.o) : null;
-          if (this.deps.onHit(msg.team, msg.hex, msg.by, msg.dmg, !!msg.headshot, from)) {
+          const liveFrom = this.remotes.get(senderId)?.group.position || from;
+          if (this.deps.onHit(msg.team, msg.hex, msg.by, msg.dmg, !!msg.headshot, from, liveFrom)) {
             this.confirmTag(msg.victim, msg.team, msg.hex, msg.by, msg.shooter);
           }
-        } else this.remotes.get(msg.victim)?.group.userData.anim?.hit();
+        } else {
+          const remote = this.remotes.get(msg.victim);
+          if (remote) { remote.impact = impulse(msg.impact); remote.group.userData.anim?.hit(); }
+        }
         break;
       }
       case 'tag': {
         if (this.matchOver || senderId !== msg.victim || ![0, 1].includes(msg.team) || this.roster.get(msg.victim)?.team === msg.team || !this.roster.has(msg.victim)) break;
         this.scores[msg.team]++;
         const remote = this.remotes.get(msg.victim);
-        if (remote) { remote.group.userData.anim?.die(); remote.dead = true; }
+        if (remote) {
+          const motion = remote.group.userData.motion;
+          remote.group.userData.anim?.die(remote.impact, motion ? new THREE.Vector3(motion.vx, 0, motion.vz) : null);
+          remote.dead = true;
+        }
         this.deps.onConfirmedKill(msg.team, msg.by, this.roster.get(msg.victim)?.name || 'Player', msg.shooter);
         break;
       }
@@ -376,12 +403,14 @@ export class NetPlay {
   _addRemote(p) {
     if (this.remotes.has(p.id)) return;
     const { group } = makeAvatar(p.name, TEAM_HEX[p.team]);
-    const s = teamSpawnXZ(p.team, 0);
+    const s = teamSpawnXZ(p.team, this.spawnSlotFor(p.id));
     group.position.set(s.x, 0, s.z);
+    group.rotation.y = heading(s.x, s.z);
+    group.userData.step = this.deps.onStep;
     this.deps.scene.add(group);
     this.remotes.set(p.id, {
       group,
-      target: { x: group.position.x, y: EYE_HEIGHT, z: group.position.z, ry: 0 },
+      target: { x: group.position.x, y: EYE_HEIGHT, z: group.position.z, ry: group.rotation.y },
     });
   }
 
@@ -402,14 +431,17 @@ export class NetPlay {
   _createGhosts() {
     if (this.isHost) return; // host shows its own real bots
     this._clearGhosts();
+    const slots = this.humanCounts();
     for (const b of this.botRoster) {
       const { group } = makeAvatar(b.name, TEAM_HEX[b.team]);
-      const s = teamSpawnXZ(b.team, 0);
+      const s = teamSpawnXZ(b.team, slots[b.team]++);
       group.position.set(s.x, 0, s.z);
+      group.rotation.y = heading(s.x, s.z);
+      group.userData.step = this.deps.onStep;
       this.deps.scene.add(group);
       this.ghostBots.push({
         group, alive: true,
-        target: { x: group.position.x, z: group.position.z, ry: 0 },
+        target: { x: group.position.x, z: group.position.z, ry: group.rotation.y },
       });
     }
   }
@@ -427,6 +459,7 @@ export class NetPlay {
     const k = Math.min(1, dt * 10);
     for (const r of this.remotes.values()) {
       const g = r.group;
+      if (r.dead) { animateFromMotion(g, dt); continue; }
       g.position.x += (r.target.x - g.position.x) * k;
       g.position.z += (r.target.z - g.position.z) * k;
       g.position.y += ((r.target.y - EYE_HEIGHT) - g.position.y) * k; // eye -> feet
@@ -463,7 +496,7 @@ export class NetPlay {
       this.net.send({
         t: 's',
         p: [+cam.position.x.toFixed(2), +cam.position.y.toFixed(2), +cam.position.z.toFixed(2)],
-        ry: +_euler.y.toFixed(3),
+        ry: +(_euler.y + Math.PI).toFixed(3),
         st: this.deps.moveFlags ? this.deps.moveFlags() : 0,
         alive: this.deps.isAlive ? this.deps.isAlive() : true,
       });
@@ -534,7 +567,7 @@ export class NetPlay {
       hex,
       team: team ?? (this.me ? this.me.team : 0),
     };
-    if (opts) { m.r = opts.radius; m.sp = opts.speed; m.k = opts.kind; }
+    if (opts) { m.r = opts.radius; m.sp = opts.speed; m.k = opts.kind; m.windup = opts.windup; m.prepared = opts.prepared; m.holding = opts.holding; m.letgo = opts.letgo; m.cancel = opts.cancel; }
     this.net.send(m);
   }
 
@@ -574,10 +607,13 @@ export class NetPlay {
 
   _myName() { return (this.roster.get(this.me.id) || {}).name || 'A player'; }
 
-  sendHit(victim, hex, dmg, headshot = false, origin = null, team = this.me?.team, by = null) {
+  sendHit(victim, hex, dmg, headshot = false, origin = null, team = this.me?.team, by = null, blast = false, direction = null) {
     if (!this.active || this.matchOver) return;
-    this.remotes.get(victim)?.group.userData.anim?.hit();
-    this.net.send({ t: 'hit', victim, hex, dmg, headshot, team, by: by || this._myName(),
+    const remote = this.remotes.get(victim);
+    const point = remote?.group.position.clone().add(new THREE.Vector3(0, headshot ? 1.8 : 1.2, 0));
+    const impact = point && origin ? { point: point.toArray(), direction: (direction?.clone() || point.clone().sub(origin)).normalize().toArray(), blast } : null;
+    if (remote) { remote.impact = impulse(impact); remote.group.userData.anim?.hit(); }
+    this.net.send({ t: 'hit', victim, hex, dmg, headshot, team, by: by || this._myName(), impact,
       shooter: by ? null : this.me.id, o: origin ? [origin.x, origin.y, origin.z] : null });
   }
 
@@ -588,18 +624,22 @@ export class NetPlay {
   }
 
   /** Report bot damage to the host. */
-  sendBotHit(botIndex, dmg, headshot = false) {
+  sendBotHit(botIndex, dmg, headshot = false, origin = null, blast = false, direction = null) {
     if (!this.active || this.matchOver) return;
-    this.ghostBots[botIndex]?.group.userData.anim?.hit();
-    if (this.isHost) this.deps.tagBot(botIndex, this.me.team, dmg, headshot, this.me.id);
-    else this.net.send({ t: 'bothit', i: botIndex, d: dmg, hs: headshot });
+    const ghost = this.ghostBots[botIndex];
+    ghost?.group.userData.anim?.hit();
+    const point = ghost?.group.position.clone().add(new THREE.Vector3(0, headshot ? 1.8 : 1.2, 0));
+    const impact = point && origin ? { point: point.toArray(), direction: (direction?.clone() || point.clone().sub(origin)).normalize().toArray(), blast } : null;
+    if (this.isHost) this.deps.tagBot(botIndex, this.me.team, dmg, headshot, this.me.id, impulse(impact));
+    else this.net.send({ t: 'bothit', i: botIndex, d: dmg, hs: headshot, impact });
   }
 
   /** Host: a bot died (any cause) — score it and tell everyone. */
-  hostBotDied(botIndex, byTeamId, shooterId = null) {
+  hostBotDied(botIndex, byTeamId, shooterId = null, impact = null) {
     if (!this.isHost || !this.active || this.matchOver) return;
     this.scores[byTeamId]++;
-    this.net.send({ t: 'botdied', i: botIndex, team: byTeamId, by: shooterId });
+    this.net.send({ t: 'botdied', i: botIndex, team: byTeamId, by: shooterId,
+      impact: impact ? { point: impact.point.toArray(), direction: impact.direction.toArray(), blast: !!impact.blast } : null });
   }
 
   applyBlast(point, team, direct = null) {
@@ -608,16 +648,20 @@ export class NetPlay {
       if (r.dead || this.roster.get(id)?.team === team) continue;
       const g = r.group.position;
       const d = Math.hypot(g.x - point.x, g.y + 1 - point.y, g.z - point.z);
-      const dmg = blastDamage(d, direct?.kind === 'player' && direct.id === id);
-      if (dmg) { this.sendHit(id, 0xff6000, dmg, false, point); hit = true; }
+      const stuck = direct?.kind === 'player' && direct.id === id;
+      _center.copy(g); _center.y += 1;
+      const dmg = stuck || exposed(point, _center, this.deps.arena.losBlockers) ? blastDamage(d, stuck) : 0;
+      if (dmg) { this.sendHit(id, 0xff6000, dmg, false, point, team, null, true); hit = true; }
     }
     for (let i = 0; i < this.ghostBots.length; i++) {
       const g = this.ghostBots[i];
       if (!g.alive || this.botRoster[i]?.team === team) continue;
       const p = g.group.position;
       const d = Math.hypot(p.x - point.x, p.y + 1 - point.y, p.z - point.z);
-      const dmg = blastDamage(d, direct?.kind === 'bot' && direct.index === i);
-      if (dmg) { this.sendBotHit(i, dmg); hit = true; }
+      const stuck = direct?.kind === 'bot' && direct.index === i;
+      _center.copy(p); _center.y += 1;
+      const dmg = stuck || exposed(point, _center, this.deps.arena.losBlockers) ? blastDamage(d, stuck) : 0;
+      if (dmg) { this.sendBotHit(i, dmg, false, point, true); hit = true; }
     }
     return hit;
   }

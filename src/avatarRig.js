@@ -3,7 +3,9 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { clone as cloneSkinned } from 'three/addons/utils/SkeletonUtils.js';
 import { fixHandThighBleed } from './avatar/fixskin.js';
 import { makeArmIK } from './avatar/armik.js';
+import { Ragdoll } from './physics.js';
 import { makeAvatar as makeLegacyAvatar, disposeAvatar as disposeLegacyAvatar, makeNameSprite } from './playerGlow.js';
+import { NO_OUTLINE_LAYER } from './outline.js';
 
 /**
  * Rigged player avatars: Tripo armour suits on a Mixamo-named skeleton, driven
@@ -119,6 +121,74 @@ export function preloadAvatars() {
 export const avatarsReady = () => !!(templates.p1 && templates.p2 && rifleTemplate);
 
 const smooth = (x, a, b) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+export const duration = 1, release = 0.58, hold = 0.3;
+let grenade = null;
+export function setGrenade(factory) { grenade = factory; }
+
+function grip(model, clip) {
+  const tracks = clip.tracks.filter((track) => /mixamorigLeft(Shoulder|Arm|ForeArm|Hand)/.test(track.name)).map((track) => ({
+    bone: model.getObjectByName(track.name.split('.')[0]), sample: track.createInterpolant(),
+    base: new THREE.Quaternion(), wrote: new THREE.Quaternion(),
+  }));
+  const hand = model.getObjectByName('mixamorigLeftHand');
+  const palm = ['Middle1', 'Index1', 'Pinky1', 'Middle3'].map((finger) => model.getObjectByName('mixamorigLeftHand' + finger));
+  const center = new THREE.Vector3(), along = new THREE.Vector3(), across = new THREE.Vector3(), normal = new THREE.Vector3(), curl = new THREE.Vector3();
+  let origin = null;
+  const pose = new THREE.Quaternion();
+  let time = duration, orb = null, written = false, holding = false, charged = false;
+  const clear = () => {
+    if (!orb) return;
+    orb.removeFromParent(); orb.userData.glow.material.dispose(); orb = null;
+  };
+  const restore = () => {
+    if (!written) return;
+    for (const { bone, base, wrote } of tracks) if (1 - Math.abs(bone.quaternion.dot(wrote)) < 1e-9) bone.quaternion.copy(base);
+    written = false;
+  };
+  return {
+    hand, restore,
+    origin: () => origin?.clone() || hand.getWorldPosition(new THREE.Vector3()),
+    get brace() { return charged ? smooth(time, 0, hold) * (1 - smooth(time, hold, release)) : 0; },
+    letgo: () => { holding = false; },
+    reset: () => { restore(); time = duration; holding = false; charged = false; clear(); },
+    toss: (held = false) => {
+      restore(); clear(); time = 0; holding = held; charged = held; origin = null;
+      if (grenade) {
+        orb = grenade(); hand.add(orb);
+        model.updateWorldMatrix(true, true);
+        orb.scale.setScalar(1 / hand.getWorldScale(new THREE.Vector3()).x);
+        orb.position.set(0, 0.02, 0.025);
+        orb.traverse((object) => { if (!object.isSprite) object.layers.mask = hand.layers.mask; });
+      }
+    },
+    update: (dt) => {
+      if (time >= duration) return;
+      time = Math.min(holding ? hold : duration, time + dt);
+      const progress = time / duration;
+      const weight = smooth(progress, 0, 0.15) * (1 - smooth(progress, 0.72, 1));
+      for (const track of tracks) {
+        track.base.copy(track.bone.quaternion);
+        pose.fromArray(track.sample.evaluate(progress * clip.duration)).normalize();
+        track.bone.quaternion.slerp(pose, weight);
+        track.wrote.copy(track.bone.quaternion);
+      }
+      written = true;
+      if (orb) {
+        palm[0].getWorldPosition(center);
+        along.copy(center).sub(hand.getWorldPosition(new THREE.Vector3())).normalize();
+        palm[2].getWorldPosition(across); across.sub(palm[1].getWorldPosition(curl)).normalize();
+        normal.crossVectors(along, across).normalize();
+        palm[3].getWorldPosition(curl); curl.sub(center);
+        if (normal.dot(curl) < 0) normal.negate();
+        center.addScaledVector(normal, 0.055).addScaledVector(along, 0.025);
+        orb.position.copy(hand.worldToLocal(center));
+        orb.scale.setScalar(1 / hand.getWorldScale(new THREE.Vector3()).x);
+        if (time >= release) { origin = orb.getWorldPosition(new THREE.Vector3()); clear(); }
+      }
+      if (time >= release) clear();
+    },
+  };
+}
 
 /**
  * Drives one avatar's clips from its ground velocity: directional run blend
@@ -126,6 +196,7 @@ const smooth = (x, a, b) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a
  */
 class AvatarAnimator {
   constructor(model, t) {
+    this.model = model; this.doll = null; this.pending = null;
     this.mixer = new THREE.AnimationMixer(model);
     this.act = {};
     this.w = {};
@@ -145,12 +216,6 @@ class AvatarAnimator {
     this.act.fire = this.mixer.clipAction(recoil, undefined, THREE.AdditiveAnimationBlendMode);
     this.act.fire.setLoop(THREE.LoopOnce, 1);
 
-    for (const k of ['death', 'deathRun']) {
-      const a = this.mixer.clipAction(t.clips[k]);
-      a.setLoop(THREE.LoopOnce, 1);
-      a.clampWhenFinished = true;
-      this.act[k] = a;
-    }
     // jump plays once and holds near the apex while airborne; the dive roll
     // windows in and out over its own clip so it reads as one smooth motion
     for (const k of ['jump', 'roll']) {
@@ -159,8 +224,7 @@ class AvatarAnimator {
       a.clampWhenFinished = true;
       this.act[k] = a;
     }
-    this.deathAct = null;
-    this.deathW = 0;
+    this.grip = grip(model, t.clips.grenade);
     this.speed = 0;
     this.airborne = false;
     this.airW = 0;
@@ -168,6 +232,7 @@ class AvatarAnimator {
     this.spine = model.getObjectByName('mixamorigSpine2') || model.getObjectByName('mixamorigSpine1') || model.getObjectByName('mixamorigSpine');
     this._hq = new THREE.Quaternion();
     this._hx = new THREE.Vector3(1, 0, 0);
+    this.flinch = { base: new THREE.Quaternion(), wrote: new THREE.Quaternion(NaN, NaN, NaN, NaN) };
 
     this.tweaks = t.tweaks;
     this.ik = t.tweaks ? makeArmIK(model) : null;
@@ -175,65 +240,74 @@ class AvatarAnimator {
 
   /** @param vx,vz world-space ground velocity (units/s); yaw = avatar rotation.y */
   update(dt, vx = 0, vz = 0, yaw = 0) {
-    const k = Math.min(1, dt * 8); // blend rate between idle/run/strafe/sprint
+    if (this.doll) return;
+    if (this.pending) {
+      this.pending.time -= dt;
+      if (this.pending.time <= 0) {
+        this.doll = new Ragdoll(this.model, this.pending.impact, this.pending.velocity);
+        this.pending = null; this.mixer.timeScale = 0;
+        return;
+      }
+    }
+    if (this.spine && 1 - Math.abs(this.spine.quaternion.dot(this.flinch.wrote)) < 1e-9) this.spine.quaternion.copy(this.flinch.base);
+    this.grip.restore();
+    const k = 1 - Math.exp(-dt * 8); // blend rate between idle/run/strafe/sprint
     const target = { idle: 0, runF: 0, runB: 0, runL: 0, runR: 0, sprint: 0 };
     let timeScale = 1;
-    if (!this.deathAct) {
-      // velocity in the avatar's frame: +z forward, +x the avatar's left
-      const c = Math.cos(yaw), s = Math.sin(yaw);
-      const lx = c * vx - s * vz, lz = s * vx + c * vz;
-      const speed = Math.hypot(lx, lz);
-      this.speed += (speed - this.speed) * k;
-      const loco = smooth(speed, 0.4, 2.5);
-      if (speed > 1e-3) {
-        const f = Math.max(0, lz) / speed, b = Math.max(0, -lz) / speed;
-        const l = Math.max(0, lx) / speed, r = Math.max(0, -lx) / speed;
-        const wF = f * f, wB = b * b, wL = l * l, wR = r * r;
-        const sprint = smooth(speed, RUN_SPEED + 2, SPRINT_SPEED + 3) * wF;
-        target.runF = loco * wF * (1 - sprint);
-        target.sprint = loco * wF * sprint;
-        target.runB = loco * wB;
-        target.runL = loco * wL;
-        target.runR = loco * wR;
-        const native = RUN_SPEED + (SPRINT_SPEED - RUN_SPEED) * sprint;
-        timeScale = THREE.MathUtils.clamp(speed / native, 0.7, 1.8);
-      }
-      target.idle = 1 - loco;
+    // velocity in the avatar's frame: +z forward, +x the avatar's left
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const lx = c * vx - s * vz, lz = s * vx + c * vz;
+    const speed = Math.hypot(lx, lz);
+    this.speed += (speed - this.speed) * k;
+    const loco = smooth(speed, 0.4, 2.5);
+    if (speed > 1e-3) {
+      const f = Math.max(0, lz) / speed, b = Math.max(0, -lz) / speed;
+      const l = Math.max(0, lx) / speed, r = Math.max(0, -lx) / speed;
+      const wF = f * f, wB = b * b, wL = l * l, wR = r * r;
+      const sprint = smooth(speed, RUN_SPEED + 0.8, SPRINT_SPEED + 0.5) * wF;
+      target.runF = loco * wF * (1 - sprint);
+      target.sprint = loco * wF * sprint;
+      target.runB = loco * wB;
+      target.runL = loco * wL;
+      target.runR = loco * wR;
+      const native = RUN_SPEED + (SPRINT_SPEED - RUN_SPEED) * sprint;
+      timeScale = THREE.MathUtils.clamp(speed / native, 0.7, 1.8);
     }
+    target.idle = 1 - loco;
     // dive roll windows over its own clip: ramp in, out, done
     const rollA = this.act.roll;
     const rollK = rollA.isRunning() ? Math.min(1, rollA.time / rollA.getClip().duration) : 1;
-    const rollW = rollK < 1 && !this.deathAct ? Math.sin(rollK * Math.PI) : 0;
+    const rollW = rollK < 1 ? Math.sin(rollK * Math.PI) : 0;
     rollA.setEffectiveWeight(rollW);
     // airborne: jump clip takes over from the ground blend, holding the apex
     this.airW += ((this.airborne ? 1 : 0) - this.airW) * Math.min(1, dt * 10);
     const jumpA = this.act.jump;
     if (this.airW < 0.03 && !this.airborne) jumpA.stop();
     else {
-      jumpA.setEffectiveWeight(this.deathAct ? 0 : this.airW);
+      jumpA.setEffectiveWeight(this.airW);
       const jd = jumpA.getClip().duration;
       jumpA.setEffectiveTimeScale(this.airborne && jumpA.time > jd * 0.45 ? 0.07 : 1);
     }
-    const baseW = (1 - this.deathW) * (1 - this.airW) * (1 - rollW);
+    const baseW = (1 - this.airW) * (1 - rollW);
     for (const key of LOCO) {
       this.w[key] += (target[key] - this.w[key]) * k;
       const a = this.act[key];
       a.setEffectiveWeight(this.w[key] * baseW);
       if (key !== 'idle') a.setEffectiveTimeScale(timeScale);
     }
-    if (this.deathAct) {
-      this.deathW = Math.min(1, this.deathW + dt / 0.15);
-      this.deathAct.setEffectiveWeight(this.deathW);
-    }
     this.mixer.update(dt);
-    if (this.ik && !this.deathAct) {
+    if (this.ik) {
       this.ik(this.tweaks.hand, { leftElbowDown: this.tweaks.leftElbowDown, headPitch: this.tweaks.headPitch });
     }
+    this.grip.update(dt);
     // hit flinch: a quick backward whip of the chest, layered after IK so the
     // hands stay on the rifle and the reaction reads in the torso
-    if (this.hitT > 0.001 && this.spine && !this.deathAct) {
-      this.spine.quaternion.multiply(this._hq.setFromAxisAngle(this._hx, -0.13 * this.hitT));
-      this.hitT = Math.max(0, this.hitT - dt * 6);
+    if (this.hitT > 0.001 && this.spine) {
+      const flinch = Math.sin(Math.PI * Math.min(1, this.hitT)) * this.hitT;
+      this.flinch.base.copy(this.spine.quaternion);
+      this.spine.quaternion.multiply(this._hq.setFromAxisAngle(this._hx, -(this.pending ? 0.3 : 0.18) * flinch));
+      this.flinch.wrote.copy(this.spine.quaternion);
+      this.hitT = Math.max(0, this.hitT - dt * 3.2);
     }
   }
 
@@ -246,18 +320,25 @@ class AvatarAnimator {
 
   /** Dive roll — one playthrough, windowed over the locomotion blend. */
   roll() {
-    if (this.deathAct) return;
+    if (this.dead) return;
     this.act.roll.reset().play();
   }
 
   /** Non-lethal hit reaction — chest whips back briefly. */
   hit() {
-    if (!this.deathAct) this.hitT = 1;
+    if (!this.dead) this.hitT = 0.9;
   }
+
+  toss(held = false) {
+    if (!this.dead) this.grip.toss(held);
+  }
+
+  letgo() { this.grip.letgo(); }
+  cancel() { this.grip.reset(); }
 
   /** Kick the additive recoil (upper body only). */
   fire() {
-    if (this.deathAct) return;
+    if (this.dead) return;
     const a = this.act.fire;
     // let most of a kick play out before restarting it: re-triggering every
     // shot of a fast burst just makes the upper body jitter
@@ -266,34 +347,86 @@ class AvatarAnimator {
   }
 
   /** Play a death clip; the running fall if they were moving fast. */
-  die() {
-    if (this.deathAct) return;
-    this.deathAct = this.speed > 3 ? this.act.deathRun : this.act.death;
-    this.deathAct.reset().setEffectiveWeight(0).play();
-    this.deathW = 0;
-    this.act.fire.stop();
+  die(impact = null, velocity = null) {
+    if (this.dead) return;
+    this.grip.reset();
+    this.pending = { time: 0.16, impact, velocity: velocity?.clone() || null };
+    this.hitT = 1;
+    this.act.fire.reset().setEffectiveTimeScale(0.9).setEffectiveWeight(1).play();
+    if (this.model.parent.userData.label) this.model.parent.userData.label.visible = false;
   }
 
   /** Back on their feet (respawn): snap to idle. */
   revive() {
-    if (this.deathAct) this.deathAct.stop();
-    this.deathAct = null;
-    this.deathW = 0;
+    this.doll?.dispose(); this.doll = null; this.pending = null;
+    this.mixer.timeScale = 1;
+    this.act.fire.stop();
+    if (this.model.parent.userData.label) this.model.parent.userData.label.visible = true;
     this.speed = 0;
     this.airborne = false; this.airW = 0; this.hitT = 0;
-    this.act.jump.stop(); this.act.roll.stop();
+    this.act.jump.stop(); this.act.roll.stop(); this.grip.reset();
     for (const key of LOCO) {
       this.w[key] = key === 'idle' ? 1 : 0;
       this.act[key].setEffectiveWeight(this.w[key]);
     }
+    this.update(0);
   }
 
-  get dead() { return !!this.deathAct; }
+  get dead() { return !!(this.doll || this.pending); }
 
   dispose(model) {
+    this.doll?.dispose(); this.grip.reset();
     this.mixer.stopAllAction();
     this.mixer.uncacheRoot(model);
   }
+}
+
+// Night-mode rim: a second skinned mesh sharing each suit's skeleton, puffed
+// slightly along the normals, drawn backside-out with a fresnel falloff — the
+// suits keep their design but catch a team-coloured edge in the dark arena.
+// Off in daylight (the black-vs-white armour reads fine on its own).
+const RIM_VERT = /* glsl */`
+  #include <common>
+  #include <skinning_pars_vertex>
+  varying vec3 vN; varying vec3 vV;
+  void main() {
+    #include <beginnormal_vertex>
+    #include <skinbase_vertex>
+    #include <skinnormal_vertex>
+    #include <begin_vertex>
+    #include <skinning_vertex>
+    transformed += normalize(objectNormal) * 0.022;
+    vec4 wp = modelMatrix * vec4(transformed, 1.0);
+    vN = normalize(mat3(modelMatrix) * objectNormal);
+    vV = cameraPosition - wp.xyz;
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }`;
+const RIM_FRAG = /* glsl */`
+  uniform vec3 uColor; uniform float uStrength;
+  varying vec3 vN; varying vec3 vV;
+  void main() {
+    float rim = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 1.7);
+    vec3 col = uColor * (0.35 + rim * 1.9); // over 1.0 at the edge so bloom reads it
+    gl_FragColor = vec4(col, (rim * 0.92 + 0.09) * uStrength);
+  }`;
+const rimMats = new Map(); // colour -> one shared material across every avatar
+let rimStrength = 0;
+function rimMaterial(hex) {
+  const c = hex === 0xff6000 ? 0xff9438 : 0xeaf0ff; // fire led orange, white cool
+  let m = rimMats.get(c);
+  if (!m) {
+    m = new THREE.ShaderMaterial({
+      uniforms: { uColor: { value: new THREE.Color(c) }, uStrength: { value: rimStrength } },
+      vertexShader: RIM_VERT, fragmentShader: RIM_FRAG,
+      transparent: true, depthWrite: false, side: THREE.BackSide, toneMapped: false,
+    });
+    rimMats.set(c, m);
+  }
+  return m;
+}
+export function setAvatarRim(on) {
+  rimStrength = on ? 1.0 : 0;
+  for (const m of rimMats.values()) m.uniforms.uStrength.value = rimStrength;
 }
 
 function makeRiggedAvatar(name, hex) {
@@ -302,6 +435,20 @@ function makeRiggedAvatar(name, hex) {
   const model = cloneSkinned(t.scene);
   model.scale.setScalar(SCALE);
   group.add(model);
+
+  // rim shells ride the same skeleton, so they follow animation AND ragdolls
+  const skins = [];
+  model.traverse((o) => { if (o.isSkinnedMesh && !o.geometry.morphAttributes.position) skins.push(o); });
+  const rimMat = rimMaterial(hex);
+  for (const o of skins) {
+    const rim = new THREE.SkinnedMesh(o.geometry, rimMat);
+    rim.bind(o.skeleton, o.bindMatrix);
+    rim.frustumCulled = false;
+    rim.castShadow = rim.receiveShadow = false;
+    rim.renderOrder = 2;
+    rim.layers.set(NO_OUTLINE_LAYER);
+    o.parent.add(rim);
+  }
 
   const hand = model.getObjectByName('mixamorigRightHand');
   const holder = new THREE.Group();
@@ -321,6 +468,7 @@ function makeRiggedAvatar(name, hex) {
   // Legacy-shaped fields so callers that only need group/label/head keep working.
   const head = model.getObjectByName('mixamorigHead');
   group.userData = { group, model, anim, label, head, marker: holder, rigged: true };
+  anim.update(0);
   return group.userData;
 }
 
@@ -397,7 +545,27 @@ export function makeFirstPersonArms(hex) {
     .compose(t.rifle.pos, t.rifle.quat, new THREE.Vector3(RIFLE_SCALE, RIFLE_SCALE, RIFLE_SCALE))
     .premultiply(hand.matrixWorld)
     .multiply(new THREE.Matrix4().makeTranslation(RIFLE_GRIP.x, RIFLE_GRIP.y, RIFLE_GRIP.z));
-  return { model, rifleMatrix };
+  const bones = [];
+  model.traverse((bone) => { if (bone.isBone) bones.push({ bone, pose: bone.quaternion.clone() }); });
+  const thrower = grip(model, t.clips.grenade);
+  const restore = () => { for (const { bone, pose } of bones) bone.quaternion.copy(pose); };
+  return {
+    model, rifleMatrix, hand: thrower.hand, origin: thrower.origin,
+    reset: () => { thrower.reset(); restore(); },
+    toss: thrower.toss, letgo: thrower.letgo,
+    update: (dt) => {
+      thrower.restore(); restore(); thrower.update(dt);
+      if (!thrower.brace) return;
+      let camera = model.parent;
+      while (camera && !camera.isCamera) camera = camera.parent;
+      if (!camera) return;
+      const target = camera.localToWorld(new THREE.Vector3(-0.3, -0.22, -0.65));
+      const chest = model.getObjectByName('mixamorigSpine2');
+      target.sub(thrower.hand.getWorldPosition(new THREE.Vector3())).multiplyScalar(thrower.brace)
+        .applyQuaternion(chest.getWorldQuaternion(new THREE.Quaternion()).invert()).divideScalar(chest.getWorldScale(new THREE.Vector3()).x);
+      ik(null, { leftHand: target, leftElbowDown: 0.5 });
+    },
+  };
 }
 
 /**

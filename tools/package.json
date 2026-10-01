@@ -8,6 +8,7 @@
   },
   "devDependencies": {
     "@gltf-transform/cli": "^4.1.0",
+    "cannon-es": "0.20.0",
     "three": "0.160.0"
   }
 }

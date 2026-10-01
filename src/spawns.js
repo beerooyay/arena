@@ -1,5 +1,6 @@
 let arenaSize = 34;
 export function setArenaSize(size) { arenaSize = size; }
+export function heading(x, z, camera = false) { return Math.atan2(camera ? x : -x, camera ? z : -z); }
 
 const lane = [-0.38, -0.13, 0.13, 0.38];
 export const SPAWNS_PER_TEAM = lane.length;
@@ -9,8 +10,8 @@ export const SPAWN_EYE_Y = 1.7;
 // across the four lanes.
 export function teamSpawnXZ(teamId, slot = 0) {
   const s = ((slot % SPAWNS_PER_TEAM) + SPAWNS_PER_TEAM) % SPAWNS_PER_TEAM;
-  const x = lane[s] * arenaSize;
-  const z = (teamId === 0 ? 1 : -1) * (arenaSize - 9.5);
+  const x = lane[s] * (arenaSize - 2.5);
+  const z = (teamId === 0 ? 1 : -1) * (arenaSize - 2.5);
   return { x, z };
 }
 
@@ -19,14 +20,18 @@ export function teamSpawnXZ(teamId, slot = 0) {
 // of spawning anywhere, minus spawning on top of a rifle.
 const RING = 8;
 export function scatterSpawnXZ(avoid = null) {
-  const r = arenaSize - 10;
-  const safe = [];
-  for (let i = 0; i < RING * 2; i++) {
-    const a = (i / RING) * Math.PI * 2 + (i >= RING ? Math.PI / RING : 0) + (Math.random() - 0.5) * 0.35;
-    const x = Math.sin(a) * r, z = Math.cos(a) * r;
-    let d = Infinity;
-    if (avoid) for (const e of avoid) { const dd = Math.hypot(e.x - x, e.z - z); if (dd < d) d = dd; }
-    if (d > 7) safe.push({ x, z });
+  const candidates = [], phase = Math.random() * Math.PI * 2;
+  for (let i = 0; i < RING * 3; i++) {
+    const a = phase + i / (RING * 3) * Math.PI * 2;
+    const sx = Math.sin(a), sz = Math.cos(a);
+    const r = (arenaSize - 2.5) / Math.max(Math.abs(sx), Math.abs(sz), (Math.abs(sx) + Math.abs(sz)) / Math.SQRT2);
+    const x = sx * r, z = sz * r;
+    let distance = Infinity;
+    if (avoid) for (const e of avoid) distance = Math.min(distance, Math.hypot(e.x - x, e.z - z));
+    candidates.push({ x, z, distance });
   }
-  return safe.length ? safe[(Math.random() * safe.length) | 0] : { x: (Math.random() - 0.5) * r, z: (Math.random() - 0.5) * r };
+  const best = Math.max(...candidates.map((point) => point.distance));
+  const safe = candidates.filter((point) => point.distance >= Math.min(7, best - 1));
+  const { x, z } = safe[(Math.random() * safe.length) | 0];
+  return { x, z };
 }

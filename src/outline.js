@@ -151,30 +151,40 @@ const FinishShader = {
 // normal/depth prepass, so they get no contour outline (e.g. smoke sprites).
 export const NO_OUTLINE_LAYER = 11;
 
+// The normal/depth prepass re-renders the whole scene — edge detection doesn't
+// need full resolution, so it runs at half scale (the single biggest render
+// saving in the pipeline). The beauty pass gets real MSAA via the composer's
+// render targets instead: crisp geometry edges, no canvas-level antialiasing.
+const PREPASS_SCALE = 0.5;
+
 export function createOutline(renderer, scene, camera) {
   camera.layers.enable(NO_OUTLINE_LAYER); // so the beauty pass still shows them
   const size = renderer.getSize(new THREE.Vector2());
   const pr = renderer.getPixelRatio();
   const w = Math.floor(size.x * pr);
   const h = Math.floor(size.y * pr);
+  const pw = Math.floor(w * PREPASS_SCALE), ph = Math.floor(h * PREPASS_SCALE);
 
   // Buffer that captures view-space normals (rgb) + depth texture.
-  const normalRT = new THREE.WebGLRenderTarget(w, h, {
-    minFilter: THREE.NearestFilter,
-    magFilter: THREE.NearestFilter,
+  const normalRT = new THREE.WebGLRenderTarget(pw, ph, {
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
   });
-  normalRT.depthTexture = new THREE.DepthTexture(w, h);
+  normalRT.depthTexture = new THREE.DepthTexture(pw, ph);
   normalRT.depthTexture.type = THREE.UnsignedIntType;
 
   const normalMaterial = new THREE.MeshNormalMaterial();
 
-  const composer = new EffectComposer(renderer);
+  // 4x MSAA on the composer's buffers — the beauty render resolves real
+  // multisampled edges (canvas MSAA does nothing once a composer is in play).
+  const msaaRT = new THREE.WebGLRenderTarget(w, h, { type: THREE.HalfFloatType, samples: 4 });
+  const composer = new EffectComposer(renderer, msaaRT);
   composer.addPass(new RenderPass(scene, camera));
 
   const outlinePass = new ShaderPass(OutlineShader);
   outlinePass.uniforms.tNormal.value = normalRT.texture;
   outlinePass.uniforms.tDepth.value = normalRT.depthTexture;
-  outlinePass.uniforms.resolution.value.set(w, h);
+  outlinePass.uniforms.resolution.value.set(pw, ph);
   outlinePass.uniforms.cameraNear.value = camera.near;
   outlinePass.uniforms.cameraFar.value = camera.far;
   composer.addPass(outlinePass);
@@ -199,8 +209,8 @@ export function createOutline(renderer, scene, camera) {
   function setSize(width, height) {
     composer.setSize(width, height);
     const pr2 = renderer.getPixelRatio();
-    const bw = Math.floor(width * pr2);
-    const bh = Math.floor(height * pr2);
+    const bw = Math.floor(width * pr2 * PREPASS_SCALE);
+    const bh = Math.floor(height * pr2 * PREPASS_SCALE);
     normalRT.setSize(bw, bh);
     outlinePass.uniforms.resolution.value.set(bw, bh);
   }

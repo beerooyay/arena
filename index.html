@@ -21,58 +21,22 @@
 
   <!-- Minimalist Precision Crosshair -->
   <!-- Battle-rifle reticle: thin ring + four inner ticks, bright centre dot on the shot line -->
-  <div id="crosshair" class="hidden">
+  <div id="crosshair" class="hidden" data-weapon="rifle">
     <svg class="ch-svg" viewBox="-20 -20 40 40" aria-hidden="true">
       <circle class="ch-ring" r="12.5" />
       <path class="ch-tick" d="M0 -12.5V-8.5 M0 12.5V8.5 M-12.5 0H-8.5 M12.5 0H8.5" />
-      <circle class="ch-dot" r="1.9" />
+      <circle class="ch-dot" r="2.6" />
     </svg>
   </div>
 
   <!-- Hitmarker -->
   <div id="hitmarker"><i></i><i></i></div>
 
-  <!-- Tactical Sniper Scope Overlay (Active when aiming with Battle Rifle) -->
+  <!-- Sniper scope overlay (aiming with the battle rifle): a centre dot over a
+       light vignette — nothing else -->
   <div id="rifle-scope">
     <div class="bs-vignette"></div>
-    <div class="bs-grid"></div>
-    <div class="bs-scan"></div>
-    <span class="bs-frame bs-tl"></span><span class="bs-frame bs-tr"></span>
-    <span class="bs-frame bs-bl"></span><span class="bs-frame bs-br"></span>
-
-    <div class="bs-ladder">
-      <span style="top:15%"><i></i>100</span>
-      <span style="top:35%"><i></i>075</span>
-      <span style="top:55%"><i></i>050</span>
-      <span style="top:75%"><i></i>025</span>
-    </div>
-
-    <div class="bs-data bs-left">
-      <div class="bs-row"><b>OPTIC</b><span>4X TACTICAL</span></div>
-      <div class="bs-row"><b>CAL</b><span>PRECISION BR</span></div>
-      <div class="bs-row"><b>KILL</b><span>1-SHOT HEAD</span></div>
-    </div>
-
-    <div class="bs-data bs-right">
-      <div class="bs-row"><b>MODE</b><span id="bs-tgt">SEMI-AUTO</span></div>
-      <div class="bs-row"><b>RANGE</b><span id="bs-rng">OPTIMAL</span></div>
-      <div class="bs-row"><b>SYS</b><span id="bs-sys">READY</span></div>
-    </div>
-
-    <div class="bs-reticle">
-      <div class="bs-lens-ring"></div>
-      <span class="bs-h"></span><span class="bs-v"></span>
-      <span class="bs-tick bs-up"></span><span class="bs-tick bs-dn"></span>
-      <span class="bs-tick bs-lf"></span><span class="bs-tick bs-rt"></span>
-      <span class="bs-mil bs-mil1"></span><span class="bs-mil bs-mil2"></span>
-      <span class="bs-mil bs-mil3"></span><span class="bs-mil bs-mil4"></span>
-      <span class="bs-center-dot"></span>
-    </div>
-
-    <div class="bs-top">// FREE FIRE ARENA &middot; PRECISION OPTICS &middot; 1-HIT HEADSHOT //</div>
-
-    <div class="bs-solution">
-    </div>
+    <div class="bs-reticle"><span class="bs-center-dot"></span></div>
   </div>
 
   <!-- Damage Vignette (attacker's team colour) + directional hit arc -->
@@ -268,7 +232,7 @@
         <div><span class="keys"><kbd>RMB</kbd></span>Aim / scope</div>
         <div><span class="keys"><kbd>Q</kbd><kbd>1</kbd><kbd>2</kbd></span>Swap weapon</div>
         <div><span class="keys"><kbd>R</kbd></span>Reload</div>
-        <div><span class="keys"><kbd>G</kbd></span>Sticky grenade</div>
+        <div><span class="keys"><kbd>G</kbd></span>Hold to ready grenade · release to throw</div>
         <div><span class="keys"><kbd>Space</kbd></span>Jump</div>
         <div><span class="keys"><kbd>Shift</kbd></span>Sprint</div>
         <div><span class="keys"><kbd>Ctrl</kbd><kbd>C</kbd></span>Crouch / slide / dive</div>

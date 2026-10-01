@@ -4,6 +4,7 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import GUI from 'lil-gui';
 
 import { buildArena } from './arena.js';
+import { configure, step as physics, stats, gravity, trace, shove, wave, impacts } from './physics.js';
 import { createOutline, NO_OUTLINE_LAYER } from './outline.js';
 import { PlayerController } from './player.js';
 import { InputManager } from './input.js';
@@ -13,11 +14,10 @@ import { Weapon } from './weapon.js';
 import { AudioManager } from './audio.js';
 import { NetClient, signalUrl } from './net.js';
 import { NetPlay } from './netplay.js';
-import { GLOW, setGlow } from './playerGlow.js';
-import { preloadAvatars } from './avatarRig.js';
+import { preloadAvatars, setGrenade, setAvatarRim } from './avatarRig.js';
 import { createFloorReflection } from './floorReflection.js';
 import { initLiquidGlass } from './liquidGlass.js';
-import { teamSpawnXZ, scatterSpawnXZ, SPAWN_EYE_Y, setArenaSize } from './spawns.js';
+import { teamSpawnXZ, scatterSpawnXZ, SPAWN_EYE_Y, setArenaSize, heading } from './spawns.js';
 import { createNightSky } from './nightSky.js';
 import { createDaySky } from './sky.js';
 import { unlockAchievement } from './steamClient.js';
@@ -39,7 +39,7 @@ const DEV = (['localhost', '127.0.0.1'].includes(location.hostname)
 // ---------------------------------------------------------------------------
 const app = document.getElementById('app');
 
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
@@ -102,6 +102,7 @@ const _urlMap = parseInt(new URLSearchParams(location.search).get('map'), 10);
 let _savedMap = 1;
 try { _savedMap = parseInt(localStorage.getItem('ffa.map'), 10) || 1; } catch {}
 let arena = buildArena(scene, Math.max(1, Math.min(MAPS.length, _urlMap || _savedMap)));
+configure(arena);
 
 // Reflections of the actual arena: render the lit room once into a PMREM env
 // map from a standing spot between the pillar and the wall (fromScene captures
@@ -169,20 +170,31 @@ function setArenaEmissive(on) {
     m.opacity = w.o;
   }
 }
+// env reflections survive the dark — just heavily dimmed — so armour and
+// glossy surfaces keep their specular life instead of going matte black
+function setEnvIntensity(k) {
+  scene.traverse((o) => {
+    const ms = o.material; if (!ms) return;
+    for (const m of Array.isArray(ms) ? ms : [ms]) if (m.isMeshStandardMaterial) m.envMapIntensity = k;
+  });
+}
 // Flip the whole scene between the warm day and a glowing night: dark sky +
-// moon/stars, dim cool light, a white contour rim, and neon-lit surfaces.
+// moon/stars, cool moonlight with a warm ground bounce, team rim shells on the
+// suits, and neon-lit surfaces.
 function setNightMode(on) {
   nightMode = on;
   if (on) {
-    scene.background.set(0x05060e);
-    scene.environment = null;
-    outline.bloom.strength = 0.75;
+    scene.background.set(0x04060f);
+    scene.environment = envTex;          // specular life stays — just dimmed
+    setEnvIntensity(0.14);
+    setAvatarRim(true);
+    outline.bloom.strength = 0.9;
     flashes.scale = 1.8;
-    scene.fog.color.set(0x05060e); scene.fog.near = 55; scene.fog.far = 230;
-    renderer.toneMappingExposure = 0.9;
-    hemi.intensity = 0.07; hemi.color.set(0xe8ebef); hemi.groundColor.set(0x101318);
-    ambient.intensity = 0.04; ambient.color.set(0xd8dde4);
-    sun.intensity = 0.18; sun.color.set(0xd8dde4);
+    scene.fog.color.set(0x04060f); scene.fog.near = 55; scene.fog.far = 230;
+    renderer.toneMappingExposure = 1.0;
+    hemi.intensity = 0.15; hemi.color.set(0x8ea0d8); hemi.groundColor.set(0x1a1410); // cool sky, warm bounce
+    ambient.intensity = 0.09; ambient.color.set(0xa8b4d4);
+    sun.intensity = 0.34; sun.color.set(0xd8e2ff); // moonlight still casts real shadows
     fireLight.intensity = 2.4; redLight.intensity = 2.1;
     outline.uniforms.outlineColor.value.set(0xffffff);
     outline.uniforms.strength.value = 1.0;
@@ -190,11 +202,12 @@ function setNightMode(on) {
     daySky.group.visible = false;
     nightSky.group.visible = true;
     weapon.setNeon(true);
-    setGlow({ intensity: 1.2 });
     document.body.classList.add('lights-out');
   } else {
     scene.background.set(0xe8ebef);
     scene.environment = arenaEnv || envTex;
+    setEnvIntensity(1);
+    setAvatarRim(false);
     outline.bloom.strength = BLOOM_DAY;
     flashes.scale = 1;
     scene.fog.color.set(0xe8ebef); scene.fog.near = 55; scene.fog.far = 150;
@@ -208,7 +221,6 @@ function setNightMode(on) {
     daySky.group.visible = true;
     nightSky.group.visible = false;
     weapon.setNeon(false);
-    setGlow({ intensity: guiState.glowIntensity });
     document.body.classList.remove('lights-out');
   }
 }
@@ -216,14 +228,13 @@ function setNightMode(on) {
 // Sound: movement/UI clips are small files; all combat sounds (rifle, rockets,
 // explosions, hits, reloads) are synthesized at boot — see sfx.js.
 const audio = new AudioManager();
-audio.load({
-  jump:          './assets/sfx/jump.wav',
-  slide:         './assets/sfx/slide.wav',          // seamless loop, any duration
-  killConfirm:   './assets/sfx/kill-confirm.wav',   // chime on your kills
-  countdownBeep: './assets/sfx/countdown-beep.wav', // tick per second in a countdown
-  countdownGo:   './assets/sfx/countdown-go.wav',   // final "GO" / respawn tone
-});
+// seamless loop, any duration
+// chime on your kills
+// tick per second in a countdown
+// final "GO" / respawn tone
 audio.addBuffers(buildCombatSfx);
+document.addEventListener('click', (event) => { if (event.target.closest('button') && !event.target.closest('.lil-gui')) audio.play('uiClick', { volume: 0.4 }); });
+impacts((pos, speed) => audio.playAt('bodyFall', pos, { volume: Math.min(0.6, speed * 0.1), refDistance: 3, maxDistance: 32 }));
 // tuned defaults: faint gray contour that reads well on pure white
 outline.uniforms.strength.value = 0.32;
 outline.uniforms.thickness.value = 1.2;
@@ -257,7 +268,7 @@ weapon.flash.layers.set(NO_OUTLINE_LAYER);
 const rifleScopeEl = document.getElementById('rifle-scope');
 function drawScopeOverlay() {
   const show = currentWeapon === 0 && weapon.root.visible;
-  if (rifleScopeEl) rifleScopeEl.style.opacity = String(show ? weapon.aimT : 0);
+  if (rifleScopeEl) rifleScopeEl.style.opacity = String(show ? THREE.MathUtils.smoothstep(weapon.aimT, 0.35, 0.92) : 0);
 }
 
 // Free play: the player holds FIRE slot 0; bots fill the other lanes.
@@ -278,7 +289,7 @@ function playerSpawnPoint(scatter = false) {
 }
 // Player health: stay clean for HP_DELAY ms and it refills at HP_RATE per second.
 let playerHp = HP_MAX;
-let lastHurtAt = -Infinity;
+let lastHurtAt = -Infinity, healing = false;
 
 // Player name (chosen in the main menu, persisted, used in-game + online).
 const PLAYER_NAME_KEY = 'ffa.playerName';
@@ -385,6 +396,7 @@ function showKilledBy(name) {
 // respawn with brief spawn protection (bots already respawn on a 3s timer).
 const RESPAWN_MS = 3000;
 let playerDead = false;
+let killerPos = null; // live position ref of whoever tagged us — the death cam tracks it
 let playerRespawnMs = 0; // remaining ms, counted down only while in-game
 
 // Match-start countdown: a "get ready" freeze at the start of every match.
@@ -445,6 +457,16 @@ function updateViewPunch(dt) {
     viewPunch[x] += viewPunch[v] * h;
   }
 }
+const _punchE = new THREE.Euler(), _punchQ = new THREE.Quaternion(), _punchSave = new THREE.Quaternion();
+// Render-only camera offset: applied around the draw, restored right after so it
+// can never drift into the input-driven euler.
+function punchCamera(on) {
+  if (on) {
+    _punchSave.copy(camera.quaternion);
+    _punchQ.setFromEuler(_punchE.set(viewPunch.p, viewPunch.y, viewPunch.r));
+    camera.quaternion.multiply(_punchQ);
+  } else camera.quaternion.copy(_punchSave);
+}
 const _hitTo = new THREE.Vector3(), _hitFwd = new THREE.Vector3();
 function damageFeedback(hex, fromPos, heavy = false) {
   const col = '#' + ((hex >>> 0) & 0xffffff).toString(16).padStart(6, '0');
@@ -490,16 +512,17 @@ function hurtPlayer(hex, dmg = 50, isHeadshot = false, fromPos = null) {
   return playerHp <= 0;
 }
 
-function onPlayerTagged(shooterTeamId, hex = 0xf4f6f8, shooterName = '') {
+function onPlayerTagged(shooterTeamId, hex = 0xf4f6f8, shooterName = '', killer = null) {
   damageFeedback(hex, null, true);
   if (playerDead) return; // already down, waiting to respawn
+  killerPos = killer;
   playerStats.deaths++;
   playerDead = true;
   playerRespawnMs = RESPAWN_MS; // counts down only while in-game (never in a menu)
   _respawnShown = -1;          // so the first tick beeps
   playerHp = 0; updateHpBar(); // bar sits empty through the respawn countdown
   stopFiring();
-  cancelReload();
+  cancelReload(); weapon.reset();
   setWeaponsVisible(false); // hide the first-person gun while you're down
   showKilledBy(shooterName);
   respawnEl.classList.remove('hidden');
@@ -508,19 +531,22 @@ function onPlayerTagged(shooterTeamId, hex = 0xf4f6f8, shooterName = '') {
 
 // A combatant going down: a dull thud and a little dust where they fell.
 function bodyDown(pos) {
-  audio.playAt('bodyFall', pos, { volume: 0.6, rate: 0.9 + Math.random() * 0.15 });
+  audio.playAt('down', pos, { volume: 0.35, refDistance: 3, maxDistance: 28 });
   spawnPuff(pos.x, 0.5, pos.z, { size: 0.5, opacity: 0.22 });
   spawnPuff(pos.x, 0.4, pos.z, { size: 0.4, opacity: 0.18 });
 }
 
 function respawnPlayer() {
   playerDead = false;
+  killerPos = null;
   camera.fov = settings.get('fov'); camera.updateProjectionMatrix(); // in case we died zoomed
   respawnEl.classList.add('hidden');
   setWeaponsVisible(true);
   refillAmmo();
   nadeCount = NADE_MAX; nadeT = 0; updateNadeHud(); // respawn with full pouches
   camera.position.copy(playerSpawnPoint(true)); // respawns scatter around the ring
+  camera.quaternion.setFromEuler(new THREE.Euler(0, heading(camera.position.x, camera.position.z, true), 0, 'YXZ'));
+  weapon.reset();
   player.velocityY = 0; player.moveVel.set(0, 0, 0);
   player.resetStance();   // stand up — don't carry a crouch/slide into respawn
   playerHp = HP_MAX; updateHpBar();
@@ -532,6 +558,7 @@ const bots = new BotSystem(scene, arena, {
   spawnProjectile,
   onPlayerTagged,
   onPlayerHit: (teamId, hex, shooter, dmg, isHeadshot, fromPos) => hurtPlayer(hex, dmg, isHeadshot, fromPos || (shooter && shooter.pos)),
+  onStep: (pos) => audio.playAt('foot', pos, { volume: 0.22, refDistance: 2, maxDistance: 18, rate: 0.96 + Math.random() * 0.08 }),
   onFire: (pos, hex, dir, teamId) => {
     audio.playAt('rifleShot', pos, {
       volume: 0.55, rate: 0.92 + Math.random() * 0.12, refDistance: 5, maxDistance: 80,
@@ -619,6 +646,7 @@ function showPrivate() {
   privateOverlay.classList.remove('hidden');
 }
 function showStart() {
+  cancelNade();
   active = false;
   padSession = false;
   hideAllMenus();
@@ -636,6 +664,7 @@ function showStart() {
   nameInput.disabled = sessionLive;
 }
 function showPause() {
+  cancelNade();
   if (netplay.active) { showLobby(); return; }
   if (!sessionLive || match.over) { showStart(); return; }
   if (!pauseStartedAt) pauseStartedAt = performance.now();
@@ -654,6 +683,7 @@ function showSettings(returnTo) {
   settingsOverlay.classList.remove('hidden');
 }
 function showGameOver() {
+  cancelNade();
   active = false;
   hideAllMenus();
   gameoverOverlay.classList.remove('hidden');
@@ -756,7 +786,7 @@ function resetMatch() {
   clearKillFeed();
   for (let i = projectiles.length - 1; i >= 0; i--) removeProjectile(i);
   clearFx(); stopFiring();
-  playerDead = false;
+  playerDead = false; killerPos = null;
   currentWeapon = gameConfig.rule === 'rocket' ? 1 : 0;
   setWeaponsVisible(true); // a prior death hides the gun — always restore it on a new match
   weapon.reset();
@@ -768,7 +798,7 @@ function resetMatch() {
   if (bots.enabled) bots.respawnAll(gameConfig.size - 1, gameConfig.size); // player fills one FIRE slot
   camera.position.copy(playerSpawnPoint()); // always your own side
   // face the arena centre (also undoes the menu's orbit camera)
-  camera.quaternion.setFromEuler(new THREE.Euler(0, Math.atan2(camera.position.x, camera.position.z), 0, 'YXZ'));
+  camera.quaternion.setFromEuler(new THREE.Euler(0, heading(camera.position.x, camera.position.z, true), 0, 'YXZ'));
   player.velocityY = 0; player.moveVel.set(0, 0, 0);
   player.resetStance();
   lastHurtAt = -Infinity;
@@ -790,7 +820,7 @@ function leaveLocalMatch() {
   playerDead = false; countdownMs = 0;
   stopFiring(); stopSlideSound(); cancelReload();
   for (let i = projectiles.length - 1; i >= 0; i--) removeProjectile(i);
-  clearFx(); bots.setEnabled(false);
+  clearFx(); bots.setEnabled(false); weapon.reset();
   if (controls.isLocked) controls.unlock();
   showStart();
 }
@@ -854,6 +884,7 @@ function refreshNightToggle() {
 lightsOutToggle.addEventListener('click', () => {
   if (!nightToggleAllowed()) return; // ignore — the host owns the match mode
   setNightUI(!nightMode);
+  settings?.set('arenaLight', nightMode ? 1 : 0); // keep the Settings control in sync
 });
 
 // --- Map selection: rebuild the arena in place and re-point every system ---
@@ -870,7 +901,8 @@ function setMap(mapId) {
   setupFloorReflection();
   setArenaSize(arena.size);
   player.setWorld(arena.blockers, arena.groundMeshes, arena.ceilings, bots.bots, arena.size);
-  bots.arena = arena;
+  bots.arena = arena; netplay.deps.arena = arena;
+  configure(arena);
   refreshMapPicker();
 }
 const mapPickerEl = document.getElementById('map-picker');
@@ -1058,13 +1090,14 @@ const lobbyStartBtn = document.getElementById('lobby-start-btn');
 
 const net = new NetClient();
 const netplay = new NetPlay(net, {
+  arena,
   scene,
   camera,
   spawnProjectile,
-  onHit: (team, hex, name, dmg, headshot, fromPos) => {
+  onHit: (team, hex, name, dmg, headshot, fromPos, liveFrom) => {
     if (playerDead || performance.now() < bots._playerInvulnUntil) return false;
     const lethal = hurtPlayer(hex, dmg, headshot, fromPos);
-    if (lethal) onPlayerTagged(team, hex, name);
+    if (lethal) onPlayerTagged(team, hex, name, liveFrom || null);
     return lethal;
   },
   onConfirmedKill: (team, name, victim, shooterId) => {
@@ -1078,10 +1111,11 @@ const netplay = new NetPlay(net, {
   onMatchEnd: (winner, scores, rows) => showOnlineResult(winner, scores, rows),
   getLocalStats: () => ({ kills: playerStats.kills, deaths: playerStats.deaths, shots: playerStats.shots }),
   getPlayerName: () => getPlayerName(),
+  onStep: (pos) => audio.playAt('foot', pos, { volume: 0.22, refDistance: 2, maxDistance: 18, rate: 0.96 + Math.random() * 0.08 }),
   getBotSnapshot: () => bots.netSnapshot(),
   moveFlags: () => (player.onGround ? 0 : 1) | (player.diving ? 2 : 0) | (player.sliding ? 4 : 0),
   isAlive: () => !playerDead,
-  tagBot: (idx, team, dmg, headshot, shooterId) => bots.tagBotByIndex(idx, team, dmg, headshot, { id: shooterId, name: netplay.roster.get(shooterId)?.name || 'Recruit', team: { id: team } }),
+  tagBot: (idx, team, dmg, headshot, shooterId, impact) => bots.tagBotByIndex(idx, team, dmg, headshot, { id: shooterId, name: netplay.roster.get(shooterId)?.name || 'Recruit', team: { id: team } }, impact),
   onGhostBotDied: (pos) => bodyDown(pos),
   onEnded: (reason) => {
     netHudEl.classList.add('hidden');
@@ -1100,8 +1134,8 @@ const netplay = new NetPlay(net, {
 
 // host: when a real bot dies, score it for everyone (the avatar ragdolls
 // itself down in bots.js — no extra FX needed here)
-bots.onBotDown = (idx, byTeam, shooter) => {
-  if (netplay.isHost && netplay.active) netplay.hostBotDied(idx, byTeam, shooter === playerStats ? netplay.me.id : shooter?.id);
+bots.onBotDown = (idx, byTeam, shooter, impact) => {
+  if (netplay.isHost && netplay.active) netplay.hostBotDied(idx, byTeam, shooter === playerStats ? netplay.me.id : shooter?.id, impact);
 };
 
 // ---- Lobby rendering + flow ------------------------------------------------
@@ -1156,6 +1190,7 @@ function renderLobby() {
 }
 
 function showLobby() {
+  cancelNade();
   active = false;
   hideAllMenus();
   // the lobby is a menu state — clear the in-game HUD
@@ -1201,7 +1236,7 @@ function startNetMatchLocal() {
   refreshNightToggle();                    // lock the toggle now that the match is live
   refreshMapPicker();
   playerStats.kills = 0; playerStats.deaths = 0; playerStats.shots = 0;
-  playerDead = false;
+  playerDead = false; killerPos = null;
   setWeaponsVisible(true); // restore the gun in case a prior death hid it
   clearKillFeed();
   respawnEl.classList.add('hidden');
@@ -1209,6 +1244,8 @@ function startNetMatchLocal() {
   killedbyEl.classList.add('hidden');
   const s = netplay.mySpawn();
   camera.position.set(s.x, 1.7, s.z);
+  camera.quaternion.setFromEuler(new THREE.Euler(0, heading(s.x, s.z, true), 0, 'YXZ'));
+  weapon.reset();
   player.velocityY = 0; player.moveVel.set(0, 0, 0);
   player.resetStance();
   setNetStatusHud();
@@ -1370,7 +1407,7 @@ function myTeamId() { return (netplay.active && netplay.me) ? netplay.me.team : 
 // Loadout. `interval` is the minimum ms between shots; `mag` rounds per reload.
 const WEAPONS = [
   { name: 'BATTLE RIFLE', mag: 20, reloadMs: 1500, interval: 300, speed: RIFLE_SPEED },
-  { name: 'TWIN ROCKET', mag: 2, reloadMs: 2300, interval: 480, speed: 34 },
+  { name: 'TWIN ROCKET', mag: 2, reloadMs: 2300, interval: 480, speed: 46 },
 ];
 const ammo = WEAPONS.map((w) => w.mag);
 const reload = { active: false, slot: 0, t0: 0, dur: 0, stage: 0 };
@@ -1381,7 +1418,7 @@ let crossBloom = 0;            // reticle bloom 0..1, kicked by each shot
 
 // Sticky grenades: 2 charges, each recharges on a rolling cooldown.
 const NADE_MAX = 2, NADE_RECHARGE_MS = 10000, NADE_FUSE_MS = 1000;
-const NADE_SPEED = 22, NADE_GRAV = -14, NADE_TTL = 8000;
+const NADE_SPEED = 30, NADE_GRAV = gravity, NADE_TTL = 8000;
 let nadeCount = NADE_MAX, nadeT = 0; // nadeT = ms progress toward next charge
 
 const raycaster = new THREE.Raycaster();
@@ -1397,6 +1434,52 @@ const _segEnd = new THREE.Vector3();
 const _segDir = new THREE.Vector3();
 const _tmpV = new THREE.Vector3();
 const _projHits = [];
+const focus = new THREE.Vector3();
+const bearing = new THREE.Vector3();
+const sight = new THREE.Vector3();
+const occlusion = new THREE.Raycaster();
+const obstacles = [];
+const _kcLook = new THREE.PerspectiveCamera(); // scratch for the death cam — must be a camera so lookAt faces -Z (plain objects aim +Z)
+let locked = null;
+
+function assist(dt) {
+  player.slowdown = 1;
+  if (!player.assist || !input.aimHeld || weapon.sprintT > 0.3 || weapon.throwing > 0) { locked = null; return; }
+  camera.getWorldDirection(sight);
+  const cone = THREE.MathUtils.degToRad(4.5);
+  let best = Math.cos(cone), found = null;
+  const consider = (pos, team, alive) => {
+    if (!alive || team === myTeamId()) return;
+    bearing.copy(pos).sub(camera.position);
+    const horizontal = Math.hypot(bearing.x, bearing.z);
+    bearing.y = THREE.MathUtils.clamp(camera.position.y + sight.y * horizontal / Math.max(0.05, Math.hypot(sight.x, sight.z)), pos.y + 0.9, pos.y + 1.8) - camera.position.y;
+    const distance = bearing.length();
+    if (distance < 1 || distance > 60) return;
+    bearing.multiplyScalar(1 / distance);
+    const dot = sight.dot(bearing);
+    if (dot < Math.cos(cone)) return;
+    const score = dot + (locked === pos ? 0.0007 : 0);
+    if (score <= best) return;
+    occlusion.set(camera.position, bearing); occlusion.far = distance;
+    obstacles.length = 0;
+    if (occlusion.intersectObjects(arena.losBlockers, false, obstacles).length) return;
+    best = score; focus.copy(bearing); found = pos;
+  };
+  if (bots.enabled) for (const bot of bots.bots) consider(bot.pos, bot.team.id, bot.alive);
+  if (netplay.active) {
+    for (const [id, remote] of netplay.remotes) consider(remote.group.position, netplay.roster.get(id)?.team, !remote.dead);
+    for (let i = 0; i < netplay.ghostBots.length; i++) consider(netplay.ghostBots[i].group.position, netplay.botRoster[i]?.team, netplay.ghostBots[i].alive);
+  }
+  locked = found;
+  if (!found) return;
+  const angle = sight.angleTo(focus);
+  const strength = player.assist * (1 - THREE.MathUtils.smoothstep(angle, cone * 0.65, cone));
+  if (input.gamepadConnected) player.slowdown = 1 - strength * 0.5;
+  const blend = Math.min(1 - Math.exp(-dt * strength * 14), dt * strength * 0.95 / Math.max(angle, 1e-6));
+  const yaw = Math.atan2(sight.x, -sight.z), target = Math.atan2(focus.x, -focus.z);
+  player.addLook(Math.atan2(Math.sin(target - yaw), Math.cos(target - yaw)) * blend,
+    -(Math.asin(focus.y) - Math.asin(sight.y)) * blend);
+}
 
 // World point under the screen-centre reticle; player rounds fly flat to it so
 // they land exactly where you aim (no muzzle parallax).
@@ -1442,6 +1525,15 @@ function updateNadeHud() {
     pip.style.setProperty('--p', charging ? (nadeT / NADE_RECHARGE_MS).toFixed(3) : 0);
   });
 }
+function recharge(dt) {
+  if (nadeCount >= NADE_MAX || weapon.holding) return;
+  nadeT += dt * 1000;
+  while (nadeT >= NADE_RECHARGE_MS && nadeCount < NADE_MAX) {
+    nadeCount++; nadeT -= NADE_RECHARGE_MS;
+  }
+  if (nadeCount === NADE_MAX) nadeT = 0;
+  updateNadeHud();
+}
 function updateWeaponHud() {
   const w = WEAPONS[currentWeapon];
   if (weapModeEl) weapModeEl.textContent = w.name;
@@ -1467,6 +1559,7 @@ function refillAmmo() {
   updateWeaponHud();
 }
 function startReload() {
+  cancelNade();
   const slot = currentWeapon, w = WEAPONS[slot];
   if (reload.active || ammo[slot] >= w.mag || playerDead) return;
   Object.assign(reload, { active: true, slot, t0: performance.now(), dur: w.reloadMs, stage: 0 });
@@ -1497,7 +1590,7 @@ function updateReload() {
 // ---- firing ----------------------------------------------------------------
 // The gun must be up (not mid sprint-lower or mid swap) to fire; a press made
 // while it's coming up is buffered briefly and fires the moment it's ready.
-function gunReady() { return weapon.sprintT < 0.3 && weapon.swapT >= 1 && !reload.active; }
+function gunReady() { return weapon.sprintT < 0.3 && weapon.swapT >= 1 && weapon.throwing <= 0 && !reload.active; }
 
 function fireCurrent() {
   const slot = currentWeapon, w = WEAPONS[slot];
@@ -1534,6 +1627,10 @@ function updateShooting(ready) {
   shootWasHeld = held;
   if (!ready) { input.consumeNade(); return; }
   if (input.consumeNade()) throwNade();
+  if (weapon.holding && !input.nadeHeld) {
+    weapon.letgo();
+    netplay.sendShot(camera.position, camera.getWorldDirection(_forward), 0xff6000, myTeamId(), { kind: 'grenade', letgo: true });
+  }
   if (input.consumeReload()) startReload();
   if (pendingShotUntil > now) {
     if (reload.active) {
@@ -1553,20 +1650,34 @@ function stopFiring() {
 
 // Sticky grenade: lobbed from the off-hand with a slight arc bias — sticks to
 // whatever it lands on and pops a second later (blast follows rocket rules).
+function cancelNade() {
+  if (!weapon.holding) return;
+  weapon.reset(); nadeCount = Math.min(NADE_MAX, nadeCount + 1); updateNadeHud();
+  netplay.sendShot(camera.position, camera.getWorldDirection(_forward), 0xff6000, myTeamId(), { kind: 'grenade', cancel: true });
+}
 function throwNade() {
+  if (!active || countdownMs > 0 || match.over || weapon.throwing > 0) return;
   if (playerDead || nadeCount <= 0) { if (!playerDead) audio.play('dryFire', { volume: 0.5 }); return; }
   nadeCount--;
   updateNadeHud();
-  const dir = crosshairAimPoint().sub(camera.position).normalize();
-  dir.y += 0.1; dir.normalize(); // a hair of loft so flat aim still arcs
-  const origin = camera.getWorldPosition(new THREE.Vector3())
-    .addScaledVector(dir, 0.45)
-    .addScaledVector(_camUp.set(0, 1, 0).applyQuaternion(camera.quaternion), -0.12);
-  spawnProjectile(origin, dir, 0xff7030, myTeamId(), NADE_SPEED, true, playerStats, { kind: 'grenade' });
-  weapon.kick(0.7);
-  kickView(0.25, 0, (Math.random() - 0.5) * 0.15);
-  audio.play('nadeThrow', { volume: 0.8, rate: 0.95 + Math.random() * 0.1 });
-  netplay.sendShot(origin, dir, 0xff7030, myTeamId(), { kind: 'grenade', speed: NADE_SPEED });
+  audio.play('nadeReady', { volume: 0.45 });
+  netplay.sendShot(camera.position, camera.getWorldDirection(_forward), 0xff6000, myTeamId(), { kind: 'grenade', windup: true, holding: input.nadeHeld });
+  weapon.toss((hand) => {
+    if (playerDead || !sessionLive && !netplay.active) return;
+    const dir = crosshairAimPoint().sub(camera.position).normalize();
+    dir.y += 0.1; dir.normalize(); // a hair of loft so flat aim still arcs
+    const origin = hand || camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 0.45);
+    _tmpV.subVectors(origin, camera.position);
+    const distance = _tmpV.length();
+    raycaster.set(camera.position, _tmpV.normalize()); raycaster.far = distance;
+    _projHits.length = 0;
+    const wall = raycaster.intersectObjects(arena.losBlockers, false, _projHits)[0];
+    if (wall) origin.copy(wall.point).addScaledVector(_tmpV, -0.12);
+    spawnProjectile(origin, dir, 0xff6000, myTeamId(), NADE_SPEED, true, playerStats, { kind: 'grenade' });
+    kickView(0.12, 0, 0);
+    audio.play('nadeThrow', { volume: 0.8, rate: 0.95 + Math.random() * 0.1 });
+    netplay.sendShot(origin, dir, 0xff6000, myTeamId(), { kind: 'grenade', speed: NADE_SPEED, prepared: true });
+  }, input.nadeHeld);
 }
 
 // Aim-down-sights zoom: blend the FOV toward the weapon's aim FOV and slow the
@@ -1576,14 +1687,15 @@ function activeWeapon() { return weapon; }
 function applyAimZoom() {
   const w = activeWeapon();
   const base = settings ? settings.get('fov') : 75;
-  const fov = THREE.MathUtils.lerp(base, w.aimFov, w.aimT);
+  const fov = w.fov(base);
   if (Math.abs(fov - _lastFov) > 0.01) {
     camera.fov = fov;
     camera.updateProjectionMatrix();
     _lastFov = fov;
   }
   const sens = settings ? settings.get('mouseSensitivity') : 1;
-  controls.pointerSpeed = sens * THREE.MathUtils.lerp(1, 0.55, w.aimT);
+  player.lookFactor = Math.tan(THREE.MathUtils.degToRad(fov) / 2) / Math.tan(THREE.MathUtils.degToRad(base) / 2);
+  controls.pointerSpeed = sens * player.lookFactor;
 }
 
 function setWeaponsVisible(show) {
@@ -1591,6 +1703,7 @@ function setWeaponsVisible(show) {
   weapon.setMode(currentWeapon);
 }
 function switchWeapon(slot) {
+  cancelNade();
   slot = slot ? 1 : 0;
   if (gameConfig.rule === 'rifle') slot = 0;
   if (gameConfig.rule === 'rocket') slot = 1;
@@ -1618,20 +1731,37 @@ function aimOnEnemy() {
   if (netplay.active) for (const t of netplay.getBotTargets()) if (t.alive && t.team !== me && test(t.pos, -0.4)) return true;
   return false;
 }
+let _retWep = null, _retVis = null;
 function updateReticle(dt) {
   crossBloom = Math.max(0, crossBloom - dt * 6);
+  const w = currentWeapon ? 'rocket' : 'rifle';
+  if (w !== _retWep) { _retWep = w; crosshair.dataset.weapon = w; }
   crosshair.style.setProperty('--bloom', (1 + crossBloom * 0.28).toFixed(3));
-  crosshair.classList.toggle('on-enemy', active && !playerDead && aimOnEnemy());
+  // hidden during the countdown, while scoped (the scope has its own reticle),
+  // and while dead on the kill cam
+  const scoped = currentWeapon === 0 && weapon.aimT > 0.55;
+  const vis = (countdownMs > 0 || scoped || playerDead) ? 'hidden' : '';
+  if (vis !== _retVis) { _retVis = vis; crosshair.style.visibility = vis; }
+  crosshair.classList.toggle('on-enemy', active && !playerDead && countdownMs <= 0 && aimOnEnemy());
 }
 
 // ---- movement sounds ----------------------------------------------------------
-let slideLoop = null;
-function updateSlideSound() {
+let slideLoop = null, stride = 0, grounded = true, falling = 0;
+function updateSlideSound(dt) {
   const scraping = player.sliding || player.diving;
   if (scraping && !slideLoop) slideLoop = audio.playLoop('slide', { volume: 0.6 });
   else if (!scraping && slideLoop) { audio.stopLoop(slideLoop); slideLoop = null; }
+  if (!player.onGround) falling = player.velocityY;
+  if (player.onGround && !grounded && falling < -2) audio.play('land', { volume: Math.min(0.7, 0.2 + Math.abs(falling) * 0.045) });
+  grounded = player.onGround;
+  const speed = player.moveVel.length();
+  if (!scraping && player.onGround && speed > 1) {
+    stride += speed * dt;
+    if (stride >= (input.sprint ? 3.8 : 3)) { stride = 0; audio.play('foot', { volume: input.sprint ? 0.42 : 0.3, rate: 0.96 + Math.random() * 0.08 }); }
+  } else stride = 0;
 }
 function stopSlideSound() {
+  stride = 0; grounded = true; falling = 0;
   if (slideLoop) { audio.stopLoop(slideLoop); slideLoop = null; }
 }
 
@@ -1689,24 +1819,45 @@ function makeRocketMesh() {
   g.userData.flame = flame; g.userData.glow = glow;
   return g;
 }
-// sticky grenade: dark orb + hot seam + a soft glow sprite that pulses on the fuse
-const nadeGeo = new THREE.SphereGeometry(0.09, 14, 12);
-const nadeBandGeo = new THREE.TorusGeometry(0.092, 0.012, 6, 24).rotateX(Math.PI / 2);
-const nadeCoreMat = new THREE.MeshStandardMaterial({ color: 0x16181d, metalness: 0.5, roughness: 0.35 });
-const nadeBandMat = new THREE.MeshBasicMaterial({ color: 0xff7030, toneMapped: false });
+// sticky grenade: glassy dark shell over flowing lava veins — hot core toward
+// the eye, fresnel rim, plus a soft glow sprite that pulses on the fuse
+const nadeGeo = new THREE.SphereGeometry(0.095, 24, 20);
+const nadeCoreMat = new THREE.ShaderMaterial({
+  uniforms: { time: { value: 0 } },
+  vertexShader: `varying vec3 point; varying vec3 facing;
+    void main() { point = position; facing = normalize(normalMatrix * normal);
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `uniform float time; varying vec3 point; varying vec3 facing;
+    void main() {
+      vec3 n = normalize(facing);
+      float f1 = sin(point.x * 60.0 + time * 3.0 + sin(point.y * 44.0 - time * 2.0))
+        * sin(point.z * 52.0 - time * 2.4 + point.y * 20.0);
+      float f2 = sin(point.y * 95.0 + time * 4.2) * sin((point.x + point.z) * 68.0 - time * 3.1);
+      float veins = smoothstep(0.1, 0.4, abs(f1)) * 0.75 + smoothstep(0.45, 0.9, abs(f1 * f2)) * 0.55;
+      float core = pow(max(0.0, n.z), 3.0);
+      float fres = pow(1.0 - abs(n.z), 2.2);
+      vec3 col = mix(vec3(0.14, 0.03, 0.0), mix(vec3(0.62, 0.06, 0.0), vec3(1.0, 0.34, 0.02), clamp(veins, 0.0, 1.0)), clamp(veins * 1.15, 0.0, 1.0));
+      col = mix(col, vec3(1.0, 0.72, 0.34), core * (0.4 + 0.3 * veins)); // lighter heart
+      col += vec3(1.0, 0.38, 0.06) * fres * (0.3 + 0.2 * veins);         // rim glow
+      gl_FragColor = vec4(col, 1.0);
+    }`,
+  toneMapped: false,
+});
 function makeNadeMesh() {
   const g = new THREE.Group();
   const glow = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: _radialTex, color: 0xff7030, transparent: true, opacity: 0.55,
+    map: _radialTex, color: 0xff6000, transparent: true, opacity: 0.45,
     depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
   }));
-  glow.scale.setScalar(0.55); glow.layers.set(NO_OUTLINE_LAYER);
-  g.add(new THREE.Mesh(nadeGeo, nadeCoreMat), new THREE.Mesh(nadeBandGeo, nadeBandMat), glow);
+  glow.scale.setScalar(0.75); glow.layers.set(NO_OUTLINE_LAYER);
+  g.add(new THREE.Mesh(nadeGeo, nadeCoreMat), glow);
   g.userData.glow = glow;
   return g;
 }
+setGrenade(makeNadeMesh);
 function spawnProjectile(origin, dir, hex, team, speed = 70, isPlayer = false, shooter = null, opts = {}) {
   const kind = opts.kind || (opts.rocket ? 'rocket' : 'bullet');
+  if (shooter?.netGhost) audio.playAt(kind === 'rocket' ? 'rocketLaunch' : kind === 'grenade' ? 'nadeThrow' : 'rifleShot', origin, { volume: 0.5, refDistance: 5, maxDistance: 65 });
   let mesh;
   if (kind === 'rocket') mesh = makeRocketMesh();
   else if (kind === 'grenade') mesh = makeNadeMesh();
@@ -1723,7 +1874,7 @@ function spawnProjectile(origin, dir, hex, team, speed = 70, isPlayer = false, s
     // rockets leave the tube slow and accelerate to cruise
     speed, cruise: kind === 'rocket' ? speed * 2.1 : speed,
     prev: origin.clone(),
-    born: performance.now(),
+    age: 0,
     ttl: opts.ttl || (kind === 'rocket' ? 5000 : kind === 'grenade' ? NADE_TTL : 3000),
     gravity: opts.gravity != null ? opts.gravity : (kind === 'spark' ? -18 : kind === 'grenade' ? NADE_GRAV : 0),
   };
@@ -1742,10 +1893,11 @@ function segHitsSphere(a, b, c, r) {
 }
 
 function updateProjectiles(dt) {
-  const now = performance.now();
+  nadeCoreMat.uniforms.time.value += dt;
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
     p.prev.copy(p.mesh.position);
+    p.age += dt * 1000;
     if (p.kind === 'rocket') {
       p.speed = Math.min(p.cruise, p.speed + 150 * dt);
       p.vel.copy(p.dir).multiplyScalar(p.speed);
@@ -1753,14 +1905,14 @@ function updateProjectiles(dt) {
       const f = p.mesh.userData.flame;
       if (f) f.scale.set(1, 1, 0.75 + Math.random() * 0.6);
       p.mesh.userData.glow.material.opacity = 0.75 + Math.random() * 0.25;
-    } else {
+    } else if (!p.fuseAt) {
       p.vel.y += p.gravity * dt;
     }
-    p.mesh.position.addScaledVector(p.vel, dt);
+    if (!p.fuseAt) p.mesh.position.addScaledVector(p.vel, dt);
 
     if (p.kind === 'spark') { // embers: bounce off the floor, fade by age
       if (p.mesh.position.y < 0.04 && p.vel.y < 0) { p.mesh.position.y = 0.04; p.vel.y *= -0.35; p.vel.x *= 0.6; p.vel.z *= 0.6; }
-      const life = (now - p.born) / p.ttl;
+      const life = p.age / p.ttl;
       p.mesh.scale.setScalar(Math.max(0.05, 1 - life));
       p.mesh.rotation.x += dt * 9; p.mesh.rotation.y += dt * 7;
       if (life >= 1) removeProjectile(i);
@@ -1775,16 +1927,25 @@ function updateProjectiles(dt) {
           if (p.stickBot.alive) p.mesh.position.copy(p.stickBot.pos).add(p.stickOff);
           else p.stickBot = null;
         }
-        const k = 1 - (p.fuseAt - now) / NADE_FUSE_MS;
+        if (p.stickBody) {
+          if (p.stickBody.world) p.mesh.position.copy(p.stickOff).applyQuaternion(p.stickBody.quaternion).add(p.stickBody.position);
+          else p.stickBody = null;
+        }
+        if (p.stickNet) {
+          const target = p.stickNet.kind === 'player' ? netplay.remotes.get(p.stickNet.id) : netplay.ghostBots[p.stickNet.index];
+          if (target && !target.dead && target.alive !== false) p.mesh.position.copy(target.group.position).add(p.stickOff);
+          else p.stickNet = null;
+        }
+        p.fuseAt -= dt * 1000;
+        const k = 1 - p.fuseAt / NADE_FUSE_MS;
         const g = p.mesh.userData.glow;
-        g.material.opacity = 0.35 + 0.6 * Math.abs(Math.sin(now * (0.012 + k * 0.05))); // pulse faster as it cooks
-        g.scale.setScalar(0.5 + 0.25 * Math.abs(Math.sin(now * (0.012 + k * 0.05))));
-        if (p.beepAt && now >= p.beepAt) { p.beepAt = 0; audio.playAt('nadeBeep', p.mesh.position, { volume: 0.8, refDistance: 5, maxDistance: 40 }); }
-        if (now >= p.fuseAt) { grenadeDetonate(p, i); continue; }
+        const pulse = Math.abs(Math.sin(p.age * 0.014 + k * k * 8));
+        g.material.opacity = 0.4 + 0.4 * pulse; // pulse faster as it cooks
+        g.scale.setScalar(0.6 + 0.18 * pulse);
+        if (p.beepAt && p.fuseAt <= p.beepAt) { p.beepAt = 0; audio.playAt('nadeBeep', p.mesh.position, { volume: 0.8, refDistance: 5, maxDistance: 40 }); }
+        if (p.fuseAt <= 0) { grenadeDetonate(p, i); continue; }
         continue;
       }
-      p.vel.y += p.gravity * dt;
-      p.mesh.position.addScaledVector(p.vel, dt);
       p.mesh.rotation.x += dt * 7; p.mesh.rotation.z += dt * 5; // tumble in flight
       const seg = _tmpV.subVectors(p.mesh.position, p.prev);
       const dist = seg.length();
@@ -1799,6 +1960,10 @@ function updateProjectiles(dt) {
         const isNetGhost = p.shooter && p.shooter.netGhost;
         let stickPos = wallHit ? wallHit.point.clone() : null;
         let firstHit = wallHit ? wallHit.distance : Infinity;
+        const corpse = trace(p.prev, dir, reach);
+        if (corpse && corpse.distance < firstHit) {
+          firstHit = corpse.distance; stickPos = corpse.point; p.stickBody = corpse.body;
+        }
         if (!isNetGhost) {
           for (const bot of bots.bots) { // enemy armour sticks too — plasma rules
             if (!bot.alive || bot.team.id === p.team) continue;
@@ -1806,22 +1971,28 @@ function updateProjectiles(dt) {
             if (!segHitsSphere(p.prev, segEnd, _tmpV, 0.7)) continue;
             const to = _tmpV.sub(p.prev), along = to.dot(dir);
             const entry = Math.max(0, along - Math.sqrt(Math.max(0, 0.49 - (to.lengthSq() - along * along))));
-            if (entry < firstHit) { firstHit = entry; stickPos = p.prev.clone().addScaledVector(dir, entry); p.stickBot = bot; }
+            if (entry < firstHit) { firstHit = entry; stickPos = p.prev.clone().addScaledVector(dir, entry); p.stickBot = bot; p.stickBody = null; }
           }
           if (p.isPlayer && netplay.active) {
             const nv = netplay.testHit(p.prev, dir, reach);
-            if (nv && nv.t < firstHit) { firstHit = nv.t; stickPos = p.prev.clone().addScaledVector(dir, nv.t); p.stickNet = nv; p.stickBot = null; }
+            if (nv && nv.t < firstHit) { firstHit = nv.t; stickPos = p.prev.clone().addScaledVector(dir, nv.t); p.stickNet = nv; p.stickBot = null; p.stickBody = null; }
           }
         }
         if (stickPos) { // adhered — seat it on the surface and start the fuse
           p.mesh.position.copy(stickPos);
           p.vel.set(0, 0, 0);
-          p.fuseAt = now + NADE_FUSE_MS;
-          p.beepAt = now + 550;
+          p.fuseAt = NADE_FUSE_MS;
+          p.beepAt = 450;
+          if (p.stickBody) p.stickOff = stickPos.clone().sub(p.stickBody.position).applyQuaternion(new THREE.Quaternion().copy(p.stickBody.quaternion).invert());
+          if (p.stickNet) {
+            const target = p.stickNet.kind === 'player' ? netplay.remotes.get(p.stickNet.id) : netplay.ghostBots[p.stickNet.index];
+            if (target) p.stickOff = stickPos.clone().sub(target.group.position);
+          }
           if (p.stickBot) { p.stickOff = stickPos.clone().sub(p.stickBot.pos); audio.playAt('nadeStick', stickPos, { volume: 0.9, refDistance: 5, maxDistance: 40 }); }
           else {
-            if (wallHit && wallHit.face) { // sit flush on the surface, not inside it
+            if (!p.stickNet && !p.stickBody && wallHit && wallHit.face) { // sit flush on the surface, not inside it
               const n = _tmpV.copy(wallHit.face.normal).transformDirection(wallHit.object.matrixWorld);
+              p.stickN = n.clone();
               p.mesh.position.copy(stickPos).addScaledVector(n, 0.09);
             }
             audio.playAt('nadeStick', stickPos, { volume: 0.75, refDistance: 5, maxDistance: 40 });
@@ -1830,7 +2001,7 @@ function updateProjectiles(dt) {
           continue;
         }
       }
-      if (now - p.born > p.ttl) grenadeDetonate(p, i); // ran out of air — pop anyway
+      if (p.age > p.ttl) grenadeDetonate(p, i); // ran out of air — pop anyway
       continue;
     }
 
@@ -1847,11 +2018,13 @@ function updateProjectiles(dt) {
       const reach = wallHit ? Math.min(dist + 0.13, wallHit.distance) : dist + 0.13;
       const segEnd = wallHit ? _segEnd.copy(p.prev).addScaledVector(dir, reach) : p.mesh.position;
       const isNetGhost = p.shooter && p.shooter.netGhost; // relayed shots are visual only
+      const corpse = trace(p.prev, dir, reach);
+      const limit = corpse ? Math.min(reach, corpse.distance) : reach;
 
       if (p.kind === 'rocket') {
-        let blast = wallHit ? wallHit.point.clone().addScaledVector(dir, -0.15) : null;
+        let blast = corpse ? corpse.point.clone() : wallHit ? wallHit.point.clone().addScaledVector(dir, -0.15) : null;
         let directBot = null, directNet = null;
-        let firstHit = wallHit?.distance ?? Infinity;
+        let firstHit = corpse?.distance ?? wallHit?.distance ?? Infinity;
         if (!isNetGhost) {
           for (const bot of bots.bots) {
             if (!bot.alive || bot.team.id === p.team) continue;
@@ -1869,33 +2042,40 @@ function updateProjectiles(dt) {
             } else directNet = null;
           }
         }
-        if (blast) { rocketImpact(p, i, blast, isNetGhost, directBot, directNet); continue; }
+        if (blast) {
+          // only hand the wall through when the WALL was the nearest hit — a
+          // direct hit in front of it shouldn't paint a floating scorch
+          rocketImpact(p, i, blast, isNetGhost, directBot, directNet,
+            wallHit && wallHit.distance <= firstHit + 1e-4 ? wallHit : null);
+          continue;
+        }
       } else {
         // online: MY shots test remote players + the host's ghost bots
         if (p.isPlayer && netplay.active) {
-          const victim = netplay.testHit(p.prev, dir, reach);
+          const victim = netplay.testHit(p.prev, dir, limit);
           if (victim) {
             audio.play(victim.headshot ? 'hitHead' : 'hitArmor', { volume: 0.9 });
             showHitmarker();
-            if (victim.kind === 'bot') netplay.sendBotHit(victim.index, victim.headshot ? RIFLE_HEAD : RIFLE_BODY, victim.headshot);
-            else netplay.sendHit(victim.id, p.hex, victim.headshot ? RIFLE_HEAD : RIFLE_BODY, victim.headshot, p.prev);
+            if (victim.kind === 'bot') netplay.sendBotHit(victim.index, victim.headshot ? RIFLE_HEAD : RIFLE_BODY, victim.headshot, p.prev, false, dir);
+            else netplay.sendHit(victim.id, p.hex, victim.headshot ? RIFLE_HEAD : RIFLE_BODY, victim.headshot, p.prev, p.team, null, false, dir);
             removeProjectile(i);
             continue;
           }
         }
         // host: my bots' rounds can hit remote human players
         if (!isNetGhost && !p.isPlayer && netplay.isHost && netplay.active) {
-          const rv = netplay.hostTestRemoteHit(p.prev, dir, reach, p.team);
-          if (rv) { netplay.sendHit(rv.id, p.hex, rv.headshot ? RIFLE_HEAD : RIFLE_BODY, rv.headshot, p.prev, p.team, p.shooter?.name); removeProjectile(i); continue; }
+          const rv = netplay.hostTestRemoteHit(p.prev, dir, limit, p.team);
+          if (rv) { netplay.sendHit(rv.id, p.hex, rv.headshot ? RIFLE_HEAD : RIFLE_BODY, rv.headshot, p.prev, p.team, p.shooter?.name, false, dir); removeProjectile(i); continue; }
         }
-        if (!isNetGhost && bots.hitscan(p.prev, dir, reach, p.team, p.hex, p.shooter)) {
+        if (!isNetGhost && bots.hitscan(p.prev, dir, limit, p.team, p.hex, p.shooter)) {
           removeProjectile(i);
           continue;
         }
+        if (corpse) { shove(corpse, dir); audio.playAt('hitArmor', corpse.point, { volume: 0.3, refDistance: 3, maxDistance: 24 }); removeProjectile(i); continue; }
         if (wallHit) { bulletImpact(wallHit, p.hex); removeProjectile(i); continue; }
       }
     }
-    if (now - p.born > p.ttl) removeProjectile(i);
+    if (p.age > p.ttl) removeProjectile(i);
   }
 }
 
@@ -1984,6 +2164,45 @@ for (let i = 0; i < 12; i++) {
 }
 let _scorchNext = 0;
 
+// surface decals — bullet holes punched into walls, and blast scorches that
+// work on ANY surface (the flat pool above only paints the floor)
+const holeTex = (() => { // dark punched core, scuffed halo, crack spokes
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(32, 32, 2, 32, 32, 32);
+  g.addColorStop(0, 'rgba(8,9,11,.95)'); g.addColorStop(0.28, 'rgba(10,12,14,.6)');
+  g.addColorStop(0.6, 'rgba(12,14,16,.22)'); g.addColorStop(1, 'rgba(12,14,16,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  x.strokeStyle = 'rgba(10,11,13,.45)'; x.lineWidth = 1.1;
+  for (let i = 0; i < 5; i++) { // hairline cracks radiating out
+    const a = i * 1.32 + 0.35, r0 = 7 + (i % 2) * 3, r1 = r0 + 8 + i * 1.6;
+    x.beginPath(); x.moveTo(32 + Math.cos(a) * r0, 32 + Math.sin(a) * r0);
+    x.lineTo(32 + Math.cos(a + 0.2) * r1, 32 + Math.sin(a + 0.2) * r1); x.stroke();
+  }
+  return new THREE.CanvasTexture(c);
+})();
+const holeGeo = new THREE.PlaneGeometry(1, 1);
+const decals = [];
+for (let i = 0; i < 48; i++) {
+  const m = new THREE.Mesh(holeGeo, new THREE.MeshBasicMaterial({
+    map: holeTex, transparent: true, opacity: 0, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  }));
+  m.visible = false; m.layers.set(NO_OUTLINE_LAYER); m.renderOrder = 2; scene.add(m);
+  decals.push({ mesh: m, age: 0, life: 22 });
+}
+let _decalNext = 0;
+function spawnDecal(point, n, { size = 0.2, tex = holeTex, life = 22 } = {}) {
+  const d = decals[_decalNext++ % decals.length];
+  d.mesh.material.map = tex;
+  d.mesh.position.copy(point).addScaledVector(n, 0.012);
+  d.mesh.quaternion.setFromUnitVectors(_zAxis, n);
+  d.mesh.rotateZ(Math.random() * Math.PI * 2); // random roll — no two alike
+  d.mesh.scale.setScalar(size * (0.85 + Math.random() * 0.3));
+  d.mesh.material.opacity = 0.95; d.age = 0; d.life = life;
+  d.mesh.visible = true;
+}
+
 function spawnSparks(pos, n, { speed = [6, 16], colors = [0xffe0a0, 0xff8a30], up = 0.55, ttl = 650 } = {}) {
   const dir = new THREE.Vector3();
   for (let k = 0; k < n; k++) {
@@ -1999,6 +2218,7 @@ function spawnSparks(pos, n, { speed = [6, 16], colors = [0xffe0a0, 0xff8a30], u
 function bulletImpact(hit, hex) {
   const n = hit.face ? hit.face.normal.clone().transformDirection(hit.object.matrixWorld).normalize() : _tmpV.set(0, 1, 0);
   const pos = hit.point.clone().addScaledVector(n, 0.05);
+  spawnDecal(hit.point, n, { size: 0.17 }); // the punched hole stays behind
   flashes.flash(pos, hex, 3, 4, 0.08);
   spawnSparks(pos, 4, { speed: [3, 7], colors: [0xfff4dc, hex], up: 0.9, ttl: 320 });
   spawnPuff(pos.x, pos.y, pos.z, { size: 0.16, opacity: 0.35, grow: 2.2, life: 0.45, rise: 0.2, spread: 0.2, jitter: 0.02, color: 0xc9ccd2 });
@@ -2006,19 +2226,23 @@ function bulletImpact(hit, hex) {
   if (k > 0) audio.playAt('impact', pos, { volume: 0.55 * k, rate: 0.9 + Math.random() * 0.25, refDistance: 4, maxDistance: 40 });
 }
 
-function explode(point) {
+function explode(point, plasma = false, surfN = null) {
+  wave(point, ROCKET_RADIUS);
   flashes.flash(point, 0xff8a30, 34, 18, 0.32);
   for (let k = 0; k < 9; k++) {
     const f = fireballs.find((o) => !o.sprite.visible); if (!f) break;
     f.sprite.position.set(point.x + (Math.random() - .5) * 0.8, point.y + (Math.random() - .3) * 0.7, point.z + (Math.random() - .5) * 0.8);
     f.vel.set((Math.random() - .5) * 3, 0.8 + Math.random() * 2.2, (Math.random() - .5) * 3);
-    f.age = 0; f.life = 0.32 + Math.random() * 0.25; f.size = 1.6 + Math.random() * 1.6;
+    f.age = 0; f.life = 0.28 + Math.random() * 0.2; f.size = (plasma ? 1.1 : 1.4) + Math.random() * 1.1;
     f.sprite.visible = true;
   }
-  for (let k = 0; k < 10; k++) {
-    spawnPuff(point.x, point.y + 0.3, point.z, { size: 0.9, opacity: 0.5, grow: 2.6, life: 1.4, rise: 0.9, spread: 2.2, jitter: 1.1, color: 0x5d6168 });
+  for (let k = 0; k < (plasma ? 2 : 4); k++) { // less murk — the fireball carries it
+    spawnPuff(point.x, point.y + 0.3, point.z, { size: 0.7, opacity: plasma ? 0.18 : 0.28, grow: 2, life: 0.8, rise: 0.8, spread: 1.4, jitter: 0.8, color: 0x6a6e75 });
   }
   spawnSparks(point, 22, { speed: [7, 20], colors: [0xfff0c0, 0xffa040, 0xff6000], up: 0.9, ttl: 800 });
+  if (surfN) { // blast kissed a wall/dome/prop — burn a scorch onto it
+    spawnDecal(point, surfN, { size: 2.6, tex: scorchTex, life: 15 });
+  }
   if (point.y < 1.6) { // ground burst: shockwave ring + scorch mark
     const r = rings.find((o) => !o.mesh.visible);
     if (r) { r.mesh.position.set(point.x, 0.05, point.z); r.age = 0; r.mesh.visible = true; }
@@ -2030,15 +2254,17 @@ function explode(point) {
   const d = camera.position.distanceTo(point);
   const k = Math.max(0, 1 - d / 12);
   if (k > 0) kickView(1.3 * k, (Math.random() - 0.5) * 0.8 * k, (Math.random() - 0.5) * 1.2 * k);
-  audio.playAt('explosion', point, { volume: 1.2, rate: 0.95 + Math.random() * 0.1, refDistance: 10, maxDistance: 140 });
+  audio.playAt(plasma ? 'plasma' : 'explosion', point, { volume: 0.9, rate: 0.98 + Math.random() * 0.04, refDistance: 6, maxDistance: 65 });
 }
 
-function rocketImpact(p, i, point, visualOnly, directBot = null, directNet = null) {
+function rocketImpact(p, i, point, visualOnly, directBot = null, directNet = null, wallHit = null) {
   if (!visualOnly) {
     const tagged = bots.applyBlast(point, p.team, p.shooter, directBot);
     if (p.isPlayer && netplay.active && netplay.applyBlast(point, p.team, directNet) && !tagged) showHitmarker();
   }
-  explode(point);
+  const surfN = wallHit && wallHit.face
+    ? wallHit.face.normal.clone().transformDirection(wallHit.object.matrixWorld).normalize() : null;
+  explode(point, false, surfN);
   removeProjectile(i);
 }
 
@@ -2050,7 +2276,7 @@ function grenadeDetonate(p, i) {
     const tagged = bots.applyBlast(pos, p.team, p.shooter, directBot);
     if (p.isPlayer && netplay.active && netplay.applyBlast(pos, p.team, p.stickNet || null) && !tagged) showHitmarker();
   }
-  explode(pos);
+  explode(pos, true, p.stickN || null); // blast scorch on whatever it stuck to
   removeProjectile(i);
 }
 
@@ -2059,6 +2285,7 @@ function clearFx() {
   for (const f of fireballs) f.sprite.visible = false;
   for (const r of rings) r.mesh.visible = false;
   for (const s of scorches) s.mesh.visible = false;
+  for (const d of decals) d.mesh.visible = false;
 }
 
 function updateFx(dt) {
@@ -2094,6 +2321,12 @@ function updateFx(dt) {
     s.mesh.material.opacity = s.age < 8 ? 0.85 : Math.max(0, 0.85 * (1 - (s.age - 8) / 4));
     if (s.age > 12) s.mesh.visible = false;
   }
+  for (const d of decals) {
+    if (!d.mesh.visible) continue;
+    d.age += dt; // hold full, then fade out over the last 4s of life
+    d.mesh.material.opacity = d.age < d.life - 4 ? 0.95 : Math.max(0, 0.95 * (1 - (d.age - (d.life - 4)) / 4));
+    if (d.age > d.life) d.mesh.visible = false;
+  }
 }
 
 // Keep the sun following the player so shadows stay crisp across the arena.
@@ -2120,11 +2353,6 @@ const guiState = {
   moveSpeed: player.baseSpeed,
   jumpV: player.jumpV,
   fov: camera.fov,
-  // player glow
-  glowEnabled: GLOW.enabled,
-  glowScale: GLOW.scale,
-  glowIntensity: GLOW.intensity,
-  glowPower: GLOW.power,
   // bots
   bots5v5: true,
   // invisible mode
@@ -2170,17 +2398,6 @@ fOutline.add(guiState, 'depthEdges', 0, 2, 0.01).name('Depth Edges')
 fOutline.add(guiState, 'normalEdges', 0, 2, 0.01).name('Normal Edges')
   .onChange(v => outline.uniforms.normalBias.value = v);
 fOutline.open();
-
-const fGlow = gui.addFolder('Player Glow');
-fGlow.add(guiState, 'glowEnabled').name('Enabled')
-  .onChange(v => setGlow({ enabled: v }));
-fGlow.add(guiState, 'glowScale', 1.0, 1.4, 0.005).name('Size')
-  .onChange(v => setGlow({ scale: v }));
-fGlow.add(guiState, 'glowIntensity', 0, 1.5, 0.01).name('Intensity')
-  .onChange(v => setGlow({ intensity: v }));
-fGlow.add(guiState, 'glowPower', 0.5, 6, 0.05).name('Softness')
-  .onChange(v => setGlow({ power: v }));
-fGlow.open();
 
 const fEnv = gui.addFolder('Environment');
 fEnv.add(guiState, 'environmentContrast', 0.5, 1.6, 0.01).name('Contrast')
@@ -2280,7 +2497,10 @@ if (DEV) window.__wo = {
     const d = camera.getWorldDirection(new THREE.Vector3());
     return spawnProjectile(o, d, 0xff6000, PLAYER_TEAM, 0, true, playerStats, { kind, gravity: 0, ttl: 60000 });
   },
-  camera, player, arena, bots, weapon,
+  camera, player, arena, bots, weapon, input, netplay, assist, audio,
+  respawn: respawnPlayer,
+  get settings() { return settings; },
+  step: updateProjectiles, recharge, physics, stats, reticle: updateReticle,
   get ammo() { return [...ammo]; }, get reload() { return { ...reload }; }, get slot() { return currentWeapon; },
   swap: (s) => switchWeapon(s), reloadNow: () => startReload(),
   render: () => outline.render(), // draw one frame on demand (background tabs pause rAF)
@@ -2352,7 +2572,8 @@ import('./devRecorder.js').then(({ DevRecorder }) => {
 // ---------------------------------------------------------------------------
 const settings = new Settings();
 settings.buildUI(document.getElementById('settings-body'));
-settings.apply({ controls, player, camera, match, audio, weapon, bots });
+settings.apply({ controls, player, camera, match, audio, weapon, bots,
+  night: { set: setNightUI, allowed: nightToggleAllowed } });
 
 // ---------------------------------------------------------------------------
 // Resize
@@ -2449,9 +2670,11 @@ function animate() {
     const ready = countdownMs <= 0; // frozen during the "get ready" countdown
     // hp refill: kicks in after a few clean seconds, tops off fast
     if (playerHp < HP_MAX && performance.now() - lastHurtAt > HP_DELAY) {
+      if (!healing) audio.play('heal', { volume: 0.35 });
+      healing = true;
       playerHp = Math.min(HP_MAX, playerHp + HP_RATE * dt);
       updateHpBar();
-    }
+    } else healing = false;
     // online: also collide with remote humans + ghost bots so nobody overlaps
     player.extraSolids = netplay.active ? netplay.collisionActors() : [];
     const crouchPress = ready && input.consumeCrouch();
@@ -2475,10 +2698,11 @@ function animate() {
     }
     const wsw = input.consumeWeapon();
     if (wsw !== null) switchWeapon(wsw === -1 ? (currentWeapon ^ 1) : wsw);
+    if (ready) assist(dt);
     updateShooting(ready); // fire + reload for whichever weapon is out
     updateReload();        // progress the reload ring + finish the mag swap
     if (!ready && shootWasHeld) stopFiring();
-    updateSlideSound();
+    updateSlideSound(dt);
     // tuck the gun back when facing a nearby wall so the barrel doesn't clip
     // through it — test blocker boxes only (skips the floor/ramps you look at)
     camera.getWorldDirection(_wpnDir);
@@ -2512,6 +2736,11 @@ function animate() {
     stopSlideSound();
     weapon.update(dt, false, settings.get('fov')); // ease the marker out of ADS
     applyAimZoom();                                 // and un-zoom the view
+    if (killerPos) { // death cam: ease the view onto whoever tagged you
+      _kcLook.position.copy(camera.position);
+      _kcLook.lookAt(killerPos.x, killerPos.y + 1.25, killerPos.z);
+      camera.quaternion.slerp(_kcLook.quaternion, 1 - Math.exp(-dt * 4.5));
+    }
     playerRespawnMs -= dt * 1000;
     const rn = Math.max(1, Math.ceil(playerRespawnMs / 1000));
     respawnCountEl.textContent = rn;
@@ -2525,6 +2754,7 @@ function animate() {
     stopSlideSound();
   }
 
+  updateReticle(dt); // reticle mode + countdown/scope/death hiding — runs even while down
   audio.updateListener(camera); // keep 3D audio anchored to the view
 
   netplay.update(dt); // sync remote players (no-op when offline)
@@ -2546,12 +2776,9 @@ function animate() {
 
   if (simRunning) {
     updateProjectiles(dt); updateFx(dt);
+    if (!frozen) physics(dt);
     // rolling grenade recharge — paused only when the world is
-    if (nadeCount < NADE_MAX) {
-      nadeT += dt * 1000;
-      if (nadeT >= NADE_RECHARGE_MS) { nadeCount++; nadeT = 0; }
-      updateNadeHud();
-    }
+    recharge(dt);
   }
 
   if (netplay.active) {
@@ -2571,7 +2798,10 @@ function animate() {
     }
   }
 
+  updateViewPunch(dt);
+  punchCamera(true);
   outline.render();
+  punchCamera(false);
   drawScopeOverlay(); // full-screen scope view while zoomed
 }
 animate();

@@ -46,6 +46,12 @@ export class InputManager {
 
     window.addEventListener('keydown', (e) => this._onKey(e, true));
     window.addEventListener('keyup', (e) => this._onKey(e, false));
+    window.addEventListener('blur', () => {
+      this.keys = {};
+      this._mouseShoot = this._mouseAim = this._keyCrouchDown = false;
+      this._jumpQueued = this._crouchQueued = this._nadeQueued = this._reloadQueued = this._startQueued = false;
+      this._weaponQueued = null;
+    });
     domElement.addEventListener('mousedown', (e) => {
       if (e.button === 0) this._mouseShoot = true;
       if (e.button === 2) this._mouseAim = true;   // right mouse -> aim
@@ -67,7 +73,7 @@ export class InputManager {
   _onKey(e, down) {
     const wasDown = !!this.keys[e.code];
     this.keys[e.code] = down;
-    if (down && e.code === 'Space') this._jumpQueued = true;
+    if (down && !wasDown && e.code === 'Space') this._jumpQueued = true;
     if (down && !wasDown && e.code === 'KeyR') this._reloadQueued = true;
     if (down && !wasDown && e.code === 'KeyG') this._nadeQueued = true;
     // weapon select: 1 = battle rifle, 2 = twin rockets (Q also cycles)
@@ -93,10 +99,13 @@ export class InputManager {
     this.look.x = 0;
     this.look.y = 0;
     this._padShoot = false;
+    this._padAim = false;
+    this._padCrouchDown = false;
+    this._padNade = false;
 
     const gp = this.gpIndex !== null ? navigator.getGamepads()[this.gpIndex] : null;
     if (gp) {
-      const dz = (v) => (Math.abs(v) < 0.16 ? 0 : v);
+      const dz = (v) => Math.sign(v) * Math.max(0, (Math.abs(v) - 0.16) / 0.84);
       strafe += dz(gp.axes[0] || 0);
       forward += -dz(gp.axes[1] || 0);
       this.look.x = dz(gp.axes[2] || 0);
@@ -110,6 +119,7 @@ export class InputManager {
       this._padCrouchDown = !!b[1];
       if (pressed(2)) this._reloadQueued = true;            // X -> reload
       if (pressed(3)) this._weaponQueued = -1;              // Y -> swap weapon
+      this._padNade = !!b[5];
       if (pressed(5)) this._nadeQueued = true;              // RB -> grenade
       // Start (9) OR menu (8) -> begin / pause. NOT A, so jumping never pauses.
       if (pressed(9) || pressed(8)) this._startQueued = true;
@@ -128,6 +138,7 @@ export class InputManager {
 
   get shootHeld() { return this._mouseShoot || this._padShoot; }
   get aimHeld() { return this._mouseAim || this._padAim; }
+  get nadeHeld() { return !!(this.keys.KeyG || this._padNade); }
 
   consumeJump() { const j = this._jumpQueued; this._jumpQueued = false; return j; }
   get crouchHeld() { return this._keyCrouchDown || this._padCrouchDown; }

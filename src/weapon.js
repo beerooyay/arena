@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildGun, ORANGE, upgradeToRocketRifle, RR_MUZZLES, RR_TOP, RR_SCALE, RR_GRIP } from './gunModel.js';
-import { makeFirstPersonArms } from './avatarRig.js';
+import { makeFirstPersonArms, duration, release, hold } from './avatarRig.js';
 import { muzzleFlashTexture } from './fx.js';
 
 const _lookEuler = new THREE.Euler();
@@ -17,23 +17,24 @@ export class Weapon {
 
     this.mode = 0; // 0 = rifle, 1 = rocket
 
-    this.hipX = 0.344; this.hipY = -0.403; this.hipZ = -0.3625; // classic FPS hold: low right, downrange, stock off-frame
+    this.hipX = 0.344; this.hipY = -0.455; this.hipZ = -0.3625; // classic FPS hold: low right, downrange, stock off-frame
     this.aimX = 0.00; this.aimY = -0.195; this.aimZ = -0.3825; // ~ -0.44 × viewScale keeps the sight picture
     this.wallPull = 0;
     this.cant = 0;
     this.wallPullZ = 0.32;
     this.wallPullY = -0.05;
     this.aimFov = 38; // sniper scope fov
-    this.aimSpeed = 26;
+    this.aimSpeed = 22;
+    this.aimV = 0;
     this.recoilAmount = 0.25;
 
-    this.sprintX = 0.22; this.sprintY = -0.3; this.sprintZ = -0.4;
-    this.sprintPitch = -0.80;
-    this.sprintYaw = 0.52;
-    this.sprintRoll = 0.45;
-    this.sprintSpeed = 20;
-    this.swaySpeed = 11.5;
-    this.swayX = 0.055;
+    this.sprintX = 0.26; this.sprintY = -0.44; this.sprintZ = -0.4; // tucks low instead of raising the gun
+    this.sprintPitch = -0.52;
+    this.sprintYaw = 0.4;
+    this.sprintRoll = 0.3;
+    this.sprintSpeed = 11;   // ease in/out, not a snap
+    this.swaySpeed = 9.5;
+    this.swayX = 0.045;
     this.swayY = 0.02;
     this.swayRoll = 0;
 
@@ -63,11 +64,15 @@ export class Weapon {
     this.hipPitch = 0.02;  // stock stays up near the shoulder, not dipped out of frame
     this.hipYaw = 0.095;   // stock cants a touch inward — gun reads closer to the eye
     this.hipRoll = 0.06;
-    this.viewScale = 1.20;
+    this.viewScale = 1.45;
     this.refFov = 75;
     this.materials = [];
 
     this._build();
+    this.throwing = 0;
+    const anchor = RR_MUZZLES.top.clone().multiplyScalar(0.12)
+      .applyEuler(new THREE.Euler(this.hipPitch, this.hipYaw, this.hipRoll));
+    this.hipX -= anchor.x; this.hipY -= anchor.y; this.hipZ -= anchor.z;
     // swap in the authored rocket rifle once it loads (procedural gun until then)
     this._rrReady = upgradeToRocketRifle(this._gun, { keep: [this.arm, this.flash], castShadow: false }).then((ok) => {
       if (!ok) return;
@@ -86,7 +91,7 @@ export class Weapon {
 
   setMode(m) {
     this.mode = m === 1 ? 1 : 0;
-    this.aimFov = this.mode === 0 ? 38 : 58;
+    this.aimFov = this.mode === 0 ? (this.zoom ?? 38) : 58;
     // rifle sights through the optic; rocket sights over the top slabs
     this.aimY = this.rr ? this._rrAimY : (this.mode === 0 ? -0.195 : -0.18);
     if (!this.rifleGroup.userData.retired) {
@@ -160,6 +165,7 @@ export class Weapon {
       m.traverse((o) => { o.layers.mask = this._gun.group.layers.mask; }); // viewmodel layer
       this._gun.group.add(m);
       this.suitArms = m;
+      this.arms = arms;
       this.arm.visible = false; // retire the box glove
       return true;
     });
@@ -168,7 +174,17 @@ export class Weapon {
   /** Dip the gun down, run cb at the bottom (model swap), raise it again. */
   swap(cb) { if (this._swapCb) this._swapCb(); this._swapCb = cb; }
 
+  toss(callback, held = false) { this.throwing = duration; this.holding = held; this.release = callback; this.arms?.toss(held); }
+  letgo() { this.holding = false; this.arms?.letgo(); }
+
+  fov(base) {
+    return THREE.MathUtils.radToDeg(2 * Math.atan(THREE.MathUtils.lerp(
+      Math.tan(THREE.MathUtils.degToRad(base) / 2), Math.tan(THREE.MathUtils.degToRad(this.aimFov) / 2), this.aimT)));
+  }
+
   reset() {
+    this.throwing = 0; this.holding = false; this.release = null; this.aimV = 0;
+    this.arms?.reset();
     this._swapCb = null;
     this.swapT = 1; this.reloadT = 0; this.aimT = 0;
     this.sprintT = 0; this.slideT = 0; this.wallPull = 0; this._kick = 0;
@@ -210,8 +226,13 @@ export class Weapon {
    *   the walk bob (sprint has its own pose + sway)
    */
   update(dt, aiming, baseFov = 75, sprinting = false, sliding = false, move = 0, reloading = false) {
-    const target = aiming ? 1 : 0;
-    this.aimT += (target - this.aimT) * Math.min(1, dt * this.aimSpeed);
+    this.throwing = Math.max(this.holding ? duration - hold : 0, this.throwing - dt);
+    const gesture = Math.sin(Math.PI * this.throwing / duration);
+    const target = aiming && !this.throwing && !reloading && this.swapT >= 1 ? 1 : 0;
+    const error = this.aimT - target, decay = Math.exp(-this.aimSpeed * dt);
+    const change = (this.aimV + this.aimSpeed * error) * dt;
+    this.aimT = THREE.MathUtils.clamp(target + (error + change) * decay, 0, 1);
+    this.aimV = (this.aimV - this.aimSpeed * change) * decay;
     const t = this.aimT;
 
     // weapon swap: dive to the bottom, swap models there, come back up
@@ -235,7 +256,7 @@ export class Weapon {
     this.slideT += (slTarget - this.slideT) * Math.min(1, dt * this.slideBlend);
     const sl = this.slideT;
 
-    const curFov = THREE.MathUtils.lerp(baseFov, this.aimFov, t);
+    const curFov = this.fov(baseFov);
     const comp = this._fovComp(curFov);
     this.root.scale.set(comp, comp, 1);
 
@@ -284,7 +305,7 @@ export class Weapon {
     pz += this.slideZ * sl;
     // swap dip: the gun drops out of frame and returns with the other weapon
     px += sw * 0.06;
-    py -= sw * 0.42;
+    py -= sw * 0.42 + gesture * 0.16;
     // reload pose: drops low and cants inboard, mag-well toward the camera
     px += rl * 0.05;
     py -= rl * 0.30;
@@ -317,6 +338,11 @@ export class Weapon {
     ry += R.y * 0.03 + this._look.x * 0.8 * swayK;
     rz += R.r * 0.03 + this._look.x * 0.5 * swayK;
     this.pose.rotation.set(rx, ry, rz);
+    this.arms?.update(dt);
+    if (this.release && duration - this.throwing >= release) {
+      const callback = this.release; this.release = null;
+      callback(this.arms?.origin());
+    }
   }
 
   dispose() {

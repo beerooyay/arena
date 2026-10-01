@@ -37,6 +37,7 @@ const CLIPS = {
   deathRun: 'Rifle Run To Dying',
   roll: 'Running Dive Roll',
   jump: 'Rifle Jump In Place',
+  grenade: 'Toss Grenade',
 };
 
 // --- rebuild a glTF skeleton (bones + rest TRS) straight from the GLB JSON ---
@@ -77,9 +78,27 @@ function bakeRig(rig, fbx) {
   const target = skeletonFromGlb(path.join(SRC, rig + '.glb'));
   const rt = makeRetargeter(target, fbx['Rifle Idle'] || Object.values(fbx)[0]);
   const out = { rig, fps: FPS, clips: {} };
+  let idle = null;
   for (const [key, file] of Object.entries(CLIPS)) {
     const src = fbx[file];
-    const clip = rt.retarget(src, src.animations[0], { fps: FPS });
+    const clip = rt.retarget(src, src.animations[0], { fps: FPS, mirror: key === 'grenade' });
+    if (key === 'idle') idle = clip;
+    if (key === 'grenade') {
+      const mixer = new THREE.AnimationMixer(target);
+      mixer.clipAction(idle).play(); mixer.setTime(0.5); target.updateMatrixWorld(true);
+      const shoulder = target.getObjectByName('mixamorigLeftShoulder');
+      const chest = shoulder.parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+      mixer.stopAllAction();
+      const action = mixer.clipAction(clip).setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true; action.play();
+      const track = clip.tracks.find((track) => track.name === 'mixamorigLeftShoulder.quaternion');
+      const values = new Float32Array(track.values.length);
+      for (let i = 0; i < track.times.length; i++) {
+        mixer.setTime(track.times[i]); target.updateMatrixWorld(true);
+        chest.clone().multiply(shoulder.getWorldQuaternion(new THREE.Quaternion())).normalize().toArray(values, i * 4);
+      }
+      mixer.stopAllAction(); mixer.uncacheRoot(target); track.values = values;
+    }
     // in place: pin hips X/Z to the first frame (keep the vertical bob / fall)
     const hp = clip.tracks.find((t) => t.name.endsWith('Hips.position'));
     const x0 = hp.values[0], z0 = hp.values[2];
@@ -105,6 +124,7 @@ for (const rig of ['p1', 'p2']) {
   fs.writeFileSync(file, JSON.stringify(data));
   console.log(`${path.relative(ROOT, file)}  ${(fs.statSync(file).size / 1024).toFixed(0)} KB  (${Object.keys(data.clips).length} clips)`);
 
+  if (process.argv.includes('--animations')) continue;
   const glbOut = path.join(OUT, `${rig}.glb`);
   execFileSync('npx', ['gltf-transform', 'resize', path.join(SRC, rig + '.glb'), glbOut,
     '--width', String(TEX_SIZE), '--height', String(TEX_SIZE)], { stdio: 'inherit', cwd: path.dirname(fileURLToPath(import.meta.url)) });

@@ -15,8 +15,11 @@ export class AudioManager {
     this.master = null;
     this.buffers = {};
     this.masterVolume = 0.8;
+    this.volumes = { combat: 0.85, movement: 0.65, ui: 0.55, ambient: 0.15 };
+    this.buses = {}; this.voices = new Set(); this.unlocked = false; this.room = null;
+    this.position = { x: 0, y: 0, z: 0 };
     this._spatialActive = 0; // live positional voices (for culling)
-    this.maxSpatial = 8;     // hard cap so a firefight can't turn to mush
+    this.maxSpatial = 12;     // hard cap so a firefight can't turn to mush
   }
 
   _ensureCtx() {
@@ -26,7 +29,20 @@ export class AudioManager {
     this.ctx = new AC();
     this.master = this.ctx.createGain();
     this.master.gain.value = this.masterVolume;
-    this.master.connect(this.ctx.destination);
+    const limiter = this.ctx.createDynamicsCompressor();
+    limiter.threshold.value = -12; limiter.knee.value = 18; limiter.ratio.value = 3.5;
+    limiter.attack.value = 0.004; limiter.release.value = 0.15;
+    this.master.connect(limiter); limiter.connect(this.ctx.destination);
+    for (const [name, volume] of Object.entries(this.volumes)) {
+      const bus = this.ctx.createGain(); bus.gain.value = volume; bus.connect(this.master); this.buses[name] = bus;
+    }
+    const delay = this.ctx.createDelay(0.1), tone = this.ctx.createBiquadFilter(), wet = this.ctx.createGain();
+    delay.delayTime.value = 0.045; tone.type = 'lowpass'; tone.frequency.value = 1800; wet.gain.value = 0.12;
+    this.buses.combat.connect(delay); delay.connect(tone); tone.connect(wet); wet.connect(this.master);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) this.ctx.suspend().catch(() => {});
+      else if (this.unlocked) this.resume();
+    });
   }
 
   /** Load & decode a map of {name: url}. Safe to call before any user gesture. */
@@ -54,12 +70,60 @@ export class AudioManager {
   /** Resume the context. Call from a user gesture (click / key / gamepad). */
   resume() {
     this._ensureCtx();
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    this.unlocked = true;
+    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+    if (!this.room && this.buffers.room) this.room = this.playLoop('room', { volume: 0.6 });
   }
 
   setMasterVolume(v) {
     this.masterVolume = v;
-    if (this.master) this.master.gain.value = v;
+    if (this.master) this.master.gain.setTargetAtTime(v, this.ctx.currentTime, 0.03);
+    if (this.unlocked && !this.room && v > 0) this.resume();
+  }
+
+  setVolume(name, value) {
+    this.volumes[name] = value;
+    this.buses[name]?.gain.setTargetAtTime(value, this.ctx.currentTime, 0.03);
+  }
+
+  channel(name) {
+    if (name === 'room') return 'ambient';
+    if (/^(jump|foot|land|slide|bodyFall)$/.test(name)) return 'movement';
+    if (/^(killConfirm|countdownBeep|countdownGo|heal|uiClick)$/.test(name)) return 'ui';
+    return 'combat';
+  }
+
+  voice(name, { volume = 1, rate = 1, loop = false, refDistance = 6, maxDistance = 90, rolloff = 1.1 } = {}, pos = null) {
+    if (!this.ctx || !this.buffers[name] || this.masterVolume <= 0 || volume <= 0) return null;
+    const channel = this.channel(name);
+    const distance = pos ? Math.hypot(pos.x - this.position.x, pos.y - this.position.y, pos.z - this.position.z) : 0;
+    if (pos && distance > maxDistance) return null;
+    if (this.voices.size >= 24 || pos && this._spatialActive >= this.maxSpatial) {
+      const candidates = [...this.voices].filter((voice) => !voice.loop && (!pos || voice.panner));
+      const quiet = candidates.find((voice) => voice.channel === 'movement');
+      const distant = candidates.sort((a, b) => b.distance - a.distance)[0];
+      const victim = channel === 'combat' ? quiet || (distant?.distance > distance ? distant : null) : null;
+      if (!victim) return null;
+      victim.src.stop(); victim.close();
+    }
+    const src = this.ctx.createBufferSource(), gain = this.ctx.createGain();
+    src.buffer = this.buffers[name]; src.playbackRate.value = rate; src.loop = loop; gain.gain.value = volume;
+    src.connect(gain);
+    let panner = null;
+    if (pos) {
+      panner = this.ctx.createPanner(); panner.panningModel = 'HRTF'; panner.distanceModel = 'inverse';
+      panner.refDistance = refDistance; panner.maxDistance = maxDistance; panner.rolloffFactor = rolloff;
+      if (panner.positionX) { panner.positionX.value = pos.x; panner.positionY.value = pos.y; panner.positionZ.value = pos.z; }
+      else panner.setPosition(pos.x, pos.y, pos.z);
+      gain.connect(panner); panner.connect(this.buses[channel]); this._spatialActive++;
+    } else gain.connect(this.buses[channel]);
+    const voice = { src, gain, panner, channel, distance, loop, close: () => {
+      if (!this.voices.delete(voice)) return;
+      src.disconnect(); gain.disconnect(); panner?.disconnect();
+      if (panner) this._spatialActive--;
+    } };
+    this.voices.add(voice); src.onended = voice.close; src.start();
+    return voice;
   }
 
   /**
@@ -69,15 +133,7 @@ export class AudioManager {
    *   rate is a playback-speed / pitch multiplier.
    */
   play(name, { volume = 1, rate = 1 } = {}) {
-    if (!this.ctx || !this.buffers[name] || this.masterVolume <= 0 || volume <= 0) return;
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.buffers[name];
-    src.playbackRate.value = rate;
-    const g = this.ctx.createGain();
-    g.gain.value = volume;
-    src.connect(g);
-    g.connect(this.master);
-    src.start();
+    return this.voice(name, { volume, rate });
   }
 
   /**
@@ -85,17 +141,7 @@ export class AudioManager {
    * stopLoop() to stop it. Returns null if audio is unavailable.
    */
   playLoop(name, { volume = 1, rate = 1 } = {}) {
-    if (!this.ctx || !this.buffers[name] || this.masterVolume <= 0) return null;
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.buffers[name];
-    src.loop = true;
-    src.playbackRate.value = rate;
-    const g = this.ctx.createGain();
-    g.gain.value = volume;
-    src.connect(g);
-    g.connect(this.master);
-    src.start();
-    return { src, gain: g };
+    return this.voice(name, { volume, rate, loop: true });
   }
 
   /** Stop a loop from playLoop(), with a tiny fade so it doesn't click. */
@@ -117,8 +163,10 @@ export class AudioManager {
   updateListener(camera) {
     if (!this.ctx) return;
     const l = this.ctx.listener;
+    camera.updateWorldMatrix(true, false);
     const e = camera.matrixWorld.elements;
     const px = e[12], py = e[13], pz = e[14];
+    Object.assign(this.position, { x: px, y: py, z: pz });
     const fx = -e[8], fy = -e[9], fz = -e[10]; // camera looks down -Z
     const ux = e[4], uy = e[5], uz = e[6];
     if (l.positionX) {
@@ -138,37 +186,6 @@ export class AudioManager {
    * @param {{x:number,y:number,z:number}} pos
    */
   playAt(name, pos, { volume = 1, rate = 1, refDistance = 6, maxDistance = 90, rolloff = 1.1 } = {}) {
-    if (!this.ctx || !this.buffers[name] || this.masterVolume <= 0) return;
-    if (this._spatialActive >= this.maxSpatial) return;
-
-    const src = this.ctx.createBufferSource();
-    src.buffer = this.buffers[name];
-    src.playbackRate.value = rate;
-
-    const panner = this.ctx.createPanner();
-    panner.panningModel = 'HRTF';
-    panner.distanceModel = 'inverse';
-    panner.refDistance = refDistance;
-    panner.maxDistance = maxDistance;
-    panner.rolloffFactor = rolloff;
-    if (panner.positionX) {
-      const t = this.ctx.currentTime;
-      panner.positionX.setValueAtTime(pos.x, t);
-      panner.positionY.setValueAtTime(pos.y, t);
-      panner.positionZ.setValueAtTime(pos.z, t);
-    } else {
-      panner.setPosition(pos.x, pos.y, pos.z);
-    }
-
-    const g = this.ctx.createGain();
-    g.gain.value = volume;
-    src.connect(g); g.connect(panner); panner.connect(this.master);
-
-    this._spatialActive++;
-    src.onended = () => {
-      this._spatialActive--;
-      try { src.disconnect(); g.disconnect(); panner.disconnect(); } catch (_) {}
-    };
-    src.start();
+    return this.voice(name, { volume, rate, refDistance, maxDistance, rolloff }, pos);
   }
 }

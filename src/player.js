@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { gravity } from './physics.js';
 
 /**
  * PlayerController
@@ -27,9 +28,12 @@ export class PlayerController {
     this.radius = 0.45;
     this.velocityY = 0;
     this.onGround = true;
+    this.assist = 0.25;
+    this.grace = 0;
+    this.buffer = 0;
 
-    this.gravity = -26;
-    this.jumpV = 9.5;        // ~1.7 m hop (dev-panel sliders still adjust these live)
+    this.gravity = gravity;
+    this.jumpV = 6.8;        // ~1.7 m hop (dev-panel sliders still adjust these live)
     this.baseSpeed = 9;      // tuned for the 38 m arena: readable, not twitchy
     this.sprintSpeed = 13;
     // horizontal velocity eases toward the input instead of snapping — Halo
@@ -37,6 +41,7 @@ export class PlayerController {
     this.moveVel = new THREE.Vector3();
     this.groundAccel = 16;   // 1/s: ~90% of target speed in ~0.14 s
     this.airAccel = 3.2;     // a little air control for jump fights
+    this.lookFactor = 1; this.slowdown = 1;
     this.padLookSpeed = 2.6; // radians/sec at full stick deflection
 
     this.minPolar = 0;
@@ -97,6 +102,7 @@ export class PlayerController {
   /** Horizontal world-space move direction from forward/strafe input. */
   _moveDir(forward, strafe, out) {
     const c = this.camera;
+    c.updateMatrix();
     _right.setFromMatrixColumn(c.matrix, 0); _right.y = 0;
     if (_right.lengthSq() < 1e-6) _right.set(1, 0, 0);
     _right.normalize();
@@ -128,7 +134,12 @@ export class PlayerController {
 
   jump() {
     if (this.prone || this.diving) return false; // stand up first
-    if (this.onGround) { this.velocityY = this.jumpV; this.onGround = false; return true; }
+    this.buffer = 0.12;
+    if (this.onGround || this.grace > 0) {
+      this.standUp();
+      this.velocityY = this.jumpV; this.onGround = false; this.grace = 0; this.buffer = 0;
+      return true;
+    }
     return false;
   }
 
@@ -170,6 +181,10 @@ export class PlayerController {
    *  -slide, or -dive never carries the low stance into the next life. */
   resetStance() {
     this.standUp();
+    this.moveVel.set(0, 0, 0);
+    this.grace = 0; this.buffer = 0;
+    this._bobX = 0; this._bobY = 0;
+    this._appliedX = 0; this._appliedY = 0;
     this.crouch = 0;        // clear the eased camera dip (no lingering lean)
     this.sliding = false;
     this.slideT = 0;
@@ -232,9 +247,11 @@ export class PlayerController {
   update(dt, input, padLook) {
     // gamepad look
     if (padLook && (padLook.x || padLook.y)) {
-      this.addLook(padLook.x * this.padLookSpeed * dt, padLook.y * this.padLookSpeed * dt);
+      this.addLook(padLook.x * this.padLookSpeed * this.lookFactor * this.slowdown * dt, padLook.y * this.padLookSpeed * this.lookFactor * this.slowdown * dt);
     }
 
+    this.grace = this.onGround && this.velocityY <= 0 ? 0.1 : Math.max(0, this.grace - dt);
+    this.buffer = Math.max(0, this.buffer - dt);
     const pos = this.camera.position;
 
     // strip last frame's render offset (bob + crouch) so physics runs clean
@@ -314,7 +331,7 @@ export class PlayerController {
       const f = input.forward || 0, st = input.strafe || 0;
       const amt = Math.min(1, Math.hypot(f, st));
       this._moveDir(f, st, _dir).multiplyScalar(mag * amt);
-      const a = Math.min(1, dt * (this.onGround ? this.groundAccel : this.airAccel));
+      const a = 1 - Math.exp(-dt * (this.onGround ? (amt ? this.groundAccel : this.groundAccel * 1.4) : this.airAccel));
       this.moveVel.x += (_dir.x - this.moveVel.x) * a;
       this.moveVel.z += (_dir.z - this.moveVel.z) * a;
       pos.x += this.moveVel.x * dt;
@@ -337,7 +354,7 @@ export class PlayerController {
     else if (this.diving) targetCrouch = this.proneDepth * 0.8;
     else if (this.sliding) targetCrouch = SLIDE_CROUCH;
     else if (this.crouching) targetCrouch = this.crouchDepth;
-    this.crouch += (targetCrouch - this.crouch) * Math.min(1, dt * 12);
+    this.crouch += (targetCrouch - this.crouch) * (1 - Math.exp(-dt * 12));
 
     // ground/collision always use the full standing height; the crouch dip is
     // applied to the camera visually at the end so it can't affect grounding
@@ -398,10 +415,9 @@ export class PlayerController {
         const dL = pos.x - minX, dR = maxX - pos.x;
         const dB = pos.z - minZ, dF = maxZ - pos.z;
         const m = Math.min(dL, dR, dB, dF);
-        if (m === dL) pos.x = minX;
-        else if (m === dR) pos.x = maxX;
-        else if (m === dB) pos.z = minZ;
-        else pos.z = maxZ;
+        if (m === dL || m === dR) { pos.x = m === dL ? minX : maxX; this.moveVel.x = 0; }
+        else { pos.z = m === dB ? minZ : maxZ; this.moveVel.z = 0; }
+        if (this.sliding) { this.sliding = false; this.slideCooldown = SLIDE_COOLDOWN; }
       }
     }
 
@@ -458,10 +474,13 @@ export class PlayerController {
       this._bobY = Math.sin(this._bobPhase * 2) * amp;   // vertical (double freq)
       this._bobX = Math.sin(this._bobPhase) * amp * 0.7; // side-to-side rock
     } else {
-      this._bobX *= 0.82; this._bobY *= 0.82;
+      const decay = Math.exp(-dt * 12);
+      this._bobX *= decay; this._bobY *= decay;
       if (Math.abs(this._bobX) < 1e-4) this._bobX = 0;
       if (Math.abs(this._bobY) < 1e-4) this._bobY = 0;
     }
+
+    if (this.onGround && this.buffer > 0) this.jump();
 
     // apply bob + crouch dip as one removable render offset
     this._appliedX = this._bobX;

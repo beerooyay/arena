@@ -21,6 +21,9 @@ const SCHEMA = [
     min: 0, max: 1, step: 0.05, default: 0.8, percent: true,
     apply: (v, t) => { t.audio.setMasterVolume(v); },
   },
+  ...Object.entries({ combat: ['Combat Volume', 0.85], movement: ['Movement Volume', 0.65], ui: ['UI Volume', 0.55], ambient: ['Atmosphere Volume', 0.15] })
+    .map(([name, [label, value]]) => ({ key: name + 'Volume', label, min: 0, max: 1, step: 0.05, default: value, percent: true,
+      apply: (v, t) => { t.audio.setVolume(name, v); } })),
   {
     key: 'mouseSensitivity', label: 'Mouse Sensitivity',
     min: 0.2, max: 3, step: 0.05, default: 1.0,
@@ -32,16 +35,29 @@ const SCHEMA = [
     apply: (v, t) => { t.player.padLookSpeed = v; },
   },
   {
+    key: 'assist', label: 'Aim Assist (ADS)',
+    min: 0, max: 1, step: 0.05, default: 0.25, percent: true,
+    apply: (v, t) => { t.player.assist = v; },
+  },
+  {
     key: 'fov', label: 'Field of View',
     min: 60, max: 110, step: 1, default: 80, unit: '°', // 80: the arena reads at its true scale; wide is opt-in
     apply: (v, t) => { t.camera.fov = v; t.camera.updateProjectionMatrix(); if (t.weapon) t.weapon._fovComp(v); },
   },
   {
     key: 'aimZoom', label: 'Aim Zoom (FOV)',
-    min: 20, max: 75, step: 1, default: 75, unit: '°',
-    apply: (v, t) => { t.weapon.aimFov = v; },
+    min: 20, max: 75, step: 1, default: 38, unit: '°',
+    apply: (v, t) => { t.weapon.zoom = v; if (t.weapon.mode === 0) t.weapon.aimFov = v; },
   },
   // Score to win lives on the main menu's setup bar (one source of truth).
+  // Day/night is the whole-arena Lights Out mode — same switch as the main
+  // menu's Arena control, just reachable from in-game too. Online, only the
+  // host may flip it before the match (same rule as the menu switch).
+  {
+    key: 'arenaLight', label: 'Arena Lighting', type: 'choice',
+    min: 0, max: 1, step: 1, default: 0, labels: ['Day', 'Night'],
+    apply: (v, t) => { if (t.night?.allowed()) t.night.set(v === 1); },
+  },
   {
     key: 'botSkill', label: 'Bot Difficulty',
     min: 0, max: 2, step: 1, default: 1, labels: ['Chill', 'Pro', 'Sweat'],
@@ -60,6 +76,13 @@ export class Settings {
 
   get(key) { return this.values[key]; }
 
+  /** External sync (e.g. the main-menu Arena switch) — store + reflect in UI. */
+  set(key, v) {
+    this.values[key] = v;
+    this._save();
+    this.refreshUI();
+  }
+
   _load() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -70,6 +93,10 @@ export class Settings {
         if (typeof v === 'number' && isFinite(v)) {
           this.values[s.key] = Math.min(s.max, Math.max(s.min, v));
         }
+      }
+      if (saved.optics !== 1 && saved.aimZoom === 75) {
+        this.values.aimZoom = 38;
+        this._save();
       }
       // One-time migration: force the current FOV default onto older saves.
       // Runs once — after this the player is free to lower it and it sticks.
@@ -85,7 +112,7 @@ export class Settings {
 
   _save() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...this.values, _mig: SETTINGS_MIGRATION }));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...this.values, _mig: SETTINGS_MIGRATION, optics: 1 }));
     } catch (e) {
       // storage may be unavailable (private mode / itch sandbox) — ignore
     }
@@ -121,29 +148,54 @@ export class Settings {
       val.textContent = this._fmt(s, this.values[s.key]);
       head.append(name, val);
 
-      const input = document.createElement('input');
-      input.type = 'range';
-      input.min = s.min; input.max = s.max; input.step = s.step;
-      input.value = this.values[s.key];
-      input.addEventListener('input', () => {
-        const v = parseFloat(input.value);
-        this.values[s.key] = v;
-        val.textContent = this._fmt(s, v);
-        if (this._targets) s.apply(v, this._targets);
-        this._save();
-      });
-
-      row.append(head, input);
+      if (s.type === 'choice') {
+        // segmented buttons instead of a slider — one tap flips the value
+        const seg = document.createElement('div');
+        seg.className = 'seg';
+        s.labels.forEach((label, i) => {
+          const b = document.createElement('button');
+          b.className = 'seg-btn';
+          b.textContent = label;
+          b.addEventListener('click', () => {
+            this.values[s.key] = i;
+            [...seg.children].forEach((c, j) => c.classList.toggle('is-active', j === i));
+            val.textContent = label;
+            if (this._targets) s.apply(i, this._targets);
+            this._save();
+          });
+          seg.appendChild(b);
+        });
+        row.append(head, seg);
+        this._rows[s.key] = { seg, val, schema: s };
+      } else {
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.min = s.min; input.max = s.max; input.step = s.step;
+        input.value = this.values[s.key];
+        input.addEventListener('input', () => {
+          const v = parseFloat(input.value);
+          this.values[s.key] = v;
+          val.textContent = this._fmt(s, v);
+          if (this._targets) s.apply(v, this._targets);
+          this._save();
+        });
+        row.append(head, input);
+        this._rows[s.key] = { input, val, schema: s };
+      }
       container.append(row);
-      this._rows[s.key] = { input, val, schema: s };
     }
+    this.refreshUI();
   }
 
   /** Refresh the displayed slider positions (e.g. after an external change). */
   refreshUI() {
     for (const key in this._rows) {
       const r = this._rows[key];
-      r.input.value = this.values[key];
+      if (r.seg) {
+        [...r.seg.children].forEach((c, i) => c.classList.toggle('is-active', i === this.values[key]));
+      } else {
+        r.input.value = this.values[key];
+      }
       r.val.textContent = this._fmt(r.schema, this.values[key]);
     }
   }

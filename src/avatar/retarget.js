@@ -77,10 +77,10 @@ export function makeRetargeter(targetRoot, sourceRoot) {
   const hipsParentQ = wquat(tHips.parent);
 
   /** Bake a source clip (played on sourceRoot) into a clip for the target rig. */
-  function retarget(srcRoot, srcClip, { fps = 30 } = {}) {
+  function retarget(srcRoot, srcClip, { fps = 30, mirror = false } = {}) {
     const srcBones = bonesOf(srcRoot);
     const mixer = new THREE.AnimationMixer(srcRoot);
-    const act = mixer.clipAction(srcClip); act.play();
+    const act = mixer.clipAction(srcClip); act.setLoop(THREE.LoopOnce, 1); act.clampWhenFinished = true; act.play();
     const frames = Math.max(2, Math.round(srcClip.duration * fps) + 1);
     const times = new Float32Array(frames);
     const qv = new Map(names.map((n) => [n, new Float32Array(frames * 4)]));
@@ -92,7 +92,13 @@ export function makeRetargeter(targetRoot, sourceRoot) {
       mixer.setTime(t);
       srcRoot.updateMatrixWorld(true);
       for (const n of names) {
-        const w = wquat(srcBones.get(n)).multiply(C.get(n));
+        const source = mirror ? n.replace(/Left|Right/, (side) => side === 'Left' ? 'Right' : 'Left') : n;
+        const w = wquat(srcBones.get(source));
+        if (mirror) {
+          w.multiply(S0.get(source).clone().invert());
+          w.y = -w.y; w.z = -w.z;
+          w.multiply(T0.get(n));
+        } else w.multiply(C.get(n));
         Tw.set(n, w);
         const parentName = tb.get(n).parent.name.startsWith(P) ? tb.get(n).parent.name.slice(P.length) : null;
         const pw = parentName && Tw.has(parentName) ? Tw.get(parentName) : hipsParentQ;

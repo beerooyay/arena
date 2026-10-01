@@ -428,6 +428,23 @@ kbd {
 #weap-reload-bar { width: 70px; height: 6px; border-radius: 4px; background: rgba(255,255,255,.12); overflow: hidden; }
 #weap-reload-fill { display: block; height: 100%; width: 0%; border-radius: 4px; background: var(--grad); }
 
+/* sticky grenade pips — full = charged, charging sweeps a conic fill */
+#nade-hud { display: inline-flex; align-items: center; gap: 5px; }
+.nade-pip {
+  width: 11px; height: 11px; border-radius: 50%;
+  background: rgba(255,255,255,.14);
+  border: 1px solid rgba(255,255,255,.18);
+}
+.nade-pip.full {
+  background: radial-gradient(circle at 35% 35%, #ffd9b8, var(--acc) 60%, #b33c00);
+  border-color: rgba(255,150,80,.55);
+  box-shadow: 0 0 8px rgba(255,96,0,.55);
+}
+.nade-pip.charging {
+  background: conic-gradient(var(--acc) calc(var(--p) * 360deg), rgba(255,255,255,.14) 0);
+}
+.nade-label { font-size: var(--fs-label); font-weight: 600; letter-spacing: var(--tr-caps); text-transform: uppercase; color: var(--text-3); margin-left: 3px; }
+
 /* ---------- scoreboard ---------- */
 #scoreboard {
   position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 20; user-select: none;

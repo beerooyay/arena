@@ -519,6 +519,7 @@ function respawnPlayer() {
   respawnEl.classList.add('hidden');
   setWeaponsVisible(true);
   refillAmmo();
+  nadeCount = NADE_MAX; nadeT = 0; updateNadeHud(); // respawn with full pouches
   camera.position.copy(playerSpawnPoint(true)); // respawns scatter around the ring
   player.velocityY = 0; player.moveVel.set(0, 0, 0);
   player.resetStance();   // stand up — don't carry a crouch/slide into respawn
@@ -773,6 +774,7 @@ function resetMatch() {
   lastHurtAt = -Infinity;
   playerHp = HP_MAX; updateHpBar();
   refillAmmo(); lastShotAt.fill(0);
+  nadeCount = NADE_MAX; nadeT = 0; updateNadeHud();
   startCountdown();                    // "get ready" freeze before the match
 }
 function restartLocalMatch() {
@@ -1377,6 +1379,11 @@ let pendingShotUntil = 0;      // buffered trigger press (fires as soon as the g
 let shootWasHeld = false;
 let crossBloom = 0;            // reticle bloom 0..1, kicked by each shot
 
+// Sticky grenades: 2 charges, each recharges on a rolling cooldown.
+const NADE_MAX = 2, NADE_RECHARGE_MS = 10000, NADE_FUSE_MS = 1000;
+const NADE_SPEED = 22, NADE_GRAV = -14, NADE_TTL = 8000;
+let nadeCount = NADE_MAX, nadeT = 0; // nadeT = ms progress toward next charge
+
 const raycaster = new THREE.Raycaster();
 const _forward = new THREE.Vector3();
 const _camUp = new THREE.Vector3();
@@ -1424,6 +1431,17 @@ const weapReloadFillEl = document.getElementById('weap-reload-fill');
 const reloadPromptEl = document.getElementById('reload-prompt');
 const reloadPromptKeyEl = document.getElementById('reload-prompt-key');
 const chReloadEl = document.getElementById('ch-reload');
+const nadePips = [document.getElementById('nade-pip-0'), document.getElementById('nade-pip-1')];
+function updateNadeHud() {
+  nadePips.forEach((pip, i) => {
+    if (!pip) return;
+    const charged = i < nadeCount;
+    const charging = i === nadeCount && nadeCount < NADE_MAX;
+    pip.classList.toggle('full', charged);
+    pip.classList.toggle('charging', charging);
+    pip.style.setProperty('--p', charging ? (nadeT / NADE_RECHARGE_MS).toFixed(3) : 0);
+  });
+}
 function updateWeaponHud() {
   const w = WEAPONS[currentWeapon];
   if (weapModeEl) weapModeEl.textContent = w.name;
@@ -1514,7 +1532,8 @@ function updateShooting(ready) {
   const now = performance.now();
   if (held && !shootWasHeld) pendingShotUntil = now + 200; // press edge: buffer it
   shootWasHeld = held;
-  if (!ready) return;
+  if (!ready) { input.consumeNade(); return; }
+  if (input.consumeNade()) throwNade();
   if (input.consumeReload()) startReload();
   if (pendingShotUntil > now) {
     if (reload.active) {
@@ -1530,6 +1549,24 @@ function updateShooting(ready) {
 function stopFiring() {
   shootWasHeld = false;
   pendingShotUntil = 0;
+}
+
+// Sticky grenade: lobbed from the off-hand with a slight arc bias — sticks to
+// whatever it lands on and pops a second later (blast follows rocket rules).
+function throwNade() {
+  if (playerDead || nadeCount <= 0) { if (!playerDead) audio.play('dryFire', { volume: 0.5 }); return; }
+  nadeCount--;
+  updateNadeHud();
+  const dir = crosshairAimPoint().sub(camera.position).normalize();
+  dir.y += 0.1; dir.normalize(); // a hair of loft so flat aim still arcs
+  const origin = camera.getWorldPosition(new THREE.Vector3())
+    .addScaledVector(dir, 0.45)
+    .addScaledVector(_camUp.set(0, 1, 0).applyQuaternion(camera.quaternion), -0.12);
+  spawnProjectile(origin, dir, 0xff7030, myTeamId(), NADE_SPEED, true, playerStats, { kind: 'grenade' });
+  weapon.kick(0.7);
+  kickView(0.25, 0, (Math.random() - 0.5) * 0.15);
+  audio.play('nadeThrow', { volume: 0.8, rate: 0.95 + Math.random() * 0.1 });
+  netplay.sendShot(origin, dir, 0xff7030, myTeamId(), { kind: 'grenade', speed: NADE_SPEED });
 }
 
 // Aim-down-sights zoom: blend the FOV toward the weapon's aim FOV and slow the
@@ -1652,10 +1689,27 @@ function makeRocketMesh() {
   g.userData.flame = flame; g.userData.glow = glow;
   return g;
 }
+// sticky grenade: dark orb + hot seam + a soft glow sprite that pulses on the fuse
+const nadeGeo = new THREE.SphereGeometry(0.09, 14, 12);
+const nadeBandGeo = new THREE.TorusGeometry(0.092, 0.012, 6, 24).rotateX(Math.PI / 2);
+const nadeCoreMat = new THREE.MeshStandardMaterial({ color: 0x16181d, metalness: 0.5, roughness: 0.35 });
+const nadeBandMat = new THREE.MeshBasicMaterial({ color: 0xff7030, toneMapped: false });
+function makeNadeMesh() {
+  const g = new THREE.Group();
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: _radialTex, color: 0xff7030, transparent: true, opacity: 0.55,
+    depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+  }));
+  glow.scale.setScalar(0.55); glow.layers.set(NO_OUTLINE_LAYER);
+  g.add(new THREE.Mesh(nadeGeo, nadeCoreMat), new THREE.Mesh(nadeBandGeo, nadeBandMat), glow);
+  g.userData.glow = glow;
+  return g;
+}
 function spawnProjectile(origin, dir, hex, team, speed = 70, isPlayer = false, shooter = null, opts = {}) {
   const kind = opts.kind || (opts.rocket ? 'rocket' : 'bullet');
   let mesh;
   if (kind === 'rocket') mesh = makeRocketMesh();
+  else if (kind === 'grenade') mesh = makeNadeMesh();
   else mesh = new THREE.Mesh(kind === 'spark' ? sparkGeo : tracerGeo, glowMat(hex));
   mesh.position.copy(origin);
   if (kind !== 'spark') mesh.quaternion.setFromUnitVectors(_zAxis, dir);
@@ -1670,8 +1724,8 @@ function spawnProjectile(origin, dir, hex, team, speed = 70, isPlayer = false, s
     speed, cruise: kind === 'rocket' ? speed * 2.1 : speed,
     prev: origin.clone(),
     born: performance.now(),
-    ttl: opts.ttl || (kind === 'rocket' ? 5000 : 3000),
-    gravity: opts.gravity != null ? opts.gravity : (kind === 'spark' ? -18 : 0),
+    ttl: opts.ttl || (kind === 'rocket' ? 5000 : kind === 'grenade' ? NADE_TTL : 3000),
+    gravity: opts.gravity != null ? opts.gravity : (kind === 'spark' ? -18 : kind === 'grenade' ? NADE_GRAV : 0),
   };
   projectiles.push(proj);
   return proj;
@@ -1710,6 +1764,73 @@ function updateProjectiles(dt) {
       p.mesh.scale.setScalar(Math.max(0.05, 1 - life));
       p.mesh.rotation.x += dt * 9; p.mesh.rotation.y += dt * 7;
       if (life >= 1) removeProjectile(i);
+      continue;
+    }
+
+    // sticky grenade: arcs with gravity, adheres to the first thing it touches
+    // (wall, floor, dome, or an enemy bot it follows), then detonates on fuse
+    if (p.kind === 'grenade') {
+      if (p.fuseAt) {
+        if (p.stickBot) { // ride the victim until it pops (or they drop)
+          if (p.stickBot.alive) p.mesh.position.copy(p.stickBot.pos).add(p.stickOff);
+          else p.stickBot = null;
+        }
+        const k = 1 - (p.fuseAt - now) / NADE_FUSE_MS;
+        const g = p.mesh.userData.glow;
+        g.material.opacity = 0.35 + 0.6 * Math.abs(Math.sin(now * (0.012 + k * 0.05))); // pulse faster as it cooks
+        g.scale.setScalar(0.5 + 0.25 * Math.abs(Math.sin(now * (0.012 + k * 0.05))));
+        if (p.beepAt && now >= p.beepAt) { p.beepAt = 0; audio.playAt('nadeBeep', p.mesh.position, { volume: 0.8, refDistance: 5, maxDistance: 40 }); }
+        if (now >= p.fuseAt) { grenadeDetonate(p, i); continue; }
+        continue;
+      }
+      p.vel.y += p.gravity * dt;
+      p.mesh.position.addScaledVector(p.vel, dt);
+      p.mesh.rotation.x += dt * 7; p.mesh.rotation.z += dt * 5; // tumble in flight
+      const seg = _tmpV.subVectors(p.mesh.position, p.prev);
+      const dist = seg.length();
+      if (dist > 1e-5) {
+        const dir = _segDir.copy(seg).multiplyScalar(1 / dist);
+        raycaster.set(p.prev, dir);
+        raycaster.far = dist + 0.09;
+        _projHits.length = 0;
+        const wallHit = raycaster.intersectObjects(arena.losBlockers, false, _projHits)[0];
+        const reach = wallHit ? Math.min(dist + 0.09, wallHit.distance) : dist + 0.09;
+        const segEnd = wallHit ? _segEnd.copy(p.prev).addScaledVector(dir, reach) : p.mesh.position;
+        const isNetGhost = p.shooter && p.shooter.netGhost;
+        let stickPos = wallHit ? wallHit.point.clone() : null;
+        let firstHit = wallHit ? wallHit.distance : Infinity;
+        if (!isNetGhost) {
+          for (const bot of bots.bots) { // enemy armour sticks too — plasma rules
+            if (!bot.alive || bot.team.id === p.team) continue;
+            _tmpV.copy(bot.pos); _tmpV.y += 1.2;
+            if (!segHitsSphere(p.prev, segEnd, _tmpV, 0.7)) continue;
+            const to = _tmpV.sub(p.prev), along = to.dot(dir);
+            const entry = Math.max(0, along - Math.sqrt(Math.max(0, 0.49 - (to.lengthSq() - along * along))));
+            if (entry < firstHit) { firstHit = entry; stickPos = p.prev.clone().addScaledVector(dir, entry); p.stickBot = bot; }
+          }
+          if (p.isPlayer && netplay.active) {
+            const nv = netplay.testHit(p.prev, dir, reach);
+            if (nv && nv.t < firstHit) { firstHit = nv.t; stickPos = p.prev.clone().addScaledVector(dir, nv.t); p.stickNet = nv; p.stickBot = null; }
+          }
+        }
+        if (stickPos) { // adhered — seat it on the surface and start the fuse
+          p.mesh.position.copy(stickPos);
+          p.vel.set(0, 0, 0);
+          p.fuseAt = now + NADE_FUSE_MS;
+          p.beepAt = now + 550;
+          if (p.stickBot) { p.stickOff = stickPos.clone().sub(p.stickBot.pos); audio.playAt('nadeStick', stickPos, { volume: 0.9, refDistance: 5, maxDistance: 40 }); }
+          else {
+            if (wallHit && wallHit.face) { // sit flush on the surface, not inside it
+              const n = _tmpV.copy(wallHit.face.normal).transformDirection(wallHit.object.matrixWorld);
+              p.mesh.position.copy(stickPos).addScaledVector(n, 0.09);
+            }
+            audio.playAt('nadeStick', stickPos, { volume: 0.75, refDistance: 5, maxDistance: 40 });
+          }
+          audio.playAt('nadeBeep', stickPos, { volume: 0.7, refDistance: 5, maxDistance: 40 });
+          continue;
+        }
+      }
+      if (now - p.born > p.ttl) grenadeDetonate(p, i); // ran out of air — pop anyway
       continue;
     }
 
@@ -1781,7 +1902,7 @@ function updateProjectiles(dt) {
 function removeProjectile(i) {
   const p = projectiles[i];
   scene.remove(p.mesh);
-  if (p.kind === 'rocket') p.mesh.userData.glow.material.dispose();
+  if (p.kind === 'rocket' || p.kind === 'grenade') p.mesh.userData.glow.material.dispose();
   projectiles.splice(i, 1);
 }
 
@@ -1918,6 +2039,18 @@ function rocketImpact(p, i, point, visualOnly, directBot = null, directNet = nul
     if (p.isPlayer && netplay.active && netplay.applyBlast(point, p.team, directNet) && !tagged) showHitmarker();
   }
   explode(point);
+  removeProjectile(i);
+}
+
+function grenadeDetonate(p, i) {
+  const pos = p.mesh.position;
+  const isNetGhost = p.shooter && p.shooter.netGhost;
+  if (!isNetGhost) {
+    const directBot = p.stickBot && p.stickBot.alive ? p.stickBot : null; // still riding = direct hit
+    const tagged = bots.applyBlast(pos, p.team, p.shooter, directBot);
+    if (p.isPlayer && netplay.active && netplay.applyBlast(pos, p.team, p.stickNet || null) && !tagged) showHitmarker();
+  }
+  explode(pos);
   removeProjectile(i);
 }
 
@@ -2138,6 +2271,9 @@ if (DEV) window.__wo = {
   skipCountdown: () => { countdownMs = COUNTDOWN_GO_MS; countdownEl.classList.add('hidden'); },
   fire: () => fireCurrent(),
   fireRocket: () => { currentWeapon = 1; weapon.setMode(1); fireCurrent(); },
+  nade: () => throwNade(),
+  get nades() { return { count: nadeCount, chargeMs: nadeT }; },
+  get projs() { return projectiles.map(p => ({ kind: p.kind, stuck: !!p.fuseAt, y: +p.mesh.position.y.toFixed(2) })); },
   spawn: (kind) => { // stage a frozen round in front of the camera for FX captures
     const o = camera.getWorldPosition(new THREE.Vector3())
       .addScaledVector(camera.getWorldDirection(new THREE.Vector3()), 2.2);
@@ -2371,6 +2507,7 @@ function animate() {
     // to a menu preserves it, so you always serve a full countdown.
     input.consumeJump();
     input.consumeCrouch();
+    input.consumeNade();
     if (shootWasHeld) stopFiring();
     stopSlideSound();
     weapon.update(dt, false, settings.get('fov')); // ease the marker out of ADS
@@ -2383,6 +2520,7 @@ function animate() {
   } else {
     input.consumeJump();
     input.consumeCrouch();
+    input.consumeNade();
     if (shootWasHeld) stopFiring(); // paused / match over
     stopSlideSound();
   }
@@ -2406,7 +2544,15 @@ function animate() {
     });
   }
 
-  if (simRunning) { updateProjectiles(dt); updateFx(dt); }
+  if (simRunning) {
+    updateProjectiles(dt); updateFx(dt);
+    // rolling grenade recharge — paused only when the world is
+    if (nadeCount < NADE_MAX) {
+      nadeT += dt * 1000;
+      if (nadeT >= NADE_RECHARGE_MS) { nadeCount++; nadeT = 0; }
+      updateNadeHud();
+    }
+  }
 
   if (netplay.active) {
     // online skirmish: live team tag totals (endless — no match end in v1)

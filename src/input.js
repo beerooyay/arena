@@ -13,6 +13,7 @@
  *   button 6  LT          -> aim
  *   button 9  Start       -> start game / pause
  *   button 10 L3          -> sprint
+ *   button 5  RB          -> sticky grenade
  */
 export class InputManager {
   constructor(domElement) {
@@ -31,6 +32,7 @@ export class InputManager {
     this._padCrouchDown = false;
     this._startQueued = false;
     this._reloadQueued = false;   // R (kbd) / X (pad)
+    this._nadeQueued = false;     // G (kbd) / RB (pad)
     this._weaponQueued = null;    // 0/1 = select slot, -1 = swap, null = none
 
     // per-frame outputs
@@ -67,6 +69,7 @@ export class InputManager {
     this.keys[e.code] = down;
     if (down && e.code === 'Space') this._jumpQueued = true;
     if (down && !wasDown && e.code === 'KeyR') this._reloadQueued = true;
+    if (down && !wasDown && e.code === 'KeyG') this._nadeQueued = true;
     // weapon select: 1 = battle rifle, 2 = twin rockets (Q also cycles)
     if (down && !wasDown) {
       if (e.code === 'Digit1') this._weaponQueued = 0;
@@ -107,6 +110,7 @@ export class InputManager {
       this._padCrouchDown = !!b[1];
       if (pressed(2)) this._reloadQueued = true;            // X -> reload
       if (pressed(3)) this._weaponQueued = -1;              // Y -> swap weapon
+      if (pressed(5)) this._nadeQueued = true;              // RB -> grenade
       // Start (9) OR menu (8) -> begin / pause. NOT A, so jumping never pauses.
       if (pressed(9) || pressed(8)) this._startQueued = true;
 
@@ -130,5 +134,6 @@ export class InputManager {
   consumeCrouch() { const s = this._crouchQueued; this._crouchQueued = false; return s; }
   consumeStart() { const s = this._startQueued; this._startQueued = false; return s; }
   consumeReload() { const r = this._reloadQueued; this._reloadQueued = false; return r; }
+  consumeNade() { const n = this._nadeQueued; this._nadeQueued = false; return n; }
   consumeWeapon() { const w = this._weaponQueued; this._weaponQueued = null; return w; }
 }

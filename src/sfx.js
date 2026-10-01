@@ -152,6 +152,22 @@ export function buildCombatSfx(ctx) {
       clickLayer(98, 0.11, { gain: 1, hp: 1200, decay: 0.01 }),
     ], 0.75),
     dryFire: render(ctx, 0.08, [clickLayer(99, 0, { gain: 1, hp: 2500, decay: 0.004 })], 0.5),
+    // grenade throw: short arm whoosh
+    nadeThrow: render(ctx, 0.28, [
+      noiseLayer(111, { attack: 0.03, decay: 0.14, gain: 0.8, lp: 1400, hp: 250 }),
+      thumpLayer({ f0: 150, f1: 70, drop: 0.04, decay: 0.08, gain: 0.5 }),
+    ], 0.6),
+    // sticky landing: tacky thunk + a little squelch
+    nadeStick: render(ctx, 0.2, [
+      thumpLayer({ f0: 220, f1: 90, drop: 0.02, decay: 0.05, gain: 1 }),
+      noiseLayer(121, { decay: 0.04, gain: 0.5, lp: 900 }),
+      clickLayer(122, 0.01, { gain: 0.4, hp: 1200 }),
+    ], 0.8),
+    // fuse ping: bright warning beep
+    nadeBeep: render(ctx, 0.14, [
+      pingLayer([[2050, 1], [3100, 0.35]], { decay: 0.05, gain: 1 }),
+      noiseLayer(131, { decay: 0.012, gain: 0.25, hp: 2600 }),
+    ], 0.7),
     // weapon swap: cloth + metal rattle
     weaponSwap: render(ctx, 0.32, [
       noiseLayer(101, { attack: 0.03, decay: 0.08, gain: 0.5, lp: 2000, hp: 250 }),
